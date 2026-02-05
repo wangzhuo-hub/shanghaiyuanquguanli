@@ -1,0 +1,1175 @@
+
+import React, { useState, useEffect, useMemo } from 'react';
+import { Tenant, Building, ContractStatus, DepositStatus, RentFreePeriod, UnitStatus, DashboardData, PaymentRecord } from '../types';
+// Added missing UserMinus and Sparkles imports
+import { Search, Plus, FileText, Filter, XCircle, AlertTriangle, AlertCircle, Calendar, DollarSign, Edit2, X, Trash2, Users, Save, Building as BuildingIcon, UserCheck, UserPlus, UserMinus, UserX, Info, ShieldAlert, WalletIcon, ArrowLeft, Trash, TrendingUp, TrendingDown, PieChart, Activity, BarChart3, Clock, LayoutDashboard, ArrowUpRight, ArrowDownRight, Sparkles, Briefcase, User, Smartphone, Gift, MapPin, Receipt, CreditCard } from 'lucide-react';
+import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, BarChart, Bar, Cell, PieChart as RechartsPieChart, Pie, Legend, ComposedChart, Line } from 'recharts';
+import { OccupancyTrendChart, UnitPriceTrendChart } from './Charts';
+import { generateBudgetedBills } from '../services/billingService';
+
+interface ContractManagerProps {
+  tenants: Tenant[];
+  buildings: Building[];
+  onUpdateTenants: (tenants: Tenant[]) => void;
+  dashboardData?: DashboardData; // 新增：用于图表数据
+  payments?: PaymentRecord[]; // 新增：用于关联实际收款
+  onUpdatePayments?: (payments: PaymentRecord[]) => void; // 新增：用于更新收款记录
+}
+
+const isInfoIncomplete = (t: Partial<Tenant>) => {
+    return !t.industry || !t.foundingDate || !t.legalRepName || !t.contactName;
+};
+
+export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, buildings, onUpdateTenants, dashboardData, payments = [], onUpdatePayments }) => {
+  // Default to Analysis tab as requested
+  const [activeTab, setActiveTab] = useState<'List' | 'Terminated' | 'Analysis'>('Analysis');
+  const [analysisPeriod, setAnalysisPeriod] = useState<'Year' | 'Quarter' | 'Month'>('Year');
+  
+  const [isEditing, setIsEditing] = useState(false);
+  const [currentTenant, setCurrentTenant] = useState<Partial<Tenant>>({});
+  const [renewingFromId, setRenewingFromId] = useState<string | null>(null);
+  const [formErrors, setFormErrors] = useState<Record<string, boolean>>({});
+  const [searchTerm, setSearchTerm] = useState('');
+  const [filterBuilding, setFilterBuilding] = useState('all');
+  const [filterStatus, setFilterStatus] = useState('all');
+  const [showTerminateModal, setShowTerminateModal] = useState(false);
+  const [terminateId, setTerminateId] = useState<string | null>(null);
+  const [terminateData, setTerminateData] = useState({ date: '', type: 'Normal' as 'Normal' | 'Early', reason: '' });
+  
+  // 初始化录入状态
+  const [showInitPaymentModal, setShowInitPaymentModal] = useState(false);
+  const [initPaymentData, setInitPaymentData] = useState({
+    amount: '',
+    date: '',
+    remarks: '2026年1月前历史数据'
+  });
+
+  // --- High-Performance Analysis Engine ---
+  const perfData = useMemo(() => {
+    const now = new Date();
+    const currentYear = now.getFullYear();
+    const currentMonth = now.getMonth(); // 0-11
+    const currentQuarter = Math.floor(currentMonth / 3); // 0-3
+
+    const getPeriodKey = (dateStr: string) => {
+        const d = new Date(dateStr);
+        return {
+            year: d.getFullYear(),
+            month: d.getMonth(),
+            quarter: Math.floor(d.getMonth() / 3)
+        };
+    };
+
+    // Helper: Is Date in Period?
+    const isInPeriod = (dateStr: string, period: 'Year' | 'Quarter' | 'Month', offsetYear = 0, offsetPeriod = 0) => {
+        if (!dateStr) return false;
+        const d = getPeriodKey(dateStr);
+        let targetYear = currentYear + offsetYear;
+        
+        if (period === 'Year') {
+            return d.year === targetYear;
+        }
+        if (period === 'Quarter') {
+            let targetQ = currentQuarter + offsetPeriod;
+            while (targetQ < 0) { targetQ += 4; targetYear -= 1; }
+            while (targetQ > 3) { targetQ -= 4; targetYear += 1; }
+            return d.year === targetYear && d.quarter === targetQ;
+        }
+        if (period === 'Month') {
+            let targetM = currentMonth + offsetPeriod;
+            while (targetM < 0) { targetM += 12; targetYear -= 1; }
+            while (targetM > 11) { targetM -= 12; targetYear += 1; }
+            return d.year === targetYear && d.month === targetM;
+        }
+        return false;
+    };
+
+    // Calculate Core Metrics
+    const calculateMetrics = (offsetYear = 0, offsetPeriod = 0) => {
+        const signed = tenants.filter(t => isInPeriod(t.signingDate || t.leaseStart, analysisPeriod, offsetYear, offsetPeriod));
+        const terminated = tenants.filter(t => t.status === ContractStatus.Terminated && isInPeriod(t.terminationDate || t.leaseEnd, analysisPeriod, offsetYear, offsetPeriod));
+        
+        const signedArea = signed.reduce((s, t) => s + t.totalArea, 0);
+        const terminatedArea = terminated.reduce((s, t) => s + t.totalArea, 0);
+        
+        return {
+            signedCount: signed.length,
+            signedArea: Math.round(signedArea),
+            terminatedCount: terminated.length,
+            terminatedArea: Math.round(terminatedArea),
+            netArea: Math.round(signedArea - terminatedArea)
+        };
+    };
+
+    const current = calculateMetrics(0, 0);
+    const prevPeriod = calculateMetrics(analysisPeriod === 'Year' ? -1 : 0, analysisPeriod === 'Year' ? 0 : -1);
+    const prevYear = calculateMetrics(-1, 0);
+
+    // Helper: Calculation Percentage change
+    const getChange = (curr: number, prev: number) => {
+        if (prev === 0) return curr > 0 ? 100 : 0;
+        return ((curr - prev) / prev) * 100;
+    };
+
+    // Termination Reason Distribution
+    const terminatedAll = tenants.filter(t => t.status === ContractStatus.Terminated);
+    const terminatedYear = tenants.filter(t => t.status === ContractStatus.Terminated && isInPeriod(t.terminationDate || t.leaseEnd, 'Year'));
+    const terminatedQuarter = tenants.filter(t => t.status === ContractStatus.Terminated && isInPeriod(t.terminationDate || t.leaseEnd, 'Quarter'));
+    const terminatedMonth = tenants.filter(t => t.status === ContractStatus.Terminated && isInPeriod(t.terminationDate || t.leaseEnd, 'Month'));
+    
+    const reasonMap: Record<string, number> = {};
+    let earlyCount = 0;
+    
+    terminatedAll.forEach(t => {
+        const r = t.terminationReason || '未填写原因';
+        reasonMap[r] = (reasonMap[r] || 0) + 1;
+        if (t.terminationType === 'Early') earlyCount++;
+    });
+
+    const reasonData = Object.entries(reasonMap).map(([name, value]) => ({ name, value })).sort((a, b) => b.value - a.value);
+    const earlyRate = terminatedAll.length > 0 ? Math.round((earlyCount / terminatedAll.length) * 100) : 0;
+    
+    // 退租类型分布（正常退租 vs 提前退租）
+    const terminationTypeData = [
+        { name: '正常退租', value: terminatedAll.length - earlyCount },
+        { name: '提前退租', value: earlyCount }
+    ].filter(item => item.value > 0);
+
+    // Monthly Trends for Chart (Last 12 Months)
+    const trendData = [];
+    for (let i = 11; i >= 0; i--) {
+        const d = new Date(currentYear, currentMonth - i, 1);
+        const label = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+        
+        const mSigned = tenants.filter(t => isInPeriod(t.signingDate || t.leaseStart, 'Month', d.getFullYear() - currentYear, d.getMonth() - currentMonth));
+        const mTerminated = tenants.filter(t => t.status === ContractStatus.Terminated && isInPeriod(t.terminationDate || t.leaseEnd, 'Month', d.getFullYear() - currentYear, d.getMonth() - currentMonth));
+        
+        const sArea = mSigned.reduce((s, t) => s + t.totalArea, 0);
+        const tArea = mTerminated.reduce((s, t) => s + t.totalArea, 0);
+
+        trendData.push({
+            month: label,
+            newArea: Math.round(sArea),
+            lostArea: Math.round(tArea),
+            netArea: Math.round(sArea - tArea)
+        });
+    }
+
+    return {
+        metrics: current,
+        mom: {
+            area: getChange(current.signedArea, prevPeriod.signedArea),
+            count: getChange(current.signedCount, prevPeriod.signedCount)
+        },
+        yoy: {
+            area: getChange(current.signedArea, prevYear.signedArea),
+            count: getChange(current.signedCount, prevYear.signedCount)
+        },
+        reasons: reasonData,
+        earlyRate,
+        trend: trendData,
+        terminationStats: {
+            all: terminatedAll.length,
+            year: terminatedYear.length,
+            quarter: terminatedQuarter.length,
+            month: terminatedMonth.length,
+            earlyCount,
+            normalCount: terminatedAll.length - earlyCount
+        },
+        terminationTypeData
+    };
+  }, [tenants, analysisPeriod]);
+
+  // --- Actions ---
+  const handleSave = () => {
+    const errors: Record<string, boolean> = {};
+    const missingFields = [];
+    if (!currentTenant.name) { errors.name = true; missingFields.push('企业名称'); }
+    if (!currentTenant.buildingId) { errors.buildingId = true; missingFields.push('所属楼宇'); }
+    if (!currentTenant.unitIds || currentTenant.unitIds.length === 0) { errors.unitIds = true; missingFields.push('租赁单元/房号'); }
+    if (!currentTenant.signingDate) { errors.signingDate = true; missingFields.push('签约日期'); }
+    if (!currentTenant.leaseStart) { errors.leaseStart = true; missingFields.push('起租日期'); }
+    if (!currentTenant.leaseEnd) { errors.leaseEnd = true; missingFields.push('结束日期'); }
+    
+    setFormErrors(errors);
+    if (missingFields.length > 0) { alert(`无法保存，请填写以下必填项：\n${missingFields.join(', ')}`); return; }
+
+    const newTenant = {
+      ...currentTenant,
+      id: currentTenant.id || `t${Date.now()}`,
+      status: currentTenant.status || ContractStatus.Active,
+      rentFreePeriods: currentTenant.rentFreePeriods || [],
+      depositAmount: currentTenant.depositAmount || 0,
+      depositStatus: currentTenant.depositStatus || DepositStatus.Unpaid,
+      paymentCycle: currentTenant.paymentCycle || 'Quarterly',
+    } as Tenant;
+
+    let updatedTenants = [...tenants];
+    if (renewingFromId) {
+        updatedTenants = updatedTenants.map(t => t.id === renewingFromId ? { ...t, status: ContractStatus.Expired } : t);
+        updatedTenants.push(newTenant);
+    } else if (currentTenant.id && tenants.some(t => t.id === currentTenant.id)) {
+       updatedTenants = updatedTenants.map(t => t.id === currentTenant.id ? newTenant : t);
+    } else { updatedTenants.push(newTenant); }
+    onUpdateTenants(updatedTenants); setIsEditing(false); setCurrentTenant({}); setRenewingFromId(null); setFormErrors({});
+  };
+
+  const handleEdit = (tenant: Tenant) => {
+    const derivedPrice = tenant.unitPrice || (tenant.totalArea ? Number((tenant.monthlyRent / tenant.totalArea * 12 / 365).toFixed(2)) : 0);
+    setCurrentTenant({ ...tenant, unitPrice: derivedPrice });
+    setRenewingFromId(null); setFormErrors({}); setIsEditing(true);
+  };
+
+  const handleRenewal = (tenant: Tenant) => {
+    const nextDay = new Date(tenant.leaseEnd);
+    nextDay.setDate(nextDay.getDate() + 1);
+    const leaseEnd = new Date(nextDay);
+    leaseEnd.setFullYear(leaseEnd.getFullYear() + 1);
+
+    const renewalTenant: Partial<Tenant> = {
+      ...tenant,
+      id: `t${Date.now()}_renewal`,
+      rootId: tenant.rootId || tenant.id,
+      leaseStart: nextDay.toISOString().split('T')[0],
+      leaseEnd: leaseEnd.toISOString().split('T')[0],
+      signingDate: new Date().toISOString().split('T')[0],
+      status: ContractStatus.Pending,
+    };
+    
+    setCurrentTenant(renewalTenant);
+    setRenewingFromId(tenant.id);
+    setFormErrors({});
+    setIsEditing(true);
+  };
+
+  const initiateTermination = (id: string) => {
+    setTerminateId(id);
+    setTerminateData({ date: new Date().toISOString().split('T')[0], type: 'Normal', reason: '' });
+    setShowTerminateModal(true);
+  };
+
+  const toggleUnit = (unitId: string, unitArea: number) => {
+      const currentIds = currentTenant.unitIds || [];
+      const currentTotalArea = currentTenant.totalArea || 0;
+      let newIds = currentIds.includes(unitId) ? currentIds.filter(id => id !== unitId) : [...currentIds, unitId];
+      let newArea = currentIds.includes(unitId) ? currentTotalArea - unitArea : currentTotalArea + unitArea;
+      const areaFixed = Number(newArea.toFixed(2));
+      const currentPrice = currentTenant.unitPrice || 0;
+      const newMonthlyRent = Number((currentPrice * (365/12) * areaFixed).toFixed(0));
+      setCurrentTenant({ ...currentTenant, unitIds: newIds, totalArea: areaFixed, monthlyRent: newMonthlyRent });
+  };
+
+  const addRentFree = () => {
+    const rf = currentTenant.rentFreePeriods || [];
+    setCurrentTenant({ ...currentTenant, rentFreePeriods: [...rf, { start: '', end: '', description: '' }] });
+  };
+
+  const updateRentFree = (index: number, field: keyof RentFreePeriod, value: string) => {
+    const rf = [...(currentTenant.rentFreePeriods || [])];
+    rf[index] = { ...rf[index], [field]: value };
+    setCurrentTenant({ ...currentTenant, rentFreePeriods: rf });
+  };
+
+  const removeRentFree = (index: number) => {
+    const rf = currentTenant.rentFreePeriods?.filter((_, i) => i !== index);
+    setCurrentTenant({ ...currentTenant, rentFreePeriods: rf });
+  };
+
+  const filteredTenants = useMemo(() => {
+    return tenants.filter(t => {
+        const isTerminated = t.status === ContractStatus.Terminated;
+        if (activeTab === 'List' && isTerminated) return false;
+        if (activeTab === 'Terminated' && !isTerminated) return false;
+
+        const matchesSearch = t.name?.toLowerCase().includes(searchTerm.toLowerCase());
+        const matchesBuilding = filterBuilding === 'all' || t.buildingId === filterBuilding;
+        let matchesStatus = filterStatus === 'all' || t.status === filterStatus;
+        if (filterStatus === 'risk') matchesStatus = t.isRisk === true;
+        
+        return matchesSearch && matchesBuilding && matchesStatus;
+    }).sort((a,b) => new Date(b.leaseStart).getTime() - new Date(a.leaseStart).getTime());
+  }, [tenants, searchTerm, filterBuilding, filterStatus, activeTab]);
+
+  const sortedYears = useMemo(() => {
+      const groups: Record<number, Tenant[]> = {};
+      filteredTenants.forEach(t => { 
+          const dateRef = activeTab === 'Terminated' ? (t.terminationDate || t.leaseEnd) : t.leaseStart;
+          const year = new Date(dateRef).getFullYear(); 
+          if(!groups[year]) groups[year] = []; 
+          groups[year].push(t); 
+      });
+      return Object.keys(groups).map(Number).sort((a,b) => b-a).map(year => ({ year, tenants: groups[year] }));
+  }, [filteredTenants, activeTab]);
+
+  const COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#64748b'];
+
+  if (isEditing) {
+     const targetBuilding = buildings.find(b => b.id === currentTenant.buildingId);
+     // Filter units that are NOT self-use AND (are Vacant OR already belong to this tenant)
+     const availableUnits = (targetBuilding?.units || []).filter(u => !u.isSelfUse && (u.status === UnitStatus.Vacant || currentTenant.unitIds?.includes(u.id)));
+
+     return (
+         <div className="bg-slate-50 fixed inset-0 z-50 overflow-y-auto p-2 md:p-6 animate-in zoom-in-50 duration-200">
+             <div className="bg-white rounded-xl shadow-2xl border border-slate-200 max-w-5xl mx-auto flex flex-col min-h-full">
+                <div className="flex justify-between items-center px-6 py-4 border-b border-slate-100 sticky top-0 bg-white z-20 rounded-t-xl shadow-sm">
+                    <div className="flex items-center gap-3">
+                        <div className="p-2 bg-blue-50 text-blue-600 rounded-lg"><Users size={20}/></div>
+                        <h2 className="text-xl font-bold text-slate-800">
+                            {currentTenant.id ? (renewingFromId ? '合同续签' : '客户合同详情') : '新增租赁签约'}
+                        </h2>
+                    </div>
+                    <button onClick={() => { setIsEditing(false); setRenewingFromId(null); setFormErrors({}); }} className="text-slate-400 hover:text-slate-600 bg-slate-100 p-2 rounded-full transition-colors"><X size={20}/></button>
+                </div>
+
+                <div className="p-6 md:p-8 space-y-8 flex-1">
+                    {/* 1. Core Info Section */}
+                    <section className="bg-white p-6 rounded-xl border border-slate-100 shadow-sm space-y-4">
+                        <div className="flex items-center gap-2 text-blue-600 font-bold mb-2"><FileText size={18}/> <span>核心签约信息</span></div>
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                            <div><label className="block text-sm font-medium mb-1.5 text-slate-600">企业名称 <span className="text-red-500">*</span></label><input type="text" className={`w-full border p-2.5 rounded-lg text-sm ${formErrors.name ? 'border-red-500 bg-red-50' : 'border-slate-300'}`} value={currentTenant.name || ''} onChange={e => setCurrentTenant({...currentTenant, name: e.target.value})} /></div>
+                            <div><label className="block text-sm font-medium mb-1.5 text-slate-600">所属资产 <span className="text-red-500">*</span></label><select className={`w-full border p-2.5 rounded-lg text-sm ${formErrors.buildingId ? 'border-red-500 bg-red-50' : 'border-slate-300'}`} value={currentTenant.buildingId || ''} onChange={e => setCurrentTenant({...currentTenant, buildingId: e.target.value, unitIds: [], totalArea: 0})}>
+                                <option value="">选择资产...</option>{buildings.map(b => <option key={b.id} value={b.id}>{b.name} {b.type === 'Site' ? '(场地)' : ''}</option>)}
+                            </select></div>
+                            
+                            <div className="md:col-span-2">
+                                <label className="block text-sm font-medium mb-2 text-slate-600">租赁单元 / 地块 <span className="text-red-500">*</span></label>
+                                {targetBuilding && targetBuilding.units.length === 0 ? (
+                                    <div className="p-4 bg-amber-50 border border-amber-200 rounded-xl flex items-start gap-3">
+                                        <AlertCircle className="text-amber-500 mt-0.5 flex-shrink-0" size={18} />
+                                        <div>
+                                            <div className="text-amber-700 font-bold text-sm mb-1">该资产下暂无租赁单元/地块</div>
+                                            <div className="text-amber-600 text-xs">
+                                                请先前往 <span className="font-bold bg-amber-100 px-1 rounded">楼宇资管</span> 页面，为该资产添加可租赁的单元或地块信息，然后才能进行签约。
+                                            </div>
+                                        </div>
+                                    </div>
+                                ) : (
+                                    <div className="grid grid-cols-4 sm:grid-cols-6 md:grid-cols-8 gap-2 bg-slate-50 p-3 rounded-xl border border-slate-200 max-h-48 overflow-y-auto font-mono">
+                                        {availableUnits.length > 0 ? availableUnits.map(u => (
+                                            <button key={u.id} onClick={() => toggleUnit(u.id, u.area)} className={`px-2 py-2 rounded text-xs border transition-all ${currentTenant.unitIds?.includes(u.id) ? 'bg-blue-600 text-white border-blue-600 shadow-md scale-105 font-bold' : 'bg-white border-slate-200 hover:border-blue-400'}`}><div>{u.name}</div><div className="opacity-70 font-normal">{u.area}㎡</div></button>
+                                        )) : (
+                                            <div className="col-span-full text-center py-4 text-slate-400 text-xs italic">
+                                                {currentTenant.buildingId ? '该资产下暂无空置单元' : '请先选择左侧所属资产'}
+                                            </div>
+                                        )}
+                                    </div>
+                                )}
+                            </div>
+
+                            <div className="grid grid-cols-1 md:grid-cols-3 gap-4 md:col-span-2">
+                                <div><label className="block text-sm font-medium mb-1.5 text-slate-600">签约日期 <span className="text-red-500">*</span></label><input type="date" className={`w-full border p-2.5 rounded-lg text-sm ${formErrors.signingDate ? 'border-red-500' : 'border-slate-300'}`} value={currentTenant.signingDate || ''} onChange={e => setCurrentTenant({...currentTenant, signingDate: e.target.value})} /></div>
+                                <div><label className="block text-sm font-medium mb-1.5 text-slate-600">起租日期 <span className="text-red-500">*</span></label><input type="date" className={`w-full border p-2.5 rounded-lg text-sm ${formErrors.leaseStart ? 'border-red-500' : 'border-slate-300'}`} value={currentTenant.leaseStart || ''} onChange={e => setCurrentTenant({...currentTenant, leaseStart: e.target.value})} /></div>
+                                <div><label className="block text-sm font-medium mb-1.5 text-slate-600">结束日期 <span className="text-red-500">*</span></label><input type="date" className={`w-full border p-2.5 rounded-lg text-sm ${formErrors.leaseEnd ? 'border-red-500' : 'border-slate-300'}`} value={currentTenant.leaseEnd || ''} onChange={e => setCurrentTenant({...currentTenant, leaseEnd: e.target.value})} /></div>
+                            </div>
+                        </div>
+                    </section>
+
+                    {/* 2. Rent & Payments */}
+                    <section className="bg-white p-6 rounded-xl border border-slate-100 shadow-sm space-y-4">
+                        <div className="flex items-center gap-2 text-emerald-600 font-bold mb-2"><DollarSign size={18}/> <span>租金单价与支付</span></div>
+                        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                            <div><label className="block text-sm font-medium mb-1.5 text-slate-600">日租金单价 (元/㎡/天)</label><div className="relative"><span className="absolute left-3 top-2.5 text-slate-400 text-sm">¥</span><input type="number" step="0.01" className="w-full border border-slate-300 pl-7 pr-3 py-2.5 rounded-lg text-sm font-mono" value={currentTenant.unitPrice || ''} onChange={e => {
+                                const price = Number(e.target.value);
+                                const rent = Number((price * (365/12) * (currentTenant.totalArea || 0)).toFixed(0));
+                                setCurrentTenant({...currentTenant, unitPrice: price, monthlyRent: rent});
+                            }} /></div></div>
+                            <div><label className="block text-sm font-medium mb-1.5 text-slate-600">月租金总额 (预估)</label><div className="relative"><span className="absolute left-3 top-2.5 text-slate-400 text-sm">¥</span><input type="number" className="w-full border border-slate-300 pl-7 pr-3 py-2.5 rounded-lg text-sm bg-slate-50 font-bold" value={currentTenant.monthlyRent || ''} onChange={e => setCurrentTenant({...currentTenant, monthlyRent: Number(e.target.value)})} /></div></div>
+                            <div>
+                                <label className="block text-sm font-medium mb-1.5 text-slate-600">支付频率</label>
+                                <select 
+                                    className="w-full border border-slate-300 p-2.5 rounded-lg text-sm" 
+                                    value={currentTenant.paymentCycle || 'Quarterly'} 
+                                    onChange={e => {
+                                        const cycle = e.target.value as any;
+                                        let months = 3;
+                                        if (cycle === 'Monthly') months = 1;
+                                        else if (cycle === 'SemiAnnual') months = 6;
+                                        else if (cycle === 'Annual') months = 12;
+                                        
+                                        setCurrentTenant({
+                                            ...currentTenant, 
+                                            paymentCycle: cycle, 
+                                            paymentCycleMonths: months,
+                                            firstPaymentMonths: months 
+                                        });
+                                    }}
+                                >
+                                    <option value="Monthly">月付</option>
+                                    <option value="Quarterly">季付</option>
+                                    <option value="SemiAnnual">半年付</option>
+                                    <option value="Annual">年付</option>
+                                </select>
+                            </div>
+                            <div><label className="block text-sm font-medium mb-1.5 text-slate-600">首期支付日</label><input type="date" className="w-full border border-slate-300 p-2.5 rounded-lg text-sm" value={currentTenant.firstPaymentDate || ''} onChange={e => setCurrentTenant({...currentTenant, firstPaymentDate: e.target.value})} /></div>
+                            <div><label className="block text-sm font-medium mb-1.5 text-slate-600">押金金额</label><div className="relative"><span className="absolute left-3 top-2.5 text-slate-400 text-sm">¥</span><input type="number" className="w-full border border-slate-300 pl-7 pr-3 py-2.5 rounded-lg text-sm" value={currentTenant.depositAmount || ''} onChange={e => setCurrentTenant({...currentTenant, depositAmount: Number(e.target.value)})} /></div></div>
+                            <div><label className="block text-sm font-medium mb-1.5 text-slate-600">押金状态</label><select className="w-full border border-slate-300 p-2.5 rounded-lg text-sm" value={currentTenant.depositStatus || DepositStatus.Unpaid} onChange={e => setCurrentTenant({...currentTenant, depositStatus: e.target.value as any})}>
+                                <option value={DepositStatus.Unpaid}>待缴</option><option value={DepositStatus.Paid}>已收</option><option value={DepositStatus.Refunded}>已退</option>
+                            </select></div>
+                        </div>
+                    </section>
+
+                    {/* 3. Rent Free Periods */}
+                    <section className="bg-white p-6 rounded-xl border border-slate-100 shadow-sm space-y-4">
+                         <div className="flex justify-between items-center mb-2">
+                             <div className="flex items-center gap-2 text-indigo-600 font-bold"><Gift size={18}/> <span>免租期设定</span></div>
+                             <button onClick={addRentFree} className="text-xs font-bold bg-indigo-50 text-indigo-600 px-3 py-1.5 rounded-lg hover:bg-indigo-100 flex items-center gap-1 transition-colors"><Plus size={14}/> 添加免租段</button>
+                         </div>
+                         <div className="space-y-3">
+                             {currentTenant.rentFreePeriods?.map((rf, idx) => (
+                                 <div key={idx} className="grid grid-cols-1 md:grid-cols-12 gap-3 p-4 bg-slate-50 rounded-xl border border-slate-200 relative group">
+                                     <div className="md:col-span-3"><label className="block text-[10px] uppercase font-bold text-slate-400 mb-1">开始日期</label><input type="date" className="w-full border p-2 rounded-lg text-sm" value={rf.start} onChange={e => updateRentFree(idx, 'start', e.target.value)} /></div>
+                                     <div className="md:col-span-3"><label className="block text-[10px] uppercase font-bold text-slate-400 mb-1">结束日期</label><input type="date" className="w-full border p-2 rounded-lg text-sm" value={rf.end} onChange={e => updateRentFree(idx, 'end', e.target.value)} /></div>
+                                     <div className="md:col-span-5"><label className="block text-[10px] uppercase font-bold text-slate-400 mb-1">说明备注</label><input type="text" placeholder="如：装修免租" className="w-full border p-2 rounded-lg text-sm" value={rf.description} onChange={e => updateRentFree(idx, 'description', e.target.value)} /></div>
+                                     <div className="md:col-span-1 flex items-end justify-center"><button onClick={() => removeRentFree(idx)} className="p-2 text-rose-500 hover:bg-rose-50 rounded-lg"><Trash2 size={18}/></button></div>
+                                 </div>
+                             ))}
+                             {(!currentTenant.rentFreePeriods || currentTenant.rentFreePeriods.length === 0) && <div className="text-center py-6 text-slate-400 text-sm italic border-2 border-dashed border-slate-100 rounded-xl">暂未设定免租期</div>}
+                         </div>
+                         
+                         {/* 免租期处理方式 */}
+                         {currentTenant.rentFreePeriods && currentTenant.rentFreePeriods.length > 0 && (
+                             <div className="mt-4 pt-4 border-t border-slate-200">
+                                 <label className="block text-sm font-medium mb-3 text-slate-700">
+                                     <span className="text-indigo-600">★</span> 免租期处理方式
+                                 </label>
+                                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                                     <button
+                                         type="button"
+                                         onClick={() => setCurrentTenant({...currentTenant, freeRentHandling: 'Defer'})}
+                                         className={`p-4 rounded-xl border-2 transition-all text-left ${
+                                             currentTenant.freeRentHandling === 'Defer' 
+                                                 ? 'border-indigo-500 bg-indigo-50' 
+                                                 : 'border-slate-200 bg-white hover:border-indigo-300'
+                                         }`}
+                                     >
+                                         <div className="flex items-center gap-2 mb-2">
+                                             <div className={`w-5 h-5 rounded-full border-2 flex items-center justify-center ${
+                                                 currentTenant.freeRentHandling === 'Defer' 
+                                                     ? 'border-indigo-500 bg-indigo-500' 
+                                                     : 'border-slate-300'
+                                             }`}>
+                                                 {currentTenant.freeRentHandling === 'Defer' && (
+                                                     <div className="w-2 h-2 bg-white rounded-full" />
+                                                 )}
+                                             </div>
+                                             <span className="font-bold text-slate-800">账期顺延</span>
+                                         </div>
+                                         <p className="text-xs text-slate-600 leading-relaxed">
+                                             免租期月份不产生账单，收款时间整体顺延。<br/>
+                                             <span className="text-indigo-600">例：1-3月免租，原12月收Q1租金 → 改为3月收Q2租金</span>
+                                         </p>
+                                     </button>
+                                     
+                                     <button
+                                         type="button"
+                                         onClick={() => setCurrentTenant({...currentTenant, freeRentHandling: 'Deduct'})}
+                                         className={`p-4 rounded-xl border-2 transition-all text-left ${
+                                             currentTenant.freeRentHandling === 'Deduct' 
+                                                 ? 'border-green-500 bg-green-50' 
+                                                 : 'border-slate-200 bg-white hover:border-green-300'
+                                         }`}
+                                     >
+                                         <div className="flex items-center gap-2 mb-2">
+                                             <div className={`w-5 h-5 rounded-full border-2 flex items-center justify-center ${
+                                                 currentTenant.freeRentHandling === 'Deduct' 
+                                                     ? 'border-green-500 bg-green-500' 
+                                                     : 'border-slate-300'
+                                             }`}>
+                                                 {currentTenant.freeRentHandling === 'Deduct' && (
+                                                     <div className="w-2 h-2 bg-white rounded-full" />
+                                                 )}
+                                             </div>
+                                             <span className="font-bold text-slate-800">当期账单扣除</span>
+                                         </div>
+                                         <p className="text-xs text-slate-600 leading-relaxed">
+                                             在当期账单中扣除免租期月数，收款时间不变但金额减少。<br/>
+                                             <span className="text-green-600">例：1月免租，原12月收Q1(3个月) → 改为12月收只收取2个月(2-3月)</span>
+                                         </p>
+                                     </button>
+                                 </div>
+                             </div>
+                         )}
+                         
+                         {/* 账单明细预览 */}
+                         {currentTenant.rentFreePeriods && currentTenant.rentFreePeriods.length > 0 && 
+                          currentTenant.leaseStart && currentTenant.leaseEnd && 
+                          currentTenant.monthlyRent && currentTenant.monthlyRent > 0 && 
+                          currentTenant.freeRentHandling && (
+                             <div className="mt-4 pt-4 border-t border-slate-200">
+                                 {(() => {
+                                     // 生成预览账单
+                                     const tenantForPreview: Tenant = {
+                                         ...currentTenant,
+                                         id: currentTenant.id || 'preview',
+                                         name: currentTenant.name || '预览',
+                                         buildingId: currentTenant.buildingId || '',
+                                         unitIds: currentTenant.unitIds || [],
+                                         totalArea: currentTenant.totalArea || 0,
+                                         leaseStart: currentTenant.leaseStart!,
+                                         leaseEnd: currentTenant.leaseEnd!,
+                                         monthlyRent: currentTenant.monthlyRent!,
+                                         paymentCycle: currentTenant.paymentCycle || 'Quarterly',
+                                         depositAmount: currentTenant.depositAmount || 0,
+                                         depositStatus: currentTenant.depositStatus || DepositStatus.Unpaid,
+                                         status: currentTenant.status || ContractStatus.Active,
+                                         rentFreePeriods: currentTenant.rentFreePeriods || [],
+                                         freeRentHandling: currentTenant.freeRentHandling
+                                     } as Tenant;
+                                     
+                                     const previewStart = new Date(currentTenant.leaseStart!);
+                                     const previewEnd = new Date(currentTenant.leaseEnd!);
+                                     
+                                     // 生成合同期内所有账单
+                                     const bills = generateBudgetedBills(
+                                         tenantForPreview,
+                                         [],
+                                         [],
+                                         previewStart,
+                                         previewEnd
+                                     ); // 不再限制期数
+                                     
+                                     if (bills.length === 0) {
+                                         return (
+                                             <div className="text-center py-4 text-slate-400 text-sm">
+                                                 无法生成账单预览，请检查合同信息
+                                             </div>
+                                         );
+                                     }
+                                     
+                                     // 计算财务汇总
+                                     const totalReceivable = bills.reduce((sum, bill) => sum + bill.amount, 0);
+                                     
+                                     // 关联实际收款（根据 tenantId 匹配）
+                                     const tenantPayments = payments.filter(p => p.tenantId === currentTenant.id);
+                                     const totalPaid = tenantPayments.reduce((sum, p) => sum + p.amount, 0);
+                                     
+                                     // 计算合同总月数
+                                     const leaseStartDate = new Date(currentTenant.leaseStart!);
+                                     const leaseEndDate = new Date(currentTenant.leaseEnd!);
+                                     const totalMonths = (leaseEndDate.getFullYear() - leaseStartDate.getFullYear()) * 12 + 
+                                                         (leaseEndDate.getMonth() - leaseStartDate.getMonth()) + 1;
+                                     
+                                     // 月均收款（基于实际收款）
+                                     const avgMonthlyPayment = totalMonths > 0 ? totalPaid / totalMonths : 0;
+                                     
+                                     // 实际月租金单价（元/天/㎡）
+                                     // 公式：应收总额 / 合同月数 / 面积 / 30天
+                                     const actualDailyPrice = currentTenant.totalArea && currentTenant.totalArea > 0 && totalMonths > 0
+                                         ? totalReceivable / totalMonths / currentTenant.totalArea / 30
+                                         : 0;
+                                     
+                                     return (
+                                         <div className="space-y-4">
+                                             {/* 财务汇总卡片 */}
+                                             <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                                                 <div className="bg-gradient-to-br from-blue-50 to-blue-100 p-4 rounded-xl border border-blue-200">
+                                                     <div className="flex items-center gap-2 mb-2">
+                                                         <Receipt size={16} className="text-blue-600" />
+                                                         <span className="text-xs font-bold text-blue-700">应收总额</span>
+                                                     </div>
+                                                     <div className="text-2xl font-bold text-blue-900">¥{totalReceivable.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}</div>
+                                                     <div className="text-xs text-blue-600 mt-1">合同期内共{bills.length}期</div>
+                                                 </div>
+                                                 
+                                                 <div className="bg-gradient-to-br from-green-50 to-green-100 p-4 rounded-xl border border-green-200">
+                                                     <div className="flex items-center justify-between mb-2">
+                                                         <div className="flex items-center gap-2">
+                                                             <CreditCard size={16} className="text-green-600" />
+                                                             <span className="text-xs font-bold text-green-700">已收总额</span>
+                                                         </div>
+                                                         {(() => {
+                                                             // 检查是否有初始化数据（判断是否有 2026-01-01 前的数据）
+                                                             const hasInitData = tenantPayments.some(p => new Date(p.date) < new Date('2026-01-01'));
+                                                             if (hasInitData) {
+                                                                 return (
+                                                                     <span className="text-xs bg-blue-100 text-blue-700 px-2 py-0.5 rounded">
+                                                                         含初始化
+                                                                     </span>
+                                                                 );
+                                                             } else {
+                                                                 return (
+                                                                     <button
+                                                                         onClick={() => setShowInitPaymentModal(true)}
+                                                                         className="text-xs bg-green-600 text-white px-2 py-1 rounded hover:bg-green-700 transition-colors flex items-center gap-1"
+                                                                     >
+                                                                         <Plus size={12} />
+                                                                         初始化
+                                                                     </button>
+                                                                 );
+                                                             }
+                                                         })()}
+                                                     </div>
+                                                     <div className="text-2xl font-bold text-green-900">¥{totalPaid.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}</div>
+                                                     <div className="text-xs text-green-600 mt-1">实际收款{tenantPayments.length}笔</div>
+                                                 </div>
+                                                 
+                                                 <div className="bg-gradient-to-br from-purple-50 to-purple-100 p-4 rounded-xl border border-purple-200">
+                                                     <div className="flex items-center gap-2 mb-2">
+                                                         <TrendingUp size={16} className="text-purple-600" />
+                                                         <span className="text-xs font-bold text-purple-700">月均收款</span>
+                                                     </div>
+                                                     <div className="text-2xl font-bold text-purple-900">¥{avgMonthlyPayment.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}</div>
+                                                     <div className="text-xs text-purple-600 mt-1">合同共{totalMonths}个月</div>
+                                                 </div>
+                                                 
+                                                <div className="bg-gradient-to-br from-amber-50 to-amber-100 p-4 rounded-xl border border-amber-200">
+                                                     <div className="flex items-center gap-2 mb-2">
+                                                         <DollarSign size={16} className="text-amber-600" />
+                                                         <span className="text-xs font-bold text-amber-700">实际单价</span>
+                                                     </div>
+                                                     <div className="text-2xl font-bold text-amber-900">¥{actualDailyPrice.toFixed(2)}</div>
+                                                     <div className="text-xs text-amber-600 mt-1">元/天/㎡</div>
+                                                 </div>
+                                             </div>
+                                             
+                                             {/* 账单明细表格 */}
+                                             <div>
+                                                 <div className="flex items-center gap-2 mb-3">
+                                                     <Receipt size={18} className="text-blue-600" />
+                                                     <span className="text-sm font-bold text-slate-800">应收款明细预览</span>
+                                                     <span className="text-xs text-slate-500">（合同期内共{bills.length}期）</span>
+                                                 </div>
+                                                 <div className="overflow-x-auto max-h-96 overflow-y-auto border border-slate-200 rounded-lg">
+                                                     <table className="w-full text-xs">
+                                                         <thead className="bg-slate-50 border-b border-slate-200 sticky top-0">
+                                                             <tr>
+                                                                 <th className="px-3 py-2 text-left font-bold text-slate-600">期次</th>
+                                                                 <th className="px-3 py-2 text-left font-bold text-slate-600">收款日期</th>
+                                                                 <th className="px-3 py-2 text-left font-bold text-slate-600">应收金额</th>
+                                                                 <th className="px-3 py-2 text-left font-bold text-slate-600">覆盖周期</th>
+                                                             </tr>
+                                                         </thead>
+                                                         <tbody className="divide-y divide-slate-100">
+                                                     {bills.map((bill, idx) => {
+                                                         // 计算覆盖周期
+                                                         const billDate = bill.date;
+                                                         const cycleMonths = currentTenant.paymentCycle === 'Monthly' ? 1 : 
+                                                                            currentTenant.paymentCycle === 'Quarterly' ? 3 : 
+                                                                            currentTenant.paymentCycle === 'SemiAnnual' ? 6 : 12;
+                                                         
+                                                         // 计算下一个月的开始日期（收款日期后一个月）
+                                                         const coverageStart = new Date(billDate);
+                                                         coverageStart.setMonth(coverageStart.getMonth() + 1);
+                                                         
+                                                         const coverageEnd = new Date(coverageStart);
+                                                         coverageEnd.setMonth(coverageEnd.getMonth() + cycleMonths);
+                                                         coverageEnd.setDate(coverageEnd.getDate() - 1);
+                                                         
+                                                         const formatDate = (d: Date) => {
+                                                             return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+                                                         };
+                                                         
+                                                         return (
+                                                             <tr key={idx} className="hover:bg-slate-50">
+                                                                 <td className="px-3 py-2 text-slate-600">第{idx + 1}期</td>
+                                                                 <td className="px-3 py-2 font-bold text-blue-600">{formatDate(billDate)}</td>
+                                                                 <td className="px-3 py-2 font-bold text-green-600">¥{bill.amount.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}</td>
+                                                                 <td className="px-3 py-2 text-slate-500">
+                                                                     {formatDate(coverageStart)} ~ {formatDate(coverageEnd)}
+                                                                 </td>
+                                                             </tr>
+                                                         );
+                                                     })}
+                                                         </tbody>
+                                                     </table>
+                                                     <p className="text-xs text-slate-500 mt-2">
+                                                         <span className="text-amber-600">ℹ️ 提示：</span>
+                                                         收款日期为当期租金的收取时间，覆盖周期为该笔款项对应的租期范围。
+                                                         {currentTenant.freeRentHandling === 'Defer' && '免租期采用账期顺延模式，收款时间会自动顺延。'}
+                                                         {currentTenant.freeRentHandling === 'Deduct' && '免租期采用当期扣除模式，应收金额会相应减少。'}
+                                                     </p>
+                                                 </div>
+                                             </div>
+                                         </div>
+                                     );
+                                 })()}
+                             </div>
+                         )}
+                    </section>
+
+                    {/* 4. Business Insights & Risk */}
+                    <section className="bg-white p-6 rounded-xl border border-slate-100 shadow-sm space-y-4">
+                        <div className="flex items-center gap-2 text-rose-600 font-bold mb-2"><Briefcase size={18}/> <span>客户背景与风险管理</span></div>
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                            <div className="space-y-4">
+                                <div><label className="block text-sm font-medium mb-1.5 text-slate-600">所属行业</label><input type="text" placeholder="例如：人工智能 / 医疗器械" className="w-full border border-slate-300 p-2.5 rounded-lg text-sm" value={currentTenant.industry || ''} onChange={e => setCurrentTenant({...currentTenant, industry: e.target.value})} /></div>
+                                <div><label className="block text-sm font-medium mb-1.5 text-slate-600">企业成立日期</label><input type="date" className="w-full border border-slate-300 p-2.5 rounded-lg text-sm" value={currentTenant.foundingDate || ''} onChange={e => setCurrentTenant({...currentTenant, foundingDate: e.target.value})} /></div>
+                                <div><label className="block text-sm font-medium mb-1.5 text-slate-600">企业法人</label><input type="text" className="w-full border border-slate-300 p-2.5 rounded-lg text-sm" value={currentTenant.legalRepName || ''} onChange={e => setCurrentTenant({...currentTenant, legalRepName: e.target.value})} /></div>
+                            </div>
+                            <div className="space-y-4">
+                                <div className="flex items-center gap-3 p-4 bg-rose-50 border border-rose-100 rounded-xl">
+                                    <input id="risk_flag" type="checkbox" className="w-5 h-5 text-rose-600 border-rose-300 rounded focus:ring-rose-500" checked={currentTenant.isRisk || false} onChange={e => setCurrentTenant({...currentTenant, isRisk: e.target.checked})} />
+                                    <label htmlFor="risk_flag" className="flex-1 cursor-pointer">
+                                        <div className="font-bold text-rose-700 text-sm">高风险客户监控</div>
+                                        <div className="text-xs text-rose-600/70">勾选后将在看板重点标记，建议加强租金催缴。</div>
+                                    </label>
+                                    <ShieldAlert className="text-rose-500" size={24}/>
+                                </div>
+                                <div><label className="block text-sm font-medium mb-1.5 text-slate-600">特殊要求 / 备注信息</label><textarea className="w-full border border-slate-300 p-2.5 rounded-lg text-sm min-h-[100px]" placeholder="记录任何非标合同条款、装修要求、特殊配套需求等..." value={currentTenant.specialRequirements || ''} onChange={e => setCurrentTenant({...currentTenant, specialRequirements: e.target.value})} /></div>
+                            </div>
+                        </div>
+                    </section>
+                </div>
+
+                <div className="flex justify-between items-center px-8 py-6 border-t border-slate-100 bg-white sticky bottom-0 z-20 rounded-b-xl shadow-lg">
+                    <div>{currentTenant.id && <button onClick={() => { if(window.confirm("确定删除?")) { onUpdateTenants(tenants.filter(t => t.id !== currentTenant.id)); setIsEditing(false); } }} className="text-rose-500 font-bold flex items-center gap-2 px-4 py-2 hover:bg-rose-50 rounded-lg"><Trash2 size={18}/> 删除记录</button>}</div>
+                    <div className="flex gap-3"><button onClick={() => { setIsEditing(false); setRenewingFromId(null); setFormErrors({}); }} className="px-6 py-2.5 text-slate-600 font-bold">取消</button><button onClick={handleSave} className="px-10 py-2.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-bold flex items-center gap-2 shadow-lg"><Save size={18}/> 保存并退出</button></div>
+                </div>
+             </div>
+             
+             {/* 初始化录入弹窗（渲染在合同详情页面内） */}
+             {showInitPaymentModal && (
+                 <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/30 backdrop-blur-sm p-4">
+                    <div className="bg-white p-6 rounded-2xl shadow-xl w-full max-w-md border border-slate-200 animate-in zoom-in-50 duration-200">
+                       <h3 className="font-bold text-lg mb-4 text-slate-800 flex items-center gap-2">
+                           <CreditCard size={20} className="text-green-600" />
+                           初始化录入 - 2026年1月前收款
+                       </h3>
+                       <div className="space-y-4">
+                           <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 text-xs text-blue-700">
+                               <div className="flex items-start gap-2">
+                                   <Info size={14} className="mt-0.5 flex-shrink-0" />
+                                   <div>
+                                       <div className="font-bold mb-1">功能说明：</div>
+                                       <div>用于录入该客户在 <strong>2026年1月之前</strong> 的历史收款数据。请填写截至2025年12月31日的累计已收金额。</div>
+                                   </div>
+                               </div>
+                           </div>
+                           
+                           <div>
+                               <label className="block text-sm font-medium text-slate-700 mb-1">
+                                   累计已收金额 <span className="text-red-500">*</span>
+                               </label>
+                               <input 
+                                   type="number" 
+                                   value={initPaymentData.amount} 
+                                   onChange={e => setInitPaymentData({...initPaymentData, amount: e.target.value})} 
+                                   placeholder="请输入金额"
+                                   className="w-full p-2 border rounded-lg focus:ring-2 focus:ring-green-100 outline-none" 
+                               />
+                           </div>
+                           
+                           <div>
+                               <label className="block text-sm font-medium text-slate-700 mb-1">
+                                   数据截止日期 <span className="text-red-500">*</span>
+                               </label>
+                               <input 
+                                   type="date" 
+                                   value={initPaymentData.date} 
+                                   onChange={e => setInitPaymentData({...initPaymentData, date: e.target.value})} 
+                                   max="2025-12-31"
+                                   className="w-full p-2 border rounded-lg focus:ring-2 focus:ring-green-100 outline-none" 
+                               />
+                               <div className="text-xs text-slate-500 mt-1">必须为 2025-12-31 或之前</div>
+                           </div>
+                           
+                           <div>
+                               <label className="block text-sm font-medium text-slate-700 mb-1">
+                                   备注
+                               </label>
+                               <textarea 
+                                   value={initPaymentData.remarks} 
+                                   onChange={e => setInitPaymentData({...initPaymentData, remarks: e.target.value})} 
+                                   placeholder="可输入备注信息"
+                                   rows={2}
+                                   className="w-full p-2 border rounded-lg focus:ring-2 focus:ring-green-100 outline-none resize-none" 
+                               />
+                           </div>
+                           
+                           <div className="flex justify-end gap-2 mt-6">
+                               <button 
+                                   onClick={() => {
+                                       setShowInitPaymentModal(false);
+                                       setInitPaymentData({ amount: '', date: '', remarks: '2026年1月前历史数据' });
+                                   }} 
+                                   className="px-4 py-2 text-slate-600 hover:bg-slate-100 rounded-lg transition-colors"
+                               >
+                                   取消
+                               </button>
+                               <button 
+                                   onClick={() => {
+                                       // 验证必填字段
+                                       if (!initPaymentData.amount || !initPaymentData.date) {
+                                           alert('请填写完整信息！');
+                                           return;
+                                       }
+                                       
+                                       // 验证日期必须在 2026-01-01 之前
+                                       if (new Date(initPaymentData.date) >= new Date('2026-01-01')) {
+                                           alert('数据截止日期必须为 2025-12-31 或之前！');
+                                           return;
+                                       }
+                                       
+                                       if (onUpdatePayments && currentTenant.id) {
+                                           // 创建新的收款记录
+                                           const newPayment: PaymentRecord = {
+                                               id: `init-${Date.now()}`,
+                                               tenantId: currentTenant.id,
+                                               tenantName: currentTenant.name!,
+                                               amount: parseFloat(initPaymentData.amount),
+                                               type: 'Rent',
+                                               date: initPaymentData.date,
+                                               status: 'Received',
+                                               remarks: initPaymentData.remarks
+                                           };
+                                           
+                                           // 更新 payments 数组
+                                           onUpdatePayments([...payments, newPayment]);
+                                           
+                                           // 关闭弹窗并重置表单
+                                           setShowInitPaymentModal(false);
+                                           setInitPaymentData({ amount: '', date: '', remarks: '2026年1月前历史数据' });
+                                           
+                                           alert('初始化数据录入成功！');
+                                       }
+                                   }} 
+                                   className="px-6 py-2 bg-green-600 text-white rounded-lg font-bold hover:bg-green-700 transition-colors"
+                                   disabled={!onUpdatePayments}
+                               >
+                                   确认录入
+                               </button>
+                           </div>
+                       </div>
+                    </div>
+                 </div>
+             )}
+         </div>
+     )
+  }
+
+  return (
+    <div className="space-y-6">
+      {/* ... keeping Analysis/List/Terminated navigation logic from previous version ... */}
+      <div className="flex justify-between items-center">
+           <h2 className="text-lg md:text-xl font-bold text-slate-800 flex items-center gap-2"><LayoutDashboard size={22} className="text-blue-600"/> 客户合同中心</h2>
+           <div className="flex bg-slate-200/60 p-1 rounded-xl shadow-inner">
+               <button onClick={() => setActiveTab('Analysis')} className={`px-5 py-1.5 rounded-lg text-sm font-bold transition-all ${activeTab === 'Analysis' ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>经营分析</button>
+               <button onClick={() => setActiveTab('List')} className={`px-5 py-1.5 rounded-lg text-sm font-bold transition-all ${activeTab === 'List' ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>在租明细</button>
+               <button onClick={() => setActiveTab('Terminated')} className={`px-5 py-1.5 rounded-lg text-sm font-bold transition-all ${activeTab === 'Terminated' ? 'bg-white text-rose-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>历史退租</button>
+           </div>
+      </div>
+
+      {activeTab === 'Analysis' && (
+        <div className="space-y-6 animate-in fade-in duration-500">
+            {/* Period Selector & Top KPIs */}
+            <div className="flex flex-col lg:flex-row gap-6">
+                <div className="lg:w-1/4 space-y-4">
+                    <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-sm">
+                        <label className="text-xs font-bold text-slate-400 uppercase tracking-widest block mb-3">统计维度选择</label>
+                        <div className="grid grid-cols-3 gap-1 bg-slate-50 p-1 rounded-lg">
+                            {(['Year', 'Quarter', 'Month'] as const).map(p => (
+                                <button key={p} onClick={() => setAnalysisPeriod(p)} className={`py-1.5 rounded-md text-xs font-bold transition-all ${analysisPeriod === p ? 'bg-blue-600 text-white shadow-md' : 'text-slate-500 hover:bg-slate-200'}`}>
+                                    {p === 'Year' ? '本年度' : p === 'Quarter' ? '本季度' : '本月'}
+                                </button>
+                            ))}
+                        </div>
+                    </div>
+                    
+                    <div className="bg-gradient-to-br from-blue-600 to-indigo-700 p-5 rounded-2xl text-white shadow-lg shadow-blue-100">
+                         <div className="flex justify-between items-start mb-4">
+                             <div className="p-2 bg-white/10 rounded-lg"><TrendingUp size={20}/></div>
+                             <span className="text-[10px] font-bold bg-white/20 px-2 py-0.5 rounded-full">NET GROWTH</span>
+                         </div>
+                         <div className="text-xs opacity-80 font-medium">期间净去化面积</div>
+                         <div className="text-3xl font-black mt-1 tabular-nums">{perfData.metrics.netArea > 0 ? '+' : ''}{perfData.metrics.netArea.toLocaleString()} <span className="text-sm font-normal">㎡</span></div>
+                         <div className="mt-4 pt-4 border-t border-white/10 flex justify-between items-center text-[10px]">
+                             <div className="flex items-center gap-1"><ArrowUpRight size={12} className="text-emerald-300"/> 新签 {perfData.metrics.signedArea}㎡</div>
+                             <div className="flex items-center gap-1"><ArrowDownRight size={12} className="text-rose-300"/> 退租 {perfData.metrics.terminatedArea}㎡</div>
+                         </div>
+                    </div>
+                </div>
+
+                <div className="lg:w-3/4 grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    {/* New Signings KPI */}
+                    <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm flex flex-col justify-between group hover:border-emerald-200 transition-colors">
+                        <div className="flex justify-between items-start mb-4">
+                            <div><p className="text-xs font-bold text-slate-400 uppercase tracking-widest">新签业绩 Signings</p><h3 className="text-3xl font-black text-slate-800 mt-1">{perfData.metrics.signedArea.toLocaleString()} <span className="text-sm font-bold text-slate-400">㎡</span></h3></div>
+                            <div className="p-3 bg-emerald-50 text-emerald-600 rounded-xl group-hover:scale-110 transition-transform"><UserPlus size={24}/></div>
+                        </div>
+                        <div className="flex items-center gap-6 mt-4">
+                            <div className="space-y-1">
+                                <div className="text-[10px] font-bold text-slate-400">同比 (YoY)</div>
+                                <div className={`flex items-center gap-1 font-black text-sm ${perfData.yoy.area >= 0 ? 'text-emerald-600' : 'text-rose-500'}`}>
+                                    {perfData.yoy.area >= 0 ? <ArrowUpRight size={14}/> : <ArrowDownRight size={14}/>}
+                                    {Math.abs(perfData.yoy.area).toFixed(1)}%
+                                </div>
+                            </div>
+                            <div className="w-px h-8 bg-slate-100"></div>
+                            <div className="space-y-1">
+                                <div className="text-[10px] font-bold text-slate-400">环比 (MoM)</div>
+                                <div className={`flex items-center gap-1 font-black text-sm ${perfData.mom.area >= 0 ? 'text-emerald-600' : 'text-rose-500'}`}>
+                                    {perfData.mom.area >= 0 ? <ArrowUpRight size={14}/> : <ArrowDownRight size={14}/>}
+                                    {Math.abs(perfData.mom.area).toFixed(1)}%
+                                </div>
+                            </div>
+                            <div className="ml-auto text-right">
+                                <div className="text-[10px] font-bold text-slate-400">成交数</div>
+                                <div className="text-sm font-black text-slate-700">{perfData.metrics.signedCount} <span className="text-[10px] font-normal">家</span></div>
+                            </div>
+                        </div>
+                    </div>
+
+                    {/* Terminations KPI */}
+                    <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm flex flex-col justify-between group hover:border-rose-200 transition-colors">
+                        <div className="flex justify-between items-start mb-4">
+                            <div><p className="text-xs font-bold text-slate-400 uppercase tracking-widest">退租流失 Churn</p><h3 className="text-3xl font-black text-slate-800 mt-1">{perfData.metrics.terminatedArea.toLocaleString()} <span className="text-sm font-bold text-slate-400">㎡</span></h3></div>
+                            <div className="p-3 bg-rose-50 text-rose-600 rounded-xl group-hover:scale-110 transition-transform"><UserMinus size={24}/></div>
+                        </div>
+                        <div className="flex items-center gap-4 mt-4">
+                            <div className="bg-rose-50 px-3 py-2 rounded-xl flex-1 border border-rose-100">
+                                <div className="text-[10px] font-bold text-rose-400 mb-1">提前退租占比</div>
+                                <div className="flex items-end gap-2">
+                                    <span className="text-xl font-black text-rose-700">{perfData.earlyRate}%</span>
+                                    <div className="flex-1 bg-rose-200 h-1.5 rounded-full mb-1.5 overflow-hidden"><div className="bg-rose-600 h-full" style={{width: `${perfData.earlyRate}%`}}></div></div>
+                                </div>
+                            </div>
+                            <div className="text-right">
+                                <div className="text-[10px] font-bold text-slate-400">退租数</div>
+                                <div className="text-sm font-black text-slate-700">{perfData.metrics.terminatedCount} <span className="text-[10px] font-normal">家</span></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            {/* 新增：年度趋势图表 */}
+            {dashboardData && (
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                    <OccupancyTrendChart data={dashboardData} period="年度" />
+                    <UnitPriceTrendChart data={dashboardData} period="年度" />
+                </div>
+            )}
+
+            {/* Trends Chart */}
+            <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm">
+                <div className="flex justify-between items-center mb-6">
+                    <div className="flex items-center gap-2">
+                        <div className="p-2 bg-blue-50 text-blue-600 rounded-lg"><BarChart3 size={20}/></div>
+                        <div><h3 className="font-bold text-slate-800">租赁面积变动趋势 (近12个月)</h3><p className="text-xs text-slate-500 mt-0.5">展示各月新签面积与退租面积的博弈及净增长</p></div>
+                    </div>
+                </div>
+                <div className="h-[320px] w-full">
+                    <ResponsiveContainer width="100%" height="100%">
+                        <ComposedChart data={perfData.trend} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
+                            <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+                            <XAxis dataKey="month" tick={{fill: '#94a3b8', fontSize: 10}} axisLine={false} tickLine={false} dy={10} />
+                            <YAxis tick={{fill: '#94a3b8', fontSize: 10}} axisLine={false} tickLine={false} unit="㎡" />
+                            <Tooltip contentStyle={{ borderRadius: '12px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }} />
+                            <Legend verticalAlign="top" align="right" height={36} iconType="circle" />
+                            <Bar dataKey="newArea" name="新租面积" fill="#10b981" radius={[4, 4, 0, 0]} barSize={24} />
+                            <Bar dataKey="lostArea" name="退租面积" fill="#f43f5e" radius={[4, 4, 0, 0]} barSize={24} />
+                            <Line type="monotone" dataKey="netArea" name="净去化" stroke="#6366f1" strokeWidth={3} dot={{ r: 4, fill: '#6366f1' }} />
+                        </ComposedChart>
+                    </ResponsiveContainer>
+                </div>
+            </div>
+
+            {/* Churn Reasons Distribution */}
+            <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm">
+                <div className="flex items-center gap-2 mb-6">
+                    <div className="p-2 bg-rose-50 text-rose-600 rounded-lg"><PieChart size={20}/></div>
+                    <h3 className="font-bold text-slate-800">退租分析</h3>
+                </div>
+                
+                {/* 退租数量统计卡片 */}
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">
+                    <div className="bg-gradient-to-br from-slate-50 to-slate-100 p-4 rounded-xl border border-slate-200">
+                        <div className="text-xs text-slate-500 mb-1">本年退租</div>
+                        <div className="text-2xl font-bold text-slate-800">{perfData.terminationStats.year}</div>
+                        <div className="text-xs text-slate-500 mt-1">家企业</div>
+                    </div>
+                    
+                    <div className="bg-gradient-to-br from-amber-50 to-amber-100 p-4 rounded-xl border border-amber-200">
+                        <div className="text-xs text-amber-600 mb-1">本季度退租</div>
+                        <div className="text-2xl font-bold text-amber-800">{perfData.terminationStats.quarter}</div>
+                        <div className="text-xs text-amber-600 mt-1">家企业</div>
+                    </div>
+                    
+                    <div className="bg-gradient-to-br from-rose-50 to-rose-100 p-4 rounded-xl border border-rose-200">
+                        <div className="text-xs text-rose-600 mb-1">本月退租</div>
+                        <div className="text-2xl font-bold text-rose-800">{perfData.terminationStats.month}</div>
+                        <div className="text-xs text-rose-600 mt-1">家企业</div>
+                    </div>
+                    
+                    <div className="bg-gradient-to-br from-red-50 to-red-100 p-4 rounded-xl border border-red-200">
+                        <div className="text-xs text-red-600 mb-1">提前退租率</div>
+                        <div className="text-2xl font-bold text-red-800">{perfData.earlyRate}%</div>
+                        <div className="text-xs text-red-600 mt-1">{perfData.terminationStats.earlyCount}/{perfData.terminationStats.all} 家</div>
+                    </div>
+                </div>
+                
+                {/* 退租原因分布图表 */}
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                    {/* 退租类型饼图 */}
+                    <div>
+                        <h4 className="text-sm font-bold text-slate-700 mb-3">退租类型分布</h4>
+                        <div className="h-[200px] flex items-center">
+                            {perfData.terminationTypeData.length > 0 ? (
+                                <>
+                                    <div className="w-1/2 h-full">
+                                        <ResponsiveContainer width="100%" height="100%">
+                                            <RechartsPieChart>
+                                                <Pie 
+                                                    data={perfData.terminationTypeData} 
+                                                    cx="50%" 
+                                                    cy="50%" 
+                                                    innerRadius={50} 
+                                                    outerRadius={70} 
+                                                    paddingAngle={5} 
+                                                    dataKey="value"
+                                                >
+                                                    <Cell fill="#10b981" />
+                                                    <Cell fill="#ef4444" />
+                                                </Pie>
+                                                <Tooltip />
+                                            </RechartsPieChart>
+                                        </ResponsiveContainer>
+                                    </div>
+                                    <div className="w-1/2 space-y-3">
+                                        {perfData.terminationTypeData.map((item, i) => (
+                                            <div key={i} className="flex items-center justify-between text-sm">
+                                                <div className="flex items-center gap-2">
+                                                    <div className="w-3 h-3 rounded-full" style={{backgroundColor: i === 0 ? '#10b981' : '#ef4444'}}></div>
+                                                    <span className="text-slate-700">{item.name}</span>
+                                                </div>
+                                                <span className="font-bold text-slate-800">{item.value} 家</span>
+                                            </div>
+                                        ))}
+                                    </div>
+                                </>
+                            ) : (
+                                <p className="text-center text-slate-400 py-10 w-full">暂无退租记录</p>
+                            )}
+                        </div>
+                    </div>
+                    
+                    {/* 退租原因排行 */}
+                    <div>
+                        <h4 className="text-sm font-bold text-slate-700 mb-3">退租原因TOP5</h4>
+                        <div className="space-y-2">
+                            {perfData.reasons.slice(0, 5).map((r, i) => {
+                                const percentage = perfData.terminationStats.all > 0 
+                                    ? ((r.value / perfData.terminationStats.all) * 100).toFixed(1)
+                                    : 0;
+                                return (
+                                    <div key={i} className="relative">
+                                        <div className="flex items-center justify-between text-xs mb-1">
+                                            <div className="flex items-center gap-2">
+                                                <div className="w-5 h-5 rounded flex items-center justify-center bg-slate-100 text-slate-600 font-bold">
+                                                    {i + 1}
+                                                </div>
+                                                <span className="text-slate-700 font-medium truncate max-w-[120px]">{r.name}</span>
+                                            </div>
+                                            <div className="flex items-center gap-2">
+                                                <span className="font-bold text-slate-800">{r.value} 家</span>
+                                                <span className="text-slate-500">({percentage}%)</span>
+                                            </div>
+                                        </div>
+                                        <div className="w-full bg-slate-100 rounded-full h-2">
+                                            <div 
+                                                className="bg-gradient-to-r from-rose-400 to-rose-600 h-2 rounded-full transition-all"
+                                                style={{width: `${percentage}%`}}
+                                            ></div>
+                                        </div>
+                                    </div>
+                                );
+                            })}
+                            {perfData.reasons.length === 0 && (
+                                <p className="text-center text-slate-400 py-10">暂无退租记录</p>
+                            )}
+                            {perfData.reasons.length > 5 && (
+                                <div className="text-xs text-slate-400 text-center pt-2">
+                                    还有 {perfData.reasons.length - 5} 个其他原因...
+                                </div>
+                            )}
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+      )}
+
+      {(activeTab === 'List' || activeTab === 'Terminated') && (
+          <>
+            <div className="flex flex-col md:flex-row gap-3 mb-4 items-center">
+                <div className="flex gap-2 w-full md:w-auto">
+                    <div className="flex items-center gap-2 bg-white border border-slate-200 rounded-lg px-3 py-2 text-sm"><Filter size={16} className="text-slate-400" /><select value={filterBuilding} onChange={e => setFilterBuilding(e.target.value)} className="bg-transparent focus:outline-none text-slate-600 font-medium"><option value="all">所有楼宇</option>{buildings.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}</select></div>
+                    {activeTab === 'List' && (
+                        <div className="flex items-center gap-2 bg-white border border-slate-200 rounded-lg px-3 py-2 text-sm"><select value={filterStatus} onChange={e => setFilterStatus(e.target.value)} className="bg-transparent focus:outline-none text-slate-600 font-medium"><option value="all">合同状态</option><option value={ContractStatus.Active}>履约中</option><option value={ContractStatus.Expiring}>即将到期</option><option value="risk">⚠️ 高风险</option></select></div>
+                    )}
+                </div>
+                <div className="flex gap-2 w-full md:w-auto items-center md:ml-auto">
+                    <div className="relative flex-1 md:w-64"><Search className="absolute left-3 top-2.5 text-slate-400 w-4 h-4" /><input type="text" placeholder="搜索企业名称..." value={searchTerm} onChange={e => setSearchTerm(e.target.value)} className="w-full pl-9 pr-4 py-2 bg-white border border-slate-200 rounded-lg text-sm focus:ring-2 focus:ring-blue-100 outline-none"/></div>
+                    {activeTab === 'List' && (
+                        <button onClick={() => { setCurrentTenant({ signingDate: new Date().toISOString().split('T')[0], status: ContractStatus.Active, depositStatus: DepositStatus.Unpaid, rentFreePeriods: [], paymentCycle: 'Quarterly', paymentCycleMonths: 3, firstPaymentMonths: 3 }); setIsEditing(true); }} className="px-5 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 shadow-md font-bold flex items-center gap-2 transition-all"><Plus size={18} /><span>新签客户</span></button>
+                    )}
+                </div>
+            </div>
+
+            <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
+                <div className="hidden md:block overflow-x-auto">
+                    <table className="w-full text-sm text-left min-w-[1000px]">
+                    <thead className="bg-slate-50 text-slate-500 font-bold border-b border-slate-200">
+                        <tr><th className="px-6 py-4">客户名称</th><th className="px-6 py-4">租赁位置</th><th className="px-6 py-4">{activeTab === 'Terminated' ? '退租日期' : '起租日期'}</th><th className="px-6 py-4">合同期 & 单价</th><th className="px-6 py-4">状态</th><th className="px-6 py-4 text-right">操作</th></tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                        {sortedYears.map(group => (
+                            <React.Fragment key={group.year}>
+                                <tr className={`${activeTab === 'Terminated' ? 'bg-rose-50/30' : 'bg-blue-50/30'} border-y border-slate-100`}><td colSpan={6} className={`px-6 py-2 font-bold text-xs ${activeTab === 'Terminated' ? 'text-rose-800' : 'text-blue-800'}`}>{group.year}年度{activeTab === 'Terminated' ? '退租' : '起租'} ({group.tenants.length}家)</td></tr>
+                                {group.tenants.map(t => {
+                                    const building = buildings.find(b => b.id === t.buildingId);
+                                    const unitNames = t.unitIds.map(uid => building?.units.find(u => u.id === uid)?.name || uid).join(', ');
+                                    const displayPrice = t.unitPrice || (t.totalArea ? (t.monthlyRent / t.totalArea * 12 / 365) : 0);
+                                    return (
+                                        <tr key={t.id} className="hover:bg-slate-50 transition-colors">
+                                            <td className="px-6 py-4">
+                                                <div className="flex items-center gap-2">
+                                                    <span className="font-bold text-slate-800">{t.name}</span>
+                                                    {t.isRisk && <ShieldAlert size={14} className="text-red-500" />}
+                                                    {isInfoIncomplete(t) && <span className="text-[10px] bg-amber-50 text-amber-600 px-1.5 py-0.5 rounded border border-amber-100 font-medium">待完善</span>}
+                                                    {/* 免租期处理方式标识 */}
+                                                    {t.rentFreePeriods && t.rentFreePeriods.length > 0 && t.freeRentHandling === 'Defer' && (
+                                                        <span className="text-[10px] bg-indigo-50 text-indigo-700 px-2 py-0.5 rounded-md border border-indigo-200 font-bold">
+                                                            账期顺延
+                                                        </span>
+                                                    )}
+                                                    {t.rentFreePeriods && t.rentFreePeriods.length > 0 && t.freeRentHandling === 'Deduct' && (
+                                                        <span className="text-[10px] bg-green-50 text-green-700 px-2 py-0.5 rounded-md border border-green-200 font-bold">
+                                                            当期扣除
+                                                        </span>
+                                                    )}
+                                                </div>
+                                            </td>
+                                            <td className="px-6 py-4 text-slate-600">{building?.name} <span className="text-xs bg-slate-100 px-1 rounded font-medium">{unitNames}</span></td>
+                                            <td className="px-6 py-4">{activeTab === 'Terminated' ? <div className="text-rose-600 font-bold">{t.terminationDate || t.leaseEnd}</div> : <div className="text-slate-700 font-bold">{t.leaseStart}</div>}</td>
+                                            <td className="px-6 py-4"><div className="text-slate-500 text-xs">{t.leaseStart} ~ {t.leaseEnd}</div><div className="text-blue-600 font-bold">¥{displayPrice.toFixed(2)}</div></td>
+                                            <td className="px-6 py-4"><span className={`px-2 py-1 rounded-md text-[10px] font-bold uppercase ${t.status === ContractStatus.Active ? 'bg-blue-100 text-blue-700' : t.status === ContractStatus.Terminated ? 'bg-rose-100 text-rose-700' : 'bg-amber-100 text-amber-700'}`}>{t.status === ContractStatus.Terminated && t.terminationType === 'Early' ? '提前退租' : t.status === ContractStatus.Active ? '履约中' : t.status}</span></td>
+                                            <td className="px-6 py-4 text-right space-x-3"><button onClick={() => handleEdit(t)} className="text-blue-600 font-bold text-xs hover:underline">详情</button>{activeTab === 'List' && (t.status === ContractStatus.Expiring || t.status === ContractStatus.Active) && <button onClick={() => handleRenewal(t)} className="text-emerald-600 font-bold text-xs hover:underline">续签</button>}{activeTab === 'List' && t.status !== ContractStatus.Terminated && <button onClick={() => initiateTermination(t.id)} className="text-amber-600 font-bold text-xs hover:underline">退租</button>}</td>
+                                        </tr>
+                                    );
+                                })}
+                            </React.Fragment>
+                        ))}
+                    </tbody>
+                    </table>
+                </div>
+            </div>
+          </>
+      )}
+
+      {showTerminateModal && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm p-4">
+             <div className="bg-white p-6 rounded-2xl shadow-xl w-full max-w-sm border border-slate-200 animate-in zoom-in-50 duration-200">
+                <h3 className="font-bold text-lg mb-4 text-slate-800">办理退租</h3>
+                <div className="space-y-4">
+                    <div><label className="block text-sm text-slate-600 mb-1">退租日期</label><input type="date" value={terminateData.date} onChange={e => setTerminateData({...terminateData, date: e.target.value})} className="w-full p-2 border rounded-lg focus:ring-2 focus:ring-amber-100 outline-none" /></div>
+                    <div><label className="block text-sm text-slate-600 mb-1">退租类型</label><select value={terminateData.type} onChange={e => setTerminateData({...terminateData, type: e.target.value as any})} className="w-full p-2 border rounded-lg focus:ring-2 focus:ring-amber-100 outline-none"><option value="Normal">正常到期退租</option><option value="Early">提前违约退租</option></select></div>
+                    <div><label className="block text-sm text-slate-600 mb-1">退租原因</label><select value={terminateData.reason} onChange={e => setTerminateData({...terminateData, reason: e.target.value})} className="w-full p-2 border rounded-lg focus:ring-2 focus:ring-amber-100 outline-none"><option value="">请选择原因...</option><option value="合同到期不续约">合同到期不续约</option><option value="由于规模扩张搬迁">由于规模扩张搬迁</option><option value="业务收缩搬迁">业务收缩搬迁</option><option value="经营困难结业">经营困难结业</option><option value="物业环境/服务问题">物业环境/服务问题</option><option value="其他原因">其他原因</option></select></div>
+                    <div className="flex justify-end gap-2 mt-6"><button onClick={() => setShowTerminateModal(false)} className="px-4 py-2 text-slate-600">取消</button><button onClick={() => { if (terminateId) { const updatedTenants = tenants.map(t => t.id === terminateId ? { ...t, status: ContractStatus.Terminated, terminationDate: terminateData.date, terminationType: terminateData.type, terminationReason: terminateData.reason } : t); onUpdateTenants(updatedTenants); setShowTerminateModal(false); setTerminateId(null); }}} className="px-6 py-2 bg-amber-600 text-white rounded-lg font-bold">确认退租</button></div>
+                </div>
+             </div>
+          </div>
+      )}
+    </div>
+  );
+};
