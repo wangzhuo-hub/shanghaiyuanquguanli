@@ -1,53 +1,172 @@
 
-import React from 'react';
-import { DashboardData } from '../types';
+import React, { useMemo } from 'react';
+import { BillingDetail, DashboardData } from '../types';
 import { CheckCircle2, AlertCircle, Building2, Wallet, Calendar, ChevronLeft, ChevronRight } from 'lucide-react';
+import { buildReceivableSections, getRentCollectionRemark, deferReceivableShellClass, receivableBudgetDisplay } from '../services/receivableListHelpers';
+
+const WRITEOFF_LABELS = {
+  pending: '待核销',
+  settled: '已核销和收款',
+  deferred: '已缓缴',
+} as const;
+
+function writeOffBadgeClass(label: string) {
+  if (label === WRITEOFF_LABELS.pending) return 'text-amber-700 bg-amber-50 border-amber-100';
+  if (label === WRITEOFF_LABELS.settled) return 'text-emerald-700 bg-emerald-50 border-emerald-100';
+  if (label === WRITEOFF_LABELS.deferred) return 'text-indigo-800 bg-indigo-50 border-indigo-100';
+  return 'text-slate-600 bg-slate-50 border-slate-100';
+}
 
 interface BillingTableProps {
     data: DashboardData;
     selectedMonth: string;
     onMonthChange: (val: string) => void;
+    /** 按租户 + 当前账期保存跟进备注 */
+    onUpdateRentRemark?: (tenantId: string, periodYYYYMM: string, remark: string) => void;
 }
 
 // Mobile Card Component
-const BillingCard: React.FC<{ item: any, building: any, unitNames: string, isPaid: boolean, isPartial: boolean }> = ({ item, building, unitNames, isPaid, isPartial }) => (
-    <div className="bg-white p-4 border-b border-slate-100 last:border-0">
+const BillingCard: React.FC<{
+    item: any;
+    building: any;
+    unitNames: string;
+    writeOffLabel: string;
+    remark: string;
+    onRemarkChange: (text: string) => void;
+    remarkDisabled?: boolean;
+}> = ({ item, building, unitNames, writeOffLabel, remark, onRemarkChange, remarkDisabled }) => {
+    const deferShell = deferReceivableShellClass(item);
+    const hasDeferOut = !!(item.deferredToPeriod && (item.deferredAmount ?? 0) > 0);
+    const hasDeferIn = !!(item.deferredInAmount && item.deferredInAmount > 0);
+    return (
+    <div className={`bg-white p-4 border-b border-slate-100 last:border-0 ${deferShell}`}>
         <div className="flex justify-between items-start mb-2">
-            <div className="flex items-center gap-2 font-medium text-slate-800">
-                <span className="w-6 h-6 rounded-full bg-slate-100 text-slate-500 flex items-center justify-center text-xs font-bold">
-                    {item.tenantName.substring(0,1)}
-                </span>
-                {item.tenantName}
+            <div className="font-medium text-slate-800">
+                <div className="flex items-center gap-2">
+                    <span className="w-6 h-6 rounded-full bg-slate-100 text-slate-500 flex items-center justify-center text-xs font-bold shrink-0">
+                        {item.tenantName.substring(0,1)}
+                    </span>
+                    <span>{item.tenantName}</span>
+                </div>
+                {hasDeferOut && (
+                    <div className="mt-1.5 ml-8 text-[10px] font-semibold text-orange-800 leading-snug">缓出 → {item.deferredToPeriod}（¥{(item.deferredAmount ?? 0).toLocaleString()}）</div>
+                )}
+                {hasDeferIn && (
+                    <div className="mt-1 ml-8 text-[10px] font-semibold text-sky-800 leading-snug">缓入 ← {item.deferredInFromSummary}（¥{(item.deferredInAmount ?? 0).toLocaleString()}）</div>
+                )}
             </div>
-            {isPaid ? (
-                <div className="text-green-600 text-xs font-medium bg-green-50 px-2 py-0.5 rounded flex items-center gap-1">
-                    <CheckCircle2 size={12} /> 已收
-                </div>
-            ) : (
-                <div className="text-amber-600 text-xs font-medium bg-amber-50 px-2 py-0.5 rounded flex items-center gap-1">
-                    <AlertCircle size={12} /> {isPartial ? '部分' : '待缴'}
-                </div>
-            )}
+            <div className={`text-xs font-medium px-2 py-0.5 rounded border flex items-center gap-1 ${writeOffBadgeClass(writeOffLabel)}`}>
+                {writeOffLabel === WRITEOFF_LABELS.settled ? <CheckCircle2 size={12} /> : <AlertCircle size={12} />}
+                {writeOffLabel}
+            </div>
         </div>
         <div className="text-xs text-slate-500 mb-2">
             {building?.name} {unitNames}
         </div>
         <div className="flex justify-between items-center text-sm border-t border-slate-50 pt-2 mt-1">
             <div className="text-slate-500">
-                应收: <span className="font-semibold text-slate-700">¥{item.amountDue.toLocaleString()}</span>
+                应收: <span className="font-semibold text-slate-700">¥{receivableBudgetDisplay(item).toLocaleString()}</span>
+                {hasDeferOut && (item.amountDue ?? 0) < 0.005 && (
+                    <span className="block text-[10px] text-slate-400 font-normal mt-0.5">原账面应收已全部缓出</span>
+                )}
             </div>
-            <div className={isPaid ? 'text-green-600' : 'text-blue-600'}>
+            <div className={writeOffLabel === WRITEOFF_LABELS.settled ? 'text-green-600' : 'text-blue-600'}>
                 实收: <span className="font-bold">¥{item.amountPaid.toLocaleString()}</span>
             </div>
         </div>
+        <div className="mt-2">
+            <label className="text-[10px] text-slate-400 font-medium">备注</label>
+            <textarea
+                className="mt-0.5 w-full min-h-[52px] text-xs border border-slate-200 rounded-lg p-2 text-slate-700 resize-y"
+                placeholder="预期收款日、沟通情况等"
+                value={remark}
+                onChange={(e) => onRemarkChange(e.target.value)}
+                disabled={remarkDisabled}
+            />
+        </div>
     </div>
-);
+    );
+};
 
-export const BillingTable: React.FC<BillingTableProps> = ({ data, selectedMonth, onMonthChange }) => {
+export const BillingTable: React.FC<BillingTableProps> = ({ data, selectedMonth, onMonthChange, onUpdateRentRemark }) => {
   const billingList = data.currentMonthBilling || [];
 
-  const totalDue = billingList.reduce((acc, curr) => acc + curr.amountDue, 0);
+  const receivableSections = useMemo(
+      () => buildReceivableSections(billingList, selectedMonth, data.payments || [], data.tenants || []),
+      [billingList, selectedMonth, data.payments, data.tenants]
+  );
+
+  const totalDue = billingList.reduce((acc, curr) => acc + receivableBudgetDisplay(curr), 0);
   const totalPaid = billingList.reduce((acc, curr) => acc + curr.amountPaid, 0);
+
+  const renderBillingDetailRow = (item: BillingDetail, writeOffLabel: string, rowKey: string) => {
+      const building = data.buildings.find(b => b.units.some(u => item.unitIds.includes(u.id)));
+      const unitNames = item.unitIds.map(uid => {
+          const unit = building?.units.find(u => u.id === uid);
+          return unit ? unit.name : uid;
+      }).join(', ');
+      const remark = getRentCollectionRemark(data.billingPeriodNotes, item.tenantId, selectedMonth);
+      const paidClass =
+          writeOffLabel === WRITEOFF_LABELS.settled
+              ? 'text-green-600 font-medium'
+              : writeOffLabel === WRITEOFF_LABELS.deferred
+                ? 'text-indigo-700 font-medium'
+                : 'text-amber-600 font-medium';
+      const deferShell = deferReceivableShellClass(item);
+      const hasDeferOut = !!(item.deferredToPeriod && (item.deferredAmount ?? 0) > 0);
+      const hasDeferIn = !!(item.deferredInAmount && item.deferredInAmount > 0);
+      return (
+          <tr key={rowKey} className={`hover:bg-slate-50 transition-colors group ${deferShell}`}>
+              <td className="px-6 py-4 text-slate-800">
+                  <div className="flex items-center gap-2 font-medium">
+                      <span className="w-8 h-8 rounded-full bg-slate-100 text-slate-500 flex items-center justify-center text-xs font-bold shrink-0">
+                          {item.tenantName.substring(0, 1)}
+                      </span>
+                      <div>
+                          <div>{item.tenantName}</div>
+                          {hasDeferOut && (
+                              <div className="mt-0.5 text-[10px] font-semibold text-orange-800">缓出 → {item.deferredToPeriod}（¥{(item.deferredAmount ?? 0).toLocaleString()}）</div>
+                          )}
+                          {hasDeferIn && (
+                              <div className="mt-0.5 text-[10px] font-semibold text-sky-800">缓入 ← {item.deferredInFromSummary}（¥{(item.deferredInAmount ?? 0).toLocaleString()}）</div>
+                          )}
+                      </div>
+                  </div>
+              </td>
+              <td className="px-6 py-4 text-slate-600">
+                  {building?.name} <span className="text-slate-400 ml-1">{unitNames}</span>
+              </td>
+              <td className="px-6 py-4 font-semibold text-slate-700 align-top">
+                  <div>¥{receivableBudgetDisplay(item).toLocaleString()}</div>
+                  {hasDeferOut && (item.amountDue ?? 0) < 0.005 && (
+                      <div className="text-[10px] text-slate-400 font-normal mt-0.5">原账面应收已全部缓出</div>
+                  )}
+              </td>
+              <td className="px-6 py-4">
+                  <span className={paidClass}>¥{item.amountPaid.toLocaleString()}</span>
+              </td>
+              <td className="px-6 py-4">
+                  <div className={`flex items-center gap-1.5 font-medium px-2 py-1 rounded-md w-fit border ${writeOffBadgeClass(writeOffLabel)}`}>
+                      {writeOffLabel === WRITEOFF_LABELS.settled ? (
+                          <CheckCircle2 size={16} className="shrink-0" />
+                      ) : (
+                          <AlertCircle size={16} className="shrink-0" />
+                      )}
+                      <span>{writeOffLabel}</span>
+                  </div>
+              </td>
+              <td className="px-6 py-3 align-top max-w-[240px]">
+                  <textarea
+                      className="w-full min-h-[52px] text-xs border border-slate-200 rounded-lg p-2 text-slate-700 resize-y"
+                      placeholder="预期收款日、沟通情况等"
+                      value={remark}
+                      onChange={(e) => onUpdateRentRemark?.(item.tenantId, selectedMonth, e.target.value)}
+                      disabled={!onUpdateRentRemark}
+                  />
+              </td>
+          </tr>
+      );
+  };
 
   const handlePrevMonth = () => {
       if (!selectedMonth) return;
@@ -139,82 +258,129 @@ export const BillingTable: React.FC<BillingTableProps> = ({ data, selectedMonth,
                     <th className="px-6 py-4">租赁房号</th>
                     <th className="px-6 py-4">应收租金</th>
                     <th className="px-6 py-4">实收租金</th>
-                    <th className="px-6 py-4">缴纳状态</th>
+                    <th className="px-6 py-4">应收核销情况</th>
+                    <th className="px-6 py-4 min-w-[200px]">备注</th>
                     </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
-                    {billingList.map((item, index) => {
-                        const building = data.buildings.find(b => b.units.some(u => item.unitIds.includes(u.id)));
-                        const unitNames = item.unitIds.map(uid => {
-                            const unit = building?.units.find(u => u.id === uid);
-                            return unit ? unit.name : uid;
-                        }).join(', ');
-                        
-                        const isPaid = item.status === 'Paid';
-                        const isPartial = item.status === 'Partial';
-
-                        return (
-                        <tr key={`${item.tenantId}-${index}`} className="hover:bg-slate-50 transition-colors group">
-                            <td className="px-6 py-4 font-medium text-slate-800 flex items-center gap-2">
-                            <span className="w-8 h-8 rounded-full bg-slate-100 text-slate-500 flex items-center justify-center text-xs font-bold">
-                                {item.tenantName.substring(0,1)}
-                            </span>
-                            {item.tenantName}
-                            </td>
-                            <td className="px-6 py-4 text-slate-600">
-                            {building?.name} <span className="text-slate-400 ml-1">{unitNames}</span>
-                            </td>
-                            <td className="px-6 py-4 font-semibold text-slate-700">
-                                ¥{item.amountDue.toLocaleString()}
-                            </td>
-                            <td className="px-6 py-4">
-                                <span className={isPaid ? 'text-green-600 font-medium' : isPartial ? 'text-amber-600 font-medium' : 'text-slate-400'}>
-                                    ¥{item.amountPaid.toLocaleString()}
-                                </span>
-                            </td>
-                            <td className="px-6 py-4">
-                                {isPaid ? (
-                                    <div className="flex items-center gap-1.5 text-green-600 font-medium bg-green-50 px-2 py-1 rounded-md w-fit">
-                                        <CheckCircle2 size={16} className="fill-green-100 stroke-green-600" />
-                                        <span>已到账</span>
-                                    </div>
-                                ) : (
-                                    <div className="flex items-center gap-1.5 text-amber-600 font-medium bg-amber-50 px-2 py-1 rounded-md w-fit">
-                                        <AlertCircle size={16} />
-                                        <span>{isPartial ? '部分缴纳' : '待缴纳'}</span>
-                                    </div>
-                                )}
-                            </td>
-                        </tr>
-                        );
-                    })}
+                    {receivableSections.unsettled.length > 0 && (
+                        <>
+                            <tr className="bg-amber-50/60">
+                                <td colSpan={6} className="px-6 py-2 text-xs font-bold text-amber-900/90 border-t border-amber-100/80">
+                                    {WRITEOFF_LABELS.pending}
+                                </td>
+                            </tr>
+                            {receivableSections.unsettled.map(({ item, i }) =>
+                                renderBillingDetailRow(item, WRITEOFF_LABELS.pending, `${item.tenantId}-u-${i}`)
+                            )}
+                        </>
+                    )}
+                    {receivableSections.deferred.length > 0 && (
+                        <>
+                            <tr className="bg-indigo-50/60">
+                                <td colSpan={6} className="px-6 py-2 text-xs font-bold text-indigo-900/90 border-t border-indigo-100/80">
+                                    {WRITEOFF_LABELS.deferred}（原账期挂账已调至其他月份）
+                                </td>
+                            </tr>
+                            {receivableSections.deferred.map(({ item, i }) =>
+                                renderBillingDetailRow(item, WRITEOFF_LABELS.deferred, `${item.tenantId}-d-${i}`)
+                            )}
+                        </>
+                    )}
+                    {(receivableSections.settledThisMonth.length + receivableSections.prepaid.length) > 0 && (
+                        <>
+                            <tr className="bg-emerald-50/50">
+                                <td colSpan={6} className="px-6 py-2 text-xs font-bold text-emerald-900/90 border-t border-emerald-100/80">
+                                    {WRITEOFF_LABELS.settled}
+                                </td>
+                            </tr>
+                            {receivableSections.settledThisMonth.map(({ item, i }) =>
+                                renderBillingDetailRow(item, WRITEOFF_LABELS.settled, `${item.tenantId}-s-${i}`)
+                            )}
+                            {receivableSections.prepaid.map(({ item, i }) =>
+                                renderBillingDetailRow(item, WRITEOFF_LABELS.settled, `${item.tenantId}-p-${i}`)
+                            )}
+                        </>
+                    )}
                 </tbody>
                 </table>
             </div>
 
             {/* Mobile View */}
             <div className="md:hidden">
-                {billingList.map((item, index) => {
-                    const building = data.buildings.find(b => b.units.some(u => item.unitIds.includes(u.id)));
-                    const unitNames = item.unitIds.map(uid => {
-                        const unit = building?.units.find(u => u.id === uid);
-                        return unit ? unit.name : uid;
-                    }).join(', ');
-                    
-                    const isPaid = item.status === 'Paid';
-                    const isPartial = item.status === 'Partial';
-
-                    return (
-                        <BillingCard 
-                            key={`${item.tenantId}-${index}`}
-                            item={item}
-                            building={building}
-                            unitNames={unitNames}
-                            isPaid={isPaid}
-                            isPartial={isPartial}
-                        />
-                    );
-                })}
+                {receivableSections.unsettled.length > 0 && (
+                    <>
+                        <div className="px-3 py-2 text-xs font-bold bg-amber-50/60 text-amber-900 border-b border-amber-100">{WRITEOFF_LABELS.pending}</div>
+                        {receivableSections.unsettled.map(({ item, i }) => {
+                            const building = data.buildings.find(b => b.units.some(u => item.unitIds.includes(u.id)));
+                            const unitNames = item.unitIds.map(uid => {
+                                const unit = building?.units.find(u => u.id === uid);
+                                return unit ? unit.name : uid;
+                            }).join(', ');
+                            return (
+                                <BillingCard
+                                    key={`${item.tenantId}-u-${i}`}
+                                    item={item}
+                                    building={building}
+                                    unitNames={unitNames}
+                                    writeOffLabel={WRITEOFF_LABELS.pending}
+                                    remark={getRentCollectionRemark(data.billingPeriodNotes, item.tenantId, selectedMonth)}
+                                    onRemarkChange={(text) => onUpdateRentRemark?.(item.tenantId, selectedMonth, text)}
+                                    remarkDisabled={!onUpdateRentRemark}
+                                />
+                            );
+                        })}
+                    </>
+                )}
+                {receivableSections.deferred.length > 0 && (
+                    <>
+                        <div className="px-3 py-2 text-xs font-bold bg-indigo-50/70 text-indigo-900 border-b border-indigo-100">{WRITEOFF_LABELS.deferred}（原账期已调至他月）</div>
+                        {receivableSections.deferred.map(({ item, i }) => {
+                            const building = data.buildings.find(b => b.units.some(u => item.unitIds.includes(u.id)));
+                            const unitNames = item.unitIds.map(uid => {
+                                const unit = building?.units.find(u => u.id === uid);
+                                return unit ? unit.name : uid;
+                            }).join(', ');
+                            return (
+                                <BillingCard
+                                    key={`${item.tenantId}-d-${i}`}
+                                    item={item}
+                                    building={building}
+                                    unitNames={unitNames}
+                                    writeOffLabel={WRITEOFF_LABELS.deferred}
+                                    remark={getRentCollectionRemark(data.billingPeriodNotes, item.tenantId, selectedMonth)}
+                                    onRemarkChange={(text) => onUpdateRentRemark?.(item.tenantId, selectedMonth, text)}
+                                    remarkDisabled={!onUpdateRentRemark}
+                                />
+                            );
+                        })}
+                    </>
+                )}
+                {(receivableSections.settledThisMonth.length + receivableSections.prepaid.length) > 0 && (
+                    <>
+                        <div className="px-3 py-2 text-xs font-bold bg-emerald-50/50 text-emerald-900 border-b border-emerald-100">{WRITEOFF_LABELS.settled}</div>
+                        {[...receivableSections.settledThisMonth, ...receivableSections.prepaid].map((entry, idx) => {
+                            const { item } = entry;
+                            const building = data.buildings.find(b => b.units.some(u => item.unitIds.includes(u.id)));
+                            const unitNames = item.unitIds.map(uid => {
+                                const unit = building?.units.find(u => u.id === uid);
+                                return unit ? unit.name : uid;
+                            }).join(', ');
+                            return (
+                                <BillingCard
+                                    key={`${item.tenantId}-sp-${idx}`}
+                                    item={item}
+                                    building={building}
+                                    unitNames={unitNames}
+                                    writeOffLabel={WRITEOFF_LABELS.settled}
+                                    remark={getRentCollectionRemark(data.billingPeriodNotes, item.tenantId, selectedMonth)}
+                                    onRemarkChange={(text) => onUpdateRentRemark?.(item.tenantId, selectedMonth, text)}
+                                    remarkDisabled={!onUpdateRentRemark}
+                                />
+                            );
+                        })}
+                    </>
+                )}
             </div>
         </>
       )}

@@ -14,13 +14,9 @@ export const StatsCards: React.FC<StatsCardsProps> = ({ data, onEditTargets, sel
   // 租赁维度切换状态：'year' | 'quarter' | 'month'
   const [leasePeriod, setLeasePeriod] = React.useState<'year' | 'quarter' | 'month'>('year');
 
-  const formatCurrency = (val: number) => {
-    return new Intl.NumberFormat('zh-CN', { style: 'currency', currency: 'CNY', maximumFractionDigits: 0 }).format(val);
-  };
-
-  const formatNumber = (val: number) => {
-      return (val / 10000).toFixed(1);
-  };
+  const formatCurrency = (val: number) =>
+    new Intl.NumberFormat('zh-CN', { style: 'currency', currency: 'CNY', maximumFractionDigits: 0 }).format(val);
+  const formatWanCurrency = (val: number) => `${Math.round(val / 10000)}万`;
 
   const annualProgress = data.annualRevenueTarget > 0 ? Math.min(100, (data.annualRevenueCollected / data.annualRevenueTarget) * 100) : 0;
   
@@ -169,15 +165,18 @@ export const StatsCards: React.FC<StatsCardsProps> = ({ data, onEditTargets, sel
                                 <span className="text-xs font-semibold bg-emerald-600 text-white px-2 py-1 rounded">实时监控</span>
                             </div>
                         </div>
+                        <div className="mt-1 text-[11px] text-emerald-700/80">
+                            数据源：生效预算方案（月度应收）
+                        </div>
                     </div>
                     <div className="overflow-x-auto">
                         <table className="w-full text-sm">
                             <thead>
                                 <tr className="bg-slate-50 border-b border-slate-200">
                                     <th className="px-4 py-3 text-center font-semibold text-slate-700">月份</th>
-                                    <th className="px-4 py-3 text-right font-semibold text-blue-700 bg-blue-50/30">预算收入</th>
-                                    <th className="px-4 py-3 text-right font-semibold text-emerald-700 bg-emerald-50/30">实际收入</th>
-                                    <th className="px-4 py-3 text-right font-semibold text-slate-700 hidden sm:table-cell">去年同期</th>
+                                    <th className="px-4 py-3 text-right font-semibold text-blue-700 bg-blue-50/30">预算收入(万元)</th>
+                                    <th className="px-4 py-3 text-right font-semibold text-emerald-700 bg-emerald-50/30">实际收入(万元)</th>
+                                    <th className="px-4 py-3 text-right font-semibold text-slate-700 hidden sm:table-cell">去年同期(万元)</th>
                                     <th className="px-4 py-3 text-right font-semibold text-slate-700">同比</th>
                                     <th className="px-4 py-3 text-center font-semibold text-slate-700">当月完成率</th>
                                     <th className="px-4 py-3 text-right font-semibold text-slate-700 border-l border-slate-200 hidden md:table-cell">累计达成率</th>
@@ -188,13 +187,13 @@ export const StatsCards: React.FC<StatsCardsProps> = ({ data, onEditTargets, sel
                                     <tr key={month.month} className="border-b border-slate-100 hover:bg-slate-50 transition-colors">
                                         <td className="px-4 py-3 font-medium text-slate-800 text-center">{month.monthName}</td>
                                         <td className="px-4 py-3 text-right text-slate-600 tabular-nums bg-blue-50/10">
-                                            ￥{month.budget.toLocaleString()}
+                                            {formatWanCurrency(month.budget)}
                                         </td>
                                         <td className="px-4 py-3 text-right font-semibold text-slate-800 tabular-nums bg-emerald-50/10">
-                                            {month.hasActual ? `￥${month.actual!.toLocaleString()}` : <span className="text-slate-300">-</span>}
+                                            {month.hasActual ? formatWanCurrency(month.actual!) : <span className="text-slate-300">-</span>}
                                         </td>
                                         <td className="px-4 py-3 text-right text-slate-400 text-xs tabular-nums hidden sm:table-cell">
-                                            ￥{month.prevActual.toLocaleString()}
+                                            {formatWanCurrency(month.prevActual)}
                                         </td>
                                         <td className="px-4 py-3 text-right">
                                             {month.hasActual && month.prevActual > 0 ? (
@@ -264,12 +263,12 @@ export const StatsCards: React.FC<StatsCardsProps> = ({ data, onEditTargets, sel
                                 </div>
                                 <div className="grid grid-cols-2 gap-2 mt-2 text-xs">
                                     <div className="bg-blue-50 rounded-lg p-2">
-                                        <div className="text-slate-500 mb-0.5">已完成</div>
-                                        <div className="font-bold text-blue-700">{formatCurrency(data.annualRevenueCollected)}</div>
+                                        <div className="text-slate-500 mb-0.5">已完成(万元)</div>
+                                        <div className="font-bold text-blue-700">{formatWanCurrency(data.annualRevenueCollected)}</div>
                                     </div>
                                     <div className="bg-slate-50 rounded-lg p-2">
-                                        <div className="text-slate-500 mb-0.5">剩余目标</div>
-                                        <div className="font-bold text-slate-700">{formatCurrency(data.annualRevenueTarget - data.annualRevenueCollected)}</div>
+                                        <div className="text-slate-500 mb-0.5">剩余目标(万元)</div>
+                                        <div className="font-bold text-slate-700">{formatWanCurrency(data.annualRevenueTarget - data.annualRevenueCollected)}</div>
                                     </div>
                                 </div>
                             </div>
@@ -322,7 +321,7 @@ export const StatsCards: React.FC<StatsCardsProps> = ({ data, onEditTargets, sel
                                         data.accumulatedArrears < 100000 ? 'text-amber-600' :
                                         'text-rose-600'
                                     }`}>
-                                        {formatCurrency(data.accumulatedArrears)}
+                                        {formatWanCurrency(data.accumulatedArrears)}
                                     </span>
                                 </div>
                                 <div className="text-xs mt-2">

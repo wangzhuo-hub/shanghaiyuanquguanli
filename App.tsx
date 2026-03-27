@@ -16,13 +16,10 @@ import { TenantInsights } from './components/TenantInsights';
 import { DashboardAlerts } from './components/DashboardAlerts';
 import { checkConnection, saveToCloud, getCloudHistory, fetchCloudBackup, initCloud } from './services/cloudService';
 import { generateBudgetedBills, getVirtualTenants } from './services/billingService';
+import { rentCollectionRemarkKey } from './services/receivableListHelpers';
 
 const STORAGE_KEY = 'kingdee_park_data_v1';
 const CLOUD_CONFIG_KEY = 'kingdee_park_cloud_config';
-
-// Embedded Supabase Credentials
-const SUPABASE_URL = 'https://drbugbbsvnnheuasgvwg.supabase.co';
-const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImRyYnVnYmJzdm5uaGV1YXNndndnIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjQ0MjI1ODIsImV4cCI6MjA3OTk5ODU4Mn0.fZF27k7dtbzoMK5ZKh_UARPLpy5OxmF9fvVkJMTOIO4';
 
 // 核心计算逻辑：确保这里使用的逻辑与预算表(BudgetManager)完全一致
 const calculateBudgetedReceivableInPeriod = (
@@ -54,6 +51,248 @@ const calculateBudgetedReceivableInPeriod = (
     });
 
     return Math.round(total);
+};
+
+const DEFER_NOTE_PREFIX = '__defer__';
+
+type DeferBillingNote = {
+    tenantId: string;
+    fromYear: number;
+    fromMonth: number;
+    toYear: number;
+    toMonth: number;
+    amount: number;
+};
+
+const parseDeferBillingNotes = (notes: Record<string, string> | undefined): DeferBillingNote[] => {
+    if (!notes) return [];
+    const out: DeferBillingNote[] = [];
+    for (const [k, v] of Object.entries(notes)) {
+        if (!k.startsWith(DEFER_NOTE_PREFIX)) continue;
+        try {
+            const j = JSON.parse(v) as DeferBillingNote;
+            if (j && j.tenantId && typeof j.amount === 'number' && j.amount > 0) out.push(j);
+        } catch {
+            /* ignore */
+        }
+    }
+    return out;
+};
+
+const applyBillingPeriodDeferNotes = (
+    details: BillingDetail[],
+    year: number,
+    month: number,
+    notes: Record<string, string> | undefined,
+    allTenants: Tenant[]
+): BillingDetail[] => {
+    const entries = parseDeferBillingNotes(notes);
+    if (entries.length === 0) return details;
+
+    const copy = details.map((d) => ({ ...d }));
+    const idx = new Map(copy.map((d, i) => [d.tenantId, i] as const));
+
+    const ensureRow = (tenantId: string) => {
+        const existing = idx.get(tenantId);
+        if (existing !== undefined) return existing;
+        const t = allTenants.find((x) => x.id === tenantId);
+        copy.push({
+            tenantId,
+            tenantName: t?.name || '',
+            unitIds: t?.unitIds || [],
+            amountDue: 0,
+            amountPaid: 0,
+            status: 'Unpaid',
+        });
+        idx.set(tenantId, copy.length - 1);
+        return copy.length - 1;
+    };
+
+    for (const e of entries) {
+        const toPeriodLabel = `${e.toYear}-${String(e.toMonth + 1).padStart(2, '0')}`;
+        const fromPeriodLabel = `${e.fromYear}-${String(e.fromMonth + 1).padStart(2, '0')}`;
+        if (e.fromYear === year && e.fromMonth === month) {
+            const i = idx.get(e.tenantId);
+            if (i !== undefined) {
+                copy[i].amountDue = Math.max(0, copy[i].amountDue - e.amount);
+                copy[i].deferredAmount = (copy[i].deferredAmount || 0) + e.amount;
+                copy[i].deferredToPeriod = toPeriodLabel;
+                copy[i].deferredFromPeriod = fromPeriodLabel;
+            }
+        }
+        if (e.toYear === year && e.toMonth === month) {
+            const i = ensureRow(e.tenantId);
+            copy[i].amountDue += e.amount;
+            copy[i].deferredInAmount = (copy[i].deferredInAmount || 0) + e.amount;
+            const fromLbl = `${e.fromYear}-${String(e.fromMonth + 1).padStart(2, '0')}`;
+            copy[i].deferredInFromSummary = copy[i].deferredInFromSummary
+                ? `${copy[i].deferredInFromSummary}、${fromLbl}`
+                : fromLbl;
+        }
+    }
+
+    for (const d of copy) {
+        let status: BillingDetail['status'] = 'Unpaid';
+        if (d.amountPaid >= d.amountDue && d.amountDue > 0) status = 'Paid';
+        else if (d.amountPaid > 0 && d.amountPaid < d.amountDue) status = 'Partial';
+        else if (d.amountDue === 0 && d.amountPaid > 0) status = 'Paid';
+        d.status = status;
+    }
+
+    return copy.filter(
+        (d) =>
+            d.amountDue > 0.005 ||
+            d.amountPaid > 0.005 ||
+            ((d.deferredAmount ?? 0) > 0.005 && !!(d.deferredToPeriod && String(d.deferredToPeriod).trim()))
+    );
+};
+
+const getActiveScenarioForBudgetYear = (scenarios: BudgetScenario[] | undefined, year: number): BudgetScenario | undefined => {
+    const fallbackYear = new Date().getFullYear();
+    return (scenarios || []).find((s) => s.isActive && (s.budgetYear || fallbackYear) === year);
+};
+
+const RECEIVABLE_DEDICATED_SCENARIO_ID_PREFIX = 'invoice_dedicated_';
+const isReceivableDedicatedScenarioId = (id: string | undefined): boolean =>
+    String(id || '').startsWith(RECEIVABLE_DEDICATED_SCENARIO_ID_PREFIX);
+
+const isReceivableDedicatedScenario = (scenario: BudgetScenario): boolean => {
+    const s = scenario as BudgetScenario & { isReceivableActive?: boolean };
+    if (s.isReceivableActive) return true;
+    const id = String(scenario.id || '').toLowerCase();
+    const name = String(scenario.name || '');
+    return isReceivableDedicatedScenarioId(String(scenario.id)) || id.includes('invoice_dedicated') || /应收.*专用|发票专用/.test(name);
+};
+
+const getReceivableScenarioForYear = (scenarios: BudgetScenario[] | undefined, year: number): BudgetScenario | undefined => {
+    const fallbackYear = new Date().getFullYear();
+    const list = scenarios || [];
+    const byYear = (s: BudgetScenario) => (s.budgetYear || fallbackYear) === year;
+    return (
+        list.find((s) => byYear(s) && isReceivableDedicatedScenario(s)) ||
+        list.find((s) => byYear(s) && s.isActive)
+    );
+};
+
+const normalizeReceivableScenarioByYear = (scenarios: BudgetScenario[] | undefined): BudgetScenario[] => {
+    const list = [...(scenarios || [])];
+    if (list.length === 0) return list;
+    const fallbackYear = new Date().getFullYear();
+    const years = Array.from(new Set(list.map((s) => s.budgetYear || fallbackYear)));
+    years.forEach((year) => {
+        const sameYear = list.filter((s) => (s.budgetYear || fallbackYear) === year);
+        if (sameYear.length === 0) return;
+        const dedicated = sameYear.filter((s) => !!s.isReceivableActive);
+        if (dedicated.length === 0) {
+            const active = sameYear.find((s) => s.isActive);
+            if (active) {
+                for (let i = 0; i < list.length; i++) {
+                    const s = list[i];
+                    if ((s.budgetYear || fallbackYear) === year && s.id === active.id) {
+                        list[i] = { ...s, isReceivableActive: true };
+                        break;
+                    }
+                }
+            }
+            return;
+        }
+        // 同一年仅保留一个应收专用
+        const keepId = dedicated[0].id;
+        for (let i = 0; i < list.length; i++) {
+            const s = list[i];
+            if ((s.budgetYear || fallbackYear) === year && s.id !== keepId && s.isReceivableActive) {
+                list[i] = { ...s, isReceivableActive: false };
+            }
+        }
+    });
+    return list;
+};
+
+const ensureDedicatedReceivableScenarios = (
+    scenarios: BudgetScenario[] | undefined,
+    fallbackTenants: Tenant[],
+    fallbackBuildings: Building[]
+): BudgetScenario[] => {
+    const list = [...(scenarios || [])];
+    if (list.length === 0) return list;
+    const fallbackYear = new Date().getFullYear();
+    const years = Array.from(new Set(list.map((s) => s.budgetYear || fallbackYear)));
+
+    years.forEach((year) => {
+        const active = list.find((s) => s.isActive && (s.budgetYear || fallbackYear) === year);
+        if (!active) return;
+
+        const dedicatedId = `${RECEIVABLE_DEDICATED_SCENARIO_ID_PREFIX}${year}`;
+        const activeTenants = active.baseDataSnapshot?.tenants || fallbackTenants;
+        const activeBuildings = active.baseDataSnapshot?.buildings || fallbackBuildings;
+        const dedicatedPayload: Partial<BudgetScenario> = {
+            name: `${year}应收款专用方案`,
+            budgetYear: year,
+            description: `系统常驻：自动同步 ${active.name}（${year}生效方案）`,
+            assumptions: [...(active.assumptions || [])],
+            adjustments: [...(active.adjustments || [])],
+            isReceivableActive: true,
+            baseDataSnapshot: {
+                tenants: JSON.parse(JSON.stringify(activeTenants)),
+                buildings: JSON.parse(JSON.stringify(activeBuildings)),
+            },
+        };
+
+        const idx = list.findIndex((s) => s.id === dedicatedId);
+        if (idx >= 0) {
+            list[idx] = {
+                ...list[idx],
+                ...dedicatedPayload,
+                id: dedicatedId,
+                createdAt: list[idx].createdAt || new Date().toISOString(),
+                isActive: false,
+            } as BudgetScenario;
+        } else {
+            list.push({
+                id: dedicatedId,
+                createdAt: new Date().toISOString(),
+                isActive: false,
+                ...dedicatedPayload,
+            } as BudgetScenario);
+        }
+
+        for (let i = 0; i < list.length; i++) {
+            const s = list[i];
+            if ((s.budgetYear || fallbackYear) !== year) continue;
+            if (s.id !== dedicatedId && s.isReceivableActive) {
+                list[i] = { ...s, isReceivableActive: false };
+            }
+        }
+    });
+    return list;
+};
+
+const normalizeScenarioForReceivable = (
+    scenarios: BudgetScenario[] | undefined,
+    fallbackTenants: Tenant[],
+    fallbackBuildings: Building[]
+): BudgetScenario[] => {
+    const withDedicated = ensureDedicatedReceivableScenarios(scenarios, fallbackTenants, fallbackBuildings);
+    return normalizeReceivableScenarioByYear(withDedicated);
+};
+
+const parsePaymentPeriods = (periodRaw?: string): string[] => {
+    if (!periodRaw) return [];
+    const parts = periodRaw
+        .split(/[,\n;，；\s]+/)
+        .map((s) => s.trim())
+        .filter(Boolean)
+        .filter((s) => /^\d{4}-\d{2}$/.test(s));
+    return Array.from(new Set(parts));
+};
+
+const paymentAllocatedAmountForPeriod = (p: PaymentRecord, periodYYYYMM: string): number => {
+    const periods = parsePaymentPeriods(p.period);
+    if (periods.length === 0) {
+        return p.date.startsWith(periodYYYYMM) ? p.amount : 0;
+    }
+    if (!periods.includes(periodYYYYMM)) return 0;
+    return p.amount / periods.length;
 };
 
 interface SidebarItemProps {
@@ -95,11 +334,11 @@ const SidebarItem: React.FC<SidebarItemProps> = ({ icon, label, isOpen, active, 
 const App: React.FC = () => {
   const [data, setData] = useState<DashboardData | null>(null);
   const [cloudConfig, setCloudConfig] = useState<CloudConfig>({ 
-      provider: 'pocketbase', // 默认使用 PocketBase
-      pocketbaseUrl: 'http://192.168.0.11:9009',
+      provider: 'pocketbase',
+      pocketbaseUrl: 'http://192.168.0.11:9002',
       pocketbaseEmail: '',
       pocketbasePassword: '',
-      autoSync: true, 
+      autoSync: false,
       projectId: 'park_data_main' 
   });
   
@@ -151,108 +390,91 @@ const App: React.FC = () => {
   }, []);
 
   useEffect(() => {
+    const bootstrapYear = new Date().getFullYear();
     const loadData = async () => {
       try {
         const savedConfig = localStorage.getItem(CLOUD_CONFIG_KEY);
-        let configToUse = cloudConfig;
-        
+        let configToUse: CloudConfig = { ...cloudConfig };
         if (savedConfig) {
-            const parsed = JSON.parse(savedConfig);
-            configToUse = { ...parsed, supabaseUrl: SUPABASE_URL, supabaseKey: SUPABASE_KEY };
+            const parsed = JSON.parse(savedConfig) as Partial<CloudConfig>;
+            configToUse = {
+                ...cloudConfig,
+                ...parsed,
+                provider: 'pocketbase',
+            };
             setCloudConfig(configToUse);
         }
         
-        // 加载AI配置
         const savedAIConfig = localStorage.getItem('ai_config');
         if (savedAIConfig) {
             try {
                 const parsedAI = JSON.parse(savedAIConfig);
-                console.log('[App] 加载保存的AI配置:', parsedAI);
                 setAiConfig(parsedAI);
             } catch (e) {
                 console.error('[App] AI配置加载失败:', e);
             }
-        } else {
-            console.log('[App] 未找到保存的AI配置，使用默认配置');
         }
-        
-        // 初始化云服务
+        // 启动时自动连接后端，并仅在此时尝试拉取最新云端数据
         await initCloud(configToUse);
+        const connected = await checkConnection(configToUse);
+        setIsCloudConnected(connected);
 
-        checkConnection(configToUse).then(async connected => {
-             setIsCloudConnected(connected);
-             if (connected) {
-                 // 获取云端备份历史
-                 const res = await fetchCloudHistory(configToUse);
-                 if (res.success && res.data) {
-                     setCloudHistory(res.data);
-                     // 如果有最新备份，静默恢复，不弹窗
-                     if (res.data.length > 0) {
-                         const latest = res.data[0];
-                         setLatestBackup(latest);
-                         
-                         // 自动静默恢复最新备份
-                         console.log('自动恢复最新云端备份:', latest.id);
-                         const backupRes = await fetchCloudBackup(configToUse, latest.id);
-                         if (backupRes.success && backupRes.data) {
-                             const safeData = { ...generateInitialData(), ...backupRes.data };
-                             recalculateMetrics(safeData, currentYear, 'All');
-                             localStorage.setItem(STORAGE_KEY, JSON.stringify(safeData));
-                             console.log('云端备份恢复成功');
-                             return; // 直接返回，不再加载本地数据
-                         }
-                     }
-                 }
-             }
-        });
-
-        // 如果没有云端备份或恢复失败，加载本地数据
         const savedData = localStorage.getItem(STORAGE_KEY);
         let parsedData: DashboardData | null = null;
         if (savedData) parsedData = JSON.parse(savedData);
 
+        if (connected) {
+          try {
+            const historyRes = await getCloudHistory(configToUse);
+            if (historyRes.success && historyRes.data && historyRes.data.length > 0) {
+              const latest = historyRes.data[0];
+              setCloudHistory(historyRes.data);
+              setLatestBackup(latest);
+              const latestRes = await fetchCloudBackup(configToUse, latest.id);
+              if (latestRes.success && latestRes.data) {
+                const safeCloudData = { ...generateInitialData(), ...latestRes.data };
+                recalculateMetrics(safeCloudData, bootstrapYear, 'All');
+                localStorage.setItem(STORAGE_KEY, JSON.stringify(safeCloudData));
+                setLastSaved(new Date().toLocaleTimeString());
+                return;
+              }
+            }
+          } catch (cloudLoadError) {
+            console.error('[App] 启动时拉取云端最新数据失败:', cloudLoadError);
+          }
+        }
+
         if (parsedData) {
           const safeData = { ...generateInitialData(), ...parsedData };
-          recalculateMetrics(safeData, currentYear, 'All');
+          recalculateMetrics(safeData, bootstrapYear, 'All');
           setLastSaved(new Date().toLocaleTimeString());
         } else {
           const initialData = generateInitialData();
-          recalculateMetrics(initialData, currentYear, 'All');
+          recalculateMetrics(initialData, bootstrapYear, 'All');
         }
       } catch (e) {
-        console.error("Failed to load local data", e);
+        console.error("Failed to load data", e);
         const initialData = generateInitialData();
-        recalculateMetrics(initialData, currentYear, 'All');
+        recalculateMetrics(initialData, bootstrapYear, 'All');
       }
     };
     loadData();
   }, []);
 
+  // 仅防抖写入本地缓存；持久化到 PocketBase 由右上角「保存」触发
   useEffect(() => {
     if (data) {
-      const timer = setTimeout(async () => {
+      const timer = setTimeout(() => {
         try {
-            // 保存到本地
             localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
             setLastSaved(new Date().toLocaleTimeString());
-            
-            // 自动保存到云端（覆盖模式）
-            if (isCloudConnected && cloudConfig.provider === 'pocketbase') {
-                console.log('自动保存到 PocketBase...');
-                const result = await saveToCloud(data, cloudConfig, '自动实时备份');
-                if (result.success) {
-                    console.log('PocketBase 自动保存成功');
-                } else {
-                    console.warn('PocketBase 自动保存失败:', result.message);
-                }
-            }
         } catch (e) {
-            console.error("Save failed", e);
+            console.error("Local save failed", e);
         }
       }, 2000); 
       return () => clearTimeout(timer);
     }
-  }, [data, isCloudConnected, cloudConfig]);
+  }, [data]);
 
   useEffect(() => {
       if (data) {
@@ -327,13 +549,36 @@ const App: React.FC = () => {
 
   const handleQuickCloudSave = async () => {
       if (!isCloudConnected) {
-          if (confirm("云端同步连接未建立。是否重试连接？")) {
+          if (confirm("后端未连接。是否前往系统设置？")) {
               setActiveTab('settings');
               handleCloudConfigSave();
           }
           return;
       }
       openSnapshotModal();
+  };
+
+  /** 将当前数据写入 PocketBase（无中间云端层） */
+  const handleSaveToBackend = async () => {
+      if (!data) return;
+      if (!isCloudConnected) {
+          alert('未连接 PocketBase。请到「系统与备份」填写地址并点击「保存配置」。');
+          setActiveTab('settings');
+          return;
+      }
+      setIsSyncing(true);
+      try {
+          const res = await saveToCloud(data, cloudConfig, '手动保存');
+          if (res.success) {
+              localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+              setLastSaved(new Date().toLocaleTimeString());
+              await fetchCloudHistory();
+          } else {
+              alert('保存失败：' + res.message);
+          }
+      } finally {
+          setIsSyncing(false);
+      }
   };
 
   const handleConfirmRestoreLatest = async () => {
@@ -412,7 +657,8 @@ const App: React.FC = () => {
       assumptions: BudgetAssumption[],
       adjustments: BudgetAdjustment[],
       initializationData: MonthlyInitData[] = [],
-      buildings: Building[] = []
+      buildings: Building[] = [],
+      budgetContext?: { tenants: Tenant[]; buildings: Building[]; assumptions: BudgetAssumption[]; adjustments: BudgetAdjustment[] }
   ): MonthlyTrend[] => {
       const trends: MonthlyTrend[] = [];
       const now = new Date();
@@ -429,6 +675,11 @@ const App: React.FC = () => {
       else if (quarter === 'Q2') { startMonth = 3; endMonth = 5; }
       else if (quarter === 'Q3') { startMonth = 6; endMonth = 8; }
       else if (quarter === 'Q4') { startMonth = 9; endMonth = 11; }
+
+      const targetCtx = budgetContext || { tenants, buildings, assumptions, adjustments };
+      const targetSelfUseUnitIds = new Set<string>();
+      targetCtx.buildings.forEach((b) => b.units.forEach((u) => u.isSelfUse && targetSelfUseUnitIds.add(u.id)));
+      const targetVirtualTenants = getVirtualTenants(targetCtx.tenants, targetCtx.buildings, targetCtx.assumptions);
 
       for (let month = startMonth; month <= endMonth; month++) {
           const monthLabel = `${month + 1}月`;
@@ -489,19 +740,37 @@ const App: React.FC = () => {
           let occupancyRate = totalLeasableArea > 0 ? Number(((leasedAreaInMonth / totalLeasableArea) * 100).toFixed(1)) : 0;
           let avgUnitPrice = physicalTenantAreaForPrice > 0 ? Number((totalRentInMonth / physicalTenantAreaForPrice).toFixed(2)) : 0;
           
-          // UPDATED Logic: Use Reconciled Billing Data for Actuals in Collection Rate
-          const monthlyBillingDetails = getBillingDetailsForPeriodInternal(year, month, tenants, virtualTenants, selfUseUnitIds, assumptions, adjustments, payments);
-          const monthlyActualBilled = monthlyBillingDetails.reduce((sum, d) => sum + d.amountPaid, 0);
+          // 预算目标来自“对应年份生效预算方案”应收账单；实际收入仍是当月租金+停车费流水
+          const monthlyBillingDetails = getBillingDetailsForPeriodInternal(
+              year,
+              month,
+              targetCtx.tenants,
+              targetVirtualTenants,
+              targetSelfUseUnitIds,
+              targetCtx.assumptions,
+              targetCtx.adjustments,
+              payments
+          );
           const monthlyTargetBilled = monthlyBillingDetails.reduce((sum, d) => sum + d.amountDue, 0);
+          const periodPrefix = `${year}-${String(month + 1).padStart(2, '0')}`;
+          const actualFromPaymentDetails = payments
+              .filter(
+                  (p) =>
+                      p.date &&
+                      p.date.startsWith(periodPrefix) &&
+                      (p.type === 'Rent' || p.type === 'ParkingFee')
+              )
+              .reduce((sum, p) => sum + p.amount, 0);
 
           let revenueTarget = monthlyTargetBilled;
-          let revenueCollected: number | null = monthlyActualBilled;
+          let revenueCollected: number | null = actualFromPaymentDetails;
           let collectionRate: number | null = revenueTarget > 0 ? Math.round((revenueCollected / revenueTarget) * 100) : 0;
           
           if (initEntry) {
               occupancyRate = initEntry.occupancyRate;
               revenueCollected = initEntry.revenueCollected;
-              if (initEntry.revenueTarget !== undefined) {
+              // 预算收入应优先取“生效预算方案”月度应收，仅在无生效方案时允许初始化值覆盖
+              if (!budgetContext && initEntry.revenueTarget !== undefined) {
                   revenueTarget = initEntry.revenueTarget;
               }
               collectionRate = revenueTarget > 0 ? Math.round((revenueCollected / revenueTarget) * 100) : 0;
@@ -543,12 +812,14 @@ const App: React.FC = () => {
 
         const amountDue = calculateBudgetedReceivableInPeriod([t], periodStart, periodEnd, selfUseUnitIds, assumptions, adjustments);
         
-        // CRITICAL CHANGE: Only include 'Rent' type, exclude DepositToRent and others
-        const amountPaid = payments.filter(p => 
-            p.tenantId === t.id && 
-            p.type === 'Rent' && 
-            p.date.startsWith(periodPrefix)
-        ).reduce((sum, p) => sum + p.amount, 0);
+        // 支持“提前收款关联未来账期”：period 可配置多个 YYYY-MM，命中账期后按月均分核销
+        const amountPaid = payments
+            .filter((p) => {
+                if (p.tenantId !== t.id) return false;
+                if (p.type !== 'Rent') return false;
+                return paymentAllocatedAmountForPeriod(p, periodPrefix) > 0;
+            })
+            .reduce((sum, p) => sum + paymentAllocatedAmountForPeriod(p, periodPrefix), 0);
 
         if (amountDue > 0 || amountPaid > 0) {
             let status: BillingDetail['status'] = 'Unpaid';
@@ -561,16 +832,85 @@ const App: React.FC = () => {
       return details;
   };
 
+  const buildBillingDetailsForPeriod = (year: number, month: number, ctx: DashboardData): BillingDetail[] => {
+      const receivableScenario = getReceivableScenarioForYear(ctx.budgetScenarios, year);
+      const scenarioTenants = receivableScenario?.baseDataSnapshot?.tenants || ctx.tenants;
+      const scenarioBuildings = receivableScenario?.baseDataSnapshot?.buildings || ctx.buildings;
+      const receivableAdjustments = receivableScenario?.adjustments || ctx.budgetAdjustments || [];
+      const receivableAssumptions = (receivableScenario?.assumptions || ctx.budgetAssumptions || []).filter(
+          (a) => a.targetType === 'Existing'
+      );
+
+      const liveTenantMap = new Map((ctx.tenants || []).map((t) => [t.id, t]));
+      const periodStart = new Date(year, month, 1);
+      const hasContractChanged = (snapshot: Tenant, live: Tenant): boolean =>
+          snapshot.status !== live.status ||
+          snapshot.terminationDate !== live.terminationDate ||
+          snapshot.paymentCycle !== live.paymentCycle ||
+          snapshot.paymentCycleMonths !== live.paymentCycleMonths ||
+          snapshot.firstPaymentDate !== live.firstPaymentDate ||
+          snapshot.firstPaymentMonths !== live.firstPaymentMonths ||
+          snapshot.leaseStart !== live.leaseStart ||
+          snapshot.leaseEnd !== live.leaseEnd ||
+          snapshot.monthlyRent !== live.monthlyRent;
+      const inferContractChangeDate = (snapshot: Tenant, live: Tenant): Date | null => {
+          const candidates: string[] = [];
+          if (snapshot.terminationDate !== live.terminationDate && live.terminationDate) candidates.push(live.terminationDate);
+          if (snapshot.firstPaymentDate !== live.firstPaymentDate && live.firstPaymentDate) candidates.push(live.firstPaymentDate);
+          if (snapshot.signingDate !== live.signingDate && live.signingDate) candidates.push(live.signingDate);
+          if (snapshot.leaseStart !== live.leaseStart && live.leaseStart) candidates.push(live.leaseStart);
+          for (const c of candidates) {
+              const d = new Date(c);
+              if (!Number.isNaN(d.getTime())) return d;
+          }
+          return null;
+      };
+
+      // 存量客户默认走应收专用方案终态数据；合同变化后，变化时点起切换到实时合同口径
+      const mergedTenants = (scenarioTenants || []).map((snapshot) => {
+          const live = liveTenantMap.get(snapshot.id);
+          if (!live) return snapshot;
+          if (!hasContractChanged(snapshot, live)) return snapshot;
+          const changeDate = inferContractChangeDate(snapshot, live);
+          if (changeDate && periodStart < new Date(changeDate.getFullYear(), changeDate.getMonth(), 1)) {
+              return snapshot;
+          }
+          return live;
+      });
+      const scenarioTenantIds = new Set(mergedTenants.map((t) => t.id));
+
+      // 续租/新签按实际合同：补入当年真实签约（优先 signingDate，回退 leaseStart）
+      const actualSignedThisYear = (ctx.tenants || []).filter((t) => {
+          const signStr = t.signingDate || t.leaseStart;
+          if (!signStr) return false;
+          const d = new Date(signStr);
+          return !Number.isNaN(d.getTime()) && d.getFullYear() === year;
+      });
+      const mergedWithSignedTenants = [...mergedTenants];
+      actualSignedThisYear.forEach((t) => {
+          if (!scenarioTenantIds.has(t.id)) mergedWithSignedTenants.push(t);
+      });
+
+      const selfUseUnitIds = new Set<string>();
+      (scenarioBuildings || []).forEach((b) => b.units.forEach((u) => u.isSelfUse && selfUseUnitIds.add(u.id)));
+
+      // 应收口径：存量按应收专用方案直接取数（含 Existing 偏移 + 账期/金额调整）；续租/新签按实际合同
+      const internal = getBillingDetailsForPeriodInternal(
+          year,
+          month,
+          mergedWithSignedTenants,
+          [],
+          selfUseUnitIds,
+          receivableAssumptions,
+          receivableAdjustments,
+          ctx.payments
+      );
+      return applyBillingPeriodDeferNotes(internal, year, month, ctx.billingPeriodNotes, ctx.tenants);
+  };
+
   const getBillingDetailsForPeriod = (year: number, month: number): BillingDetail[] => {
       if (!data) return [];
-      const selfUseUnitIds = new Set<string>();
-      data.buildings.forEach(b => b.units.forEach(u => u.isSelfUse && selfUseUnitIds.add(u.id)));
-      const virtualTenants = getVirtualTenants(data.tenants, data.buildings, data.budgetAssumptions || []);
-      
-      return getBillingDetailsForPeriodInternal(
-          year, month, data.tenants, virtualTenants, selfUseUnitIds, 
-          data.budgetAssumptions || [], data.budgetAdjustments || [], data.payments
-      );
+      return buildBillingDetailsForPeriod(year, month, data);
   };
 
   const recalculateMetrics = (currentData: DashboardData, year: number = selectedYear, quarter: 'All' | 'Q1' | 'Q2' | 'Q3' | 'Q4' = selectedQuarter) => {
@@ -616,8 +956,27 @@ const App: React.FC = () => {
 
     const virtualTenants = getVirtualTenants(tenants, syncedBuildings, assumptions);
 
-    const monthlyTrends = calculateTrends(tenants, virtualTenants, payments, totalLeasableArea, selfUseUnitIds, year, quarter, assumptions, adjustments, initData, buildings);
-    const prevYearMonthlyTrends = calculateTrends(tenants, virtualTenants, payments, totalLeasableArea, selfUseUnitIds, year - 1, 'All', assumptions, adjustments, initData, buildings);
+    const activeScenarioForYear = getActiveScenarioForBudgetYear(currentData.budgetScenarios, year);
+    const activeScenarioForPrevYear = getActiveScenarioForBudgetYear(currentData.budgetScenarios, year - 1);
+    const budgetContextForYear = activeScenarioForYear
+        ? {
+              tenants: activeScenarioForYear.baseDataSnapshot?.tenants || tenants,
+              buildings: activeScenarioForYear.baseDataSnapshot?.buildings || syncedBuildings,
+              assumptions: activeScenarioForYear.assumptions,
+              adjustments: activeScenarioForYear.adjustments,
+          }
+        : undefined;
+    const budgetContextForPrevYear = activeScenarioForPrevYear
+        ? {
+              tenants: activeScenarioForPrevYear.baseDataSnapshot?.tenants || tenants,
+              buildings: activeScenarioForPrevYear.baseDataSnapshot?.buildings || syncedBuildings,
+              assumptions: activeScenarioForPrevYear.assumptions,
+              adjustments: activeScenarioForPrevYear.adjustments,
+          }
+        : undefined;
+
+    const monthlyTrends = calculateTrends(tenants, virtualTenants, payments, totalLeasableArea, selfUseUnitIds, year, quarter, assumptions, adjustments, initData, buildings, budgetContextForYear);
+    const prevYearMonthlyTrends = calculateTrends(tenants, virtualTenants, payments, totalLeasableArea, selfUseUnitIds, year - 1, 'All', assumptions, adjustments, initData, buildings, budgetContextForPrevYear);
 
     const annualRevenueCollected = monthlyTrends.reduce((sum, t) => sum + (t.revenueCollected || 0), 0);
     const annualRevenueTarget = monthlyTrends.reduce((sum, t) => sum + t.revenueTarget, 0);
@@ -675,10 +1034,14 @@ const App: React.FC = () => {
         const endMonth = (year === nowYear) ? nowMonth - 1 : 11; // 当年只到上月，其他年到12月
         
         for (let month = startMonth; month <= endMonth; month++) {
-            const billingDetails = getBillingDetailsForPeriodInternal(
-                year, month, tenants, virtualTenants, selfUseUnitIds, 
-                assumptions, adjustments, payments
-            );
+            const billingDetails = buildBillingDetailsForPeriod(year, month, {
+                ...currentData,
+                buildings: syncedBuildings,
+                tenants,
+                payments,
+                budgetAssumptions: assumptions,
+                budgetAdjustments: adjustments,
+            });
             
             // 统计未完全核销的账单（Unpaid 和 Partial）
             billingDetails.forEach(detail => {
@@ -717,11 +1080,27 @@ const App: React.FC = () => {
         }
     });
 
-    const recentSignings = tenants.filter(t => { 
-        if (t.status === 'Expired') return false; 
-        const start = new Date(t.leaseStart); 
-        return start >= periodStart && start <= periodEnd; 
-    }).slice(0, 10);
+    // 最新签约动态：仅最近 1 个月内（按签约日，无签约日则按起租日）且排除已过期合同
+    const recentSigningsWindowEnd = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999);
+    const recentSigningsWindowStart = new Date(now);
+    recentSigningsWindowStart.setMonth(recentSigningsWindowStart.getMonth() - 1);
+    recentSigningsWindowStart.setHours(0, 0, 0, 0);
+
+    const recentSignings = tenants
+        .filter((t) => {
+            if (t.status === 'Expired') return false;
+            const signStr = t.signingDate || t.leaseStart;
+            if (!signStr) return false;
+            const signDate = new Date(signStr);
+            if (Number.isNaN(signDate.getTime())) return false;
+            return signDate >= recentSigningsWindowStart && signDate <= recentSigningsWindowEnd;
+        })
+        .sort((a, b) => {
+            const da = new Date(a.signingDate || a.leaseStart).getTime();
+            const db = new Date(b.signingDate || b.leaseStart).getTime();
+            return db - da;
+        })
+        .slice(0, 15);
     
     const expiringSoon = tenants.filter(t => { 
         if (t.status === 'Expired' || t.status === 'Terminated') return false;
@@ -763,7 +1142,14 @@ const App: React.FC = () => {
         if (parts.length === 2) { billingYear = parseInt(parts[0], 10); billingMonth = parseInt(parts[1], 10) - 1; }
     }
     
-    const currentMonthBilling = getBillingDetailsForPeriodInternal(billingYear, billingMonth, tenants, virtualTenants, selfUseUnitIds, assumptions, adjustments, payments);
+    const currentMonthBilling = buildBillingDetailsForPeriod(billingYear, billingMonth, {
+        ...currentData,
+        buildings: syncedBuildings,
+        tenants,
+        payments,
+        budgetAssumptions: assumptions,
+        budgetAdjustments: adjustments,
+    });
 
     const parkingRevenueInPeriod = payments.filter(p => { const pDate = new Date(p.date); return pDate >= periodStart && pDate <= periodEnd && p.type === 'ParkingFee'; }).reduce((sum, p) => sum + p.amount, 0);
     const parkingDetails: ParkingStatDetail[] = []; 
@@ -780,6 +1166,11 @@ const App: React.FC = () => {
     
     const parkingStats = { totalContractSpaces, totalActualSpaces, totalMonthlyRevenue: parkingRevenueInPeriod, details: parkingDetails };
 
+    const normalizedScenarios = normalizeScenarioForReceivable(
+        currentData.budgetScenarios,
+        tenants,
+        syncedBuildings
+    );
     const processedData: DashboardData = {
         ...currentData, 
         buildings: syncedBuildings, 
@@ -809,8 +1200,10 @@ const App: React.FC = () => {
         budgetAssumptions: assumptions, 
         budgetAdjustments: adjustments, 
         budgetAnalysis: currentData.budgetAnalysis || { occupancy: '', revenue: '' },
+        budgetScenarios: normalizedScenarios,
         initializationData: initData,
-        invoices: invoices
+        invoices: invoices,
+        billingPeriodNotes: currentData.billingPeriodNotes || {},
     };
 
     setData(processedData); 
@@ -840,38 +1233,66 @@ const App: React.FC = () => {
       recalculateMetrics(mergedData);
   };
 
-  const handleDeferPayment = (tenantId: string, year?: number, month?: number) => {
+  /** 租金账期跟进备注（工作台账单明细 + 财务报表应收核销共用） */
+  const updateRentCollectionRemark = (tenantId: string, periodYYYYMM: string, text: string) => {
       if (!data) return;
-      const tenant = data.tenants.find(t => t.id === tenantId);
+      const key = rentCollectionRemarkKey(tenantId, periodYYYYMM);
+      const next = { ...(data.billingPeriodNotes || {}) };
+      if (!text.trim()) delete next[key];
+      else next[key] = text;
+      recalculateMetrics({ ...data, billingPeriodNotes: next });
+  };
+
+  const handleDeferPayment = (tenantId: string, fromYear: number, fromMonth: number, toYear: number, toMonth: number) => {
+      if (!data) return;
+      const tenant = data.tenants.find((t) => t.id === tenantId);
       if (!tenant) return;
-      let targetYear, targetMonth;
-      if (year !== undefined && month !== undefined) { targetYear = year; targetMonth = month; } 
-      else { const parts = billingSelectedMonth.split('-'); if (parts.length === 2) { targetYear = parseInt(parts[0], 10); targetMonth = parseInt(parts[1], 10) - 1; } else { targetYear = new Date().getFullYear(); targetMonth = new Date().getMonth(); } }
-      const periodStart = new Date(targetYear, targetMonth, 1);
-      const periodEnd = new Date(targetYear, targetMonth + 1, 0);
-      const selfUseUnitIds = new Set<string>();
-      data.buildings.forEach(b => b.units.forEach(u => u.isSelfUse && selfUseUnitIds.add(u.id)));
-      
-      const amountDue = calculateBudgetedReceivableInPeriod([tenant], periodStart, periodEnd, selfUseUnitIds, data.budgetAssumptions || [], data.budgetAdjustments || []);
-      
-      if (amountDue <= 0) { alert("该月份无应收金额，无法缓缴。"); return; }
-      let nextMonth = targetMonth + 1; let nextYear = targetYear;
-      if (nextMonth > 11) { nextMonth = 0; nextYear++; }
-      const newAdj: BudgetAdjustment = { id: `adj_defer_${Date.now()}`, tenantId: tenant.id, tenantName: tenant.name, originalYear: targetYear, originalMonth: targetMonth, adjustedYear: nextYear, adjustedMonth: nextMonth, amount: amountDue, reason: '申请缓缴 (Defer Payment)' };
-      const newAdjustments = [...(data.budgetAdjustments || []), newAdj];
-      recalculateMetrics({ ...data, budgetAdjustments: newAdjustments });
-      alert(`已申请缓缴！\n客户: ${tenant.name}\n金额: ¥${amountDue.toLocaleString()}\n已延期至: ${nextYear}年${nextMonth+1}月`);
+      if (fromYear === toYear && fromMonth === toMonth) {
+          alert('目标账期不能与原账期相同。');
+          return;
+      }
+
+      const details = buildBillingDetailsForPeriod(fromYear, fromMonth, data);
+      const row = details.find((d) => d.tenantId === tenantId);
+      const amountToDefer = Math.max(0, (row?.amountDue ?? 0) - (row?.amountPaid ?? 0));
+
+      if (amountToDefer <= 0) {
+          alert('该月份无可缓缴应收（已结清、已暂缓或待收余额为 0）。');
+          return;
+      }
+      const key = `${DEFER_NOTE_PREFIX}${tenantId}_${fromYear}_${fromMonth}_${toYear}_${toMonth}_${Date.now()}`;
+      const note: DeferBillingNote = {
+          tenantId,
+          fromYear,
+          fromMonth,
+          toYear,
+          toMonth,
+          amount: amountToDefer,
+      };
+      const newNotes = { ...(data.billingPeriodNotes || {}), [key]: JSON.stringify(note) };
+      recalculateMetrics({ ...data, billingPeriodNotes: newNotes });
+      const fromLabel = `${fromYear}-${String(fromMonth + 1).padStart(2, '0')}`;
+      const toLabel = `${toYear}-${String(toMonth + 1).padStart(2, '0')}`;
+      alert(
+          `已申请缓缴（仅影响应收/执行视图，不修改预算表基准）。\n客户: ${tenant.name}\n金额: ¥${amountToDefer.toLocaleString()}\n原账期: ${fromLabel}\n调整至: ${toLabel}`
+      );
   };
 
   const updateBudgetScenarios = (newScenarios: BudgetScenario[]) => {
       if (!data) return;
-      setData({...data, budgetScenarios: newScenarios});
+      setData({
+          ...data,
+          budgetScenarios: normalizeScenarioForReceivable(newScenarios, data.tenants || [], data.buildings || []),
+      });
   };
 
   const handleRenameScenario = (id: string, newName: string) => {
       if (!data || !data.budgetScenarios) return;
       const updated = data.budgetScenarios.map(s => s.id === id ? {...s, name: newName} : s);
-      setData({...data, budgetScenarios: updated});
+      setData({
+          ...data,
+          budgetScenarios: normalizeScenarioForReceivable(updated, data.tenants || [], data.buildings || []),
+      });
   };
 
   const handleActivateScenario = (scenario: BudgetScenario) => {
@@ -879,13 +1300,11 @@ const App: React.FC = () => {
       const scenarioList = data.budgetScenarios || [];
       const updatedScenarios = scenarioList.map(s => ({
           ...s,
-          isActive: s.id === scenario.id 
+          isActive: s.budgetYear === scenario.budgetYear ? s.id === scenario.id : s.isActive
       }));
       recalculateMetrics({
           ...data,
-          budgetScenarios: updatedScenarios,
-          budgetAssumptions: scenario.assumptions,
-          budgetAdjustments: scenario.adjustments
+          budgetScenarios: normalizeScenarioForReceivable(updatedScenarios, data.tenants || [], data.buildings || []),
       });
   };
 
@@ -971,35 +1390,50 @@ const App: React.FC = () => {
 
       years.forEach((year, i) => {
           const initRows = data.initializationData?.filter(d => d.year === year) || [];
+          const useInitAsSource = year >= 2023 && year <= 2025;
           
           let yearlyActual = 0;
-          for (let m = 1; m <= 12; m++) {
-              const initEntry = initRows.find(d => d.month === m);
-              if (initEntry) {
-                  yearlyActual += initEntry.revenueCollected;
-              } else {
-                   const monthPrefix = `${year}-${String(m).padStart(2, '0')}`;
-                   const monthlyPayments = data.payments
-                      .filter(p => p.date.startsWith(monthPrefix) && (p.type === 'Rent' || p.type === 'DepositToRent' || p.type === 'ParkingFee'))
-                      .reduce((sum, p) => sum + p.amount, 0);
-                   yearlyActual += monthlyPayments;
+          if (useInitAsSource) {
+              yearlyActual = initRows.reduce((sum, r) => sum + (r.revenueCollected || 0), 0);
+          } else {
+              for (let m = 1; m <= 12; m++) {
+                  const initEntry = initRows.find(d => d.month === m);
+                  if (initEntry) {
+                      yearlyActual += initEntry.revenueCollected;
+                  } else {
+                      const monthPrefix = `${year}-${String(m).padStart(2, '0')}`;
+                      const monthlyPayments = data.payments
+                          .filter(p => p.date.startsWith(monthPrefix) && (p.type === 'Rent' || p.type === 'DepositToRent' || p.type === 'ParkingFee'))
+                          .reduce((sum, p) => sum + p.amount, 0);
+                      yearlyActual += monthlyPayments;
+                  }
               }
           }
 
-          let yearlyTarget = data.yearlyTargets?.[year]?.revenue || 0;
-          if (yearlyTarget === 0) {
-               const initTargetSum = initRows.reduce((sum, r) => sum + (r.revenueTarget || 0), 0);
-               if (initTargetSum > 0) yearlyTarget = initTargetSum;
+          let yearlyTarget = 0;
+          if (useInitAsSource) {
+              yearlyTarget = initRows.reduce((sum, r) => sum + (r.revenueTarget || 0), 0);
+          } else {
+              yearlyTarget = data.yearlyTargets?.[year]?.revenue || 0;
+              if (yearlyTarget === 0) {
+                  const initTargetSum = initRows.reduce((sum, r) => sum + (r.revenueTarget || 0), 0);
+                  if (initTargetSum > 0) yearlyTarget = initTargetSum;
+              }
           }
 
           let occupancy = 0;
-          const decInit = initRows.find(d => d.month === 12);
-          if (decInit) {
-              occupancy = decInit.occupancyRate;
-          } else if (year === selectedYear) {
-               occupancy = data.occupancyRate;
-          } else if (year === selectedYear - 1 && data.prevYearMonthlyTrends && data.prevYearMonthlyTrends.length > 0) {
-               occupancy = data.prevYearMonthlyTrends[data.prevYearMonthlyTrends.length - 1].occupancyRate;
+          if (useInitAsSource) {
+              const latestInit = [...initRows].sort((a, b) => b.month - a.month)[0];
+              occupancy = latestInit?.occupancyRate || 0;
+          } else {
+              const decInit = initRows.find(d => d.month === 12);
+              if (decInit) {
+                  occupancy = decInit.occupancyRate;
+              } else if (year === selectedYear) {
+                  occupancy = data.occupancyRate;
+              } else if (year === selectedYear - 1 && data.prevYearMonthlyTrends && data.prevYearMonthlyTrends.length > 0) {
+                  occupancy = data.prevYearMonthlyTrends[data.prevYearMonthlyTrends.length - 1].occupancyRate;
+              }
           }
 
           let revenueYoY: number | null = null;
@@ -1026,10 +1460,6 @@ const App: React.FC = () => {
       
       return result;
   }, [data, selectedYear]);
-
-  const invoiceScenario = data?.budgetScenarios?.find(s => s.id === 'invoice_dedicated');
-  const invoiceAssumptions = invoiceScenario ? invoiceScenario.assumptions : (data?.budgetAssumptions?.filter(a => a.targetType === 'Existing') || []);
-  const invoiceAdjustments = invoiceScenario ? invoiceScenario.adjustments : (data?.budgetAdjustments || []);
 
   if (!data) return <div className="min-h-screen flex items-center justify-center bg-slate-50"><div className="flex flex-col items-center gap-2"><Loader2 size={32} className="text-blue-500 animate-spin"/><div className="text-slate-400">Loading Dashboard...</div></div></div>;
 
@@ -1068,7 +1498,17 @@ const App: React.FC = () => {
             <button onClick={() => setSidebarOpen(true)} className="p-2 -ml-2 hover:bg-slate-100 rounded-lg text-slate-600 lg:hidden"><Menu size={20} /></button>
             <h1 className="text-base lg:text-xl font-bold text-slate-800 truncate">{activeTab === 'dashboard' ? '招商管理看板' : activeTab === 'buildings' ? '楼宇资产管理' : activeTab === 'contracts' ? '客户合同中心' : activeTab === 'finance' ? '财务收款报表' : activeTab === 'budget' ? '招商预算管理' : '系统设置'}</h1>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-shrink-0">
+             <button
+               type="button"
+               onClick={handleSaveToBackend}
+               disabled={!data || isSyncing}
+               className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium bg-sky-600 text-white hover:bg-sky-700 disabled:opacity-50 disabled:cursor-not-allowed shadow-sm"
+               title={lastSaved ? `上次本地缓存 ${lastSaved}` : '保存到 PocketBase'}
+             >
+               {isSyncing ? <Loader2 size={16} className="animate-spin" /> : <Save size={16} />}
+               <span className="hidden sm:inline">保存</span>
+             </button>
              {activeTab === 'dashboard' && (
                <button 
                  onClick={() => setAIDialogOpen(true)}
@@ -1078,9 +1518,9 @@ const App: React.FC = () => {
                  <span>AI 智能助手</span>
                </button>
              )}
-             <div className={`hidden md:flex items-center gap-1 text-xs px-2 py-1 rounded-full border ${isCloudConnected ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : 'bg-slate-50 text-slate-500 border-slate-200'}`} title={isCloudConnected ? '已连接到金蝶云数据库' : '仅本地存储模式'}>
+             <div className={`hidden md:flex items-center gap-1 text-xs px-2 py-1 rounded-full border ${isCloudConnected ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : 'bg-slate-50 text-slate-500 border-slate-200'}`} title={isCloudConnected ? '已连接 PocketBase 后端' : '未连接后端，仅本地缓存'}>
                  {isCloudConnected ? <CheckCircle2 size={12} className="text-emerald-500"/> : <Cloud size={12} />}
-                 <span>{isCloudConnected ? '云端在线' : '本地模式'}</span>
+                 <span>{isCloudConnected ? '后端在线' : '仅本地'}</span>
              </div>
           </div>
         </header>
@@ -1104,13 +1544,34 @@ const App: React.FC = () => {
                <StatsCards data={data} selectedYear={selectedYear} onEditTargets={openTargetModal} tenants={data.tenants} />
                <AnnualMetricComparisonTable data={annualComparisonData} />
                <RecentActivityTable data={data} />
-               <BillingTable data={data} selectedMonth={billingSelectedMonth} onMonthChange={setBillingSelectedMonth} />
+               <BillingTable
+                  data={data}
+                  selectedMonth={billingSelectedMonth}
+                  onMonthChange={setBillingSelectedMonth}
+                  onUpdateRentRemark={updateRentCollectionRemark}
+               />
             </div>
           )}
 
           {activeTab === 'buildings' && (<div className="animate-in fade-in zoom-in-50 duration-300"><BuildingManager buildings={data.buildings} tenants={data.tenants} onUpdateBuildings={updateBuildings} /></div>)}
           {activeTab === 'contracts' && (<div className="animate-in fade-in zoom-in-50 duration-300"><ContractManager tenants={data.tenants} buildings={data.buildings} onUpdateTenants={updateTenants} dashboardData={data} payments={data.payments} onUpdatePayments={updatePayments} /></div>)}
-          {activeTab === 'finance' && (<div className="animate-in fade-in zoom-in-50 duration-300"><FinanceManager payments={data.payments} tenants={data.tenants} invoices={data.invoices || []} onUpdatePayments={updatePayments} onUpdateTenants={updateTenants} onUpdateInvoices={updateInvoices} onBatchUpdate={handleBatchUpdate} getBillingDetails={getBillingDetailsForPeriod} onDeferPayment={handleDeferPayment} /></div>)}
+          {activeTab === 'finance' && (
+              <div className="animate-in fade-in zoom-in-50 duration-300">
+                  <FinanceManager
+                      payments={data.payments}
+                      tenants={data.tenants}
+                      invoices={data.invoices || []}
+                      billingPeriodNotes={data.billingPeriodNotes || {}}
+                      onUpdatePayments={updatePayments}
+                      onUpdateTenants={updateTenants}
+                      onUpdateInvoices={updateInvoices}
+                      onBatchUpdate={handleBatchUpdate}
+                      getBillingDetails={getBillingDetailsForPeriod}
+                      onDeferPayment={handleDeferPayment}
+                      onUpdateRentRemark={updateRentCollectionRemark}
+                  />
+              </div>
+          )}
           {activeTab === 'budget' && (<div className="animate-in fade-in zoom-in-50 duration-300"><BudgetManager buildings={data.buildings} tenants={data.tenants} budgetAssumptions={data.budgetAssumptions} onUpdateAssumptions={updateBudgetAssumptions} budgetAdjustments={data.budgetAdjustments} onUpdateAdjustments={updateBudgetAdjustments} budgetAnalysis={data.budgetAnalysis} onUpdateAnalysis={updateBudgetAnalysis} payments={data.payments} scenarios={data.budgetScenarios || []} onUpdateScenarios={updateBudgetScenarios} onRenameScenario={handleRenameScenario} onActivateScenario={handleActivateScenario} onSaveBudgetToCloud={handleSaveBudgetToCloud} /></div>)}
           {activeTab === 'settings' && (
              <div className="animate-in fade-in zoom-in-50 duration-300 max-w-2xl mx-auto space-y-4">
@@ -1133,22 +1594,8 @@ const App: React.FC = () => {
                      </div>
 
                      <div className="p-4 md:p-6 border-b border-slate-200 bg-sky-50/30">
-                         <div className="flex items-center gap-3 mb-4"><div className="p-2 bg-white rounded-lg text-sky-600 shadow-sm border border-sky-100"><CloudCog size={24} /></div><div><h3 className="font-bold text-slate-700">云端数据库配置</h3><div className="flex items-center gap-2 text-sm mt-1">{isCloudConnected ? (<span className="flex items-center gap-1 text-emerald-600 font-medium"><CheckCircle2 size={14} /> 已连接至{cloudConfig.provider === 'pocketbase' ? 'PocketBase' : 'Supabase'}数据库</span>) : (<span className="flex items-center gap-1 text-rose-500 font-medium"><AlertCircle size={14} /> 未连接 (请检查网络)</span>)}</div></div></div>
+                        <div className="flex items-center gap-3 mb-4"><div className="p-2 bg-white rounded-lg text-sky-600 shadow-sm border border-sky-100"><CloudCog size={24} /></div><div><h3 className="font-bold text-slate-700">PocketBase 后端</h3><div className="flex items-center gap-2 text-sm mt-1 text-slate-600">数据直连本地/内网 PocketBase，无中间云端服务。应用启动会自动连接后端；编辑后请点击右上角「保存」写入后端。</div><div className="flex items-center gap-2 text-sm mt-2">{isCloudConnected ? (<span className="flex items-center gap-1 text-emerald-600 font-medium"><CheckCircle2 size={14} /> 已连接</span>) : (<span className="flex items-center gap-1 text-rose-500 font-medium"><AlertCircle size={14} /> 未连接</span>)}</div></div></div>
                          <div className="bg-white p-4 rounded-lg border border-slate-200 space-y-4">
-                             <div>
-                                 <label className="block text-xs font-medium text-slate-500 mb-1">后端提供商</label>
-                                 <select 
-                                     className="w-full bg-slate-50 border border-slate-200 rounded px-3 py-2 text-sm text-slate-600 outline-none focus:ring-1 focus:ring-sky-200"
-                                     value={cloudConfig.provider} 
-                                     onChange={e => setCloudConfig({...cloudConfig, provider: e.target.value as 'supabase' | 'pocketbase'})}
-                                 >
-                                     <option value="supabase">Supabase（当前使用）</option>
-                                     <option value="pocketbase">PocketBase（推荐）</option>
-                                 </select>
-                             </div>
-                                                 
-                             {cloudConfig.provider === 'pocketbase' && (
-                                 <>
                                      <div>
                                          <label className="block text-xs font-medium text-slate-500 mb-1">PocketBase URL</label>
                                          <input 
@@ -1160,7 +1607,7 @@ const App: React.FC = () => {
                                          />
                                      </div>
                                      <div>
-                                         <label className="block text-xs font-medium text-slate-500 mb-1">邮箱</label>
+                                         <label className="block text-xs font-medium text-slate-500 mb-1">邮箱（可选，视 API 规则而定）</label>
                                          <input 
                                              type="email" 
                                              className="w-full bg-slate-50 border border-slate-200 rounded px-3 py-2 text-sm text-slate-600 outline-none focus:ring-1 focus:ring-sky-200" 
@@ -1170,7 +1617,7 @@ const App: React.FC = () => {
                                          />
                                      </div>
                                      <div>
-                                         <label className="block text-xs font-medium text-slate-500 mb-1">密码</label>
+                                         <label className="block text-xs font-medium text-slate-500 mb-1">密码（可选）</label>
                                          <input 
                                              type="password" 
                                              className="w-full bg-slate-50 border border-slate-200 rounded px-3 py-2 text-sm text-slate-600 outline-none focus:ring-1 focus:ring-sky-200" 
@@ -1179,9 +1626,6 @@ const App: React.FC = () => {
                                              onChange={e => setCloudConfig({...cloudConfig, pocketbasePassword: e.target.value})}
                                          />
                                      </div>
-                                 </>
-                             )}
-                                                 
                              <div>
                                  <label className="block text-xs font-medium text-slate-500 mb-1">项目标识 (Project ID)</label>
                                  <div className="flex gap-2">

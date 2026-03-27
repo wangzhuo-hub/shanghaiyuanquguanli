@@ -16,11 +16,16 @@ interface ContractManagerProps {
   onUpdatePayments?: (payments: PaymentRecord[]) => void; // 新增：用于更新收款记录
 }
 
-const isInfoIncomplete = (t: Partial<Tenant>) => {
-    return !t.industry || !t.foundingDate || !t.legalRepName || !t.contactName;
+const contractStatusTextMap: Record<ContractStatus, string> = {
+  [ContractStatus.Active]: '履约中',
+  [ContractStatus.Expiring]: '即将到期',
+  [ContractStatus.Terminated]: '已退租',
+  [ContractStatus.Pending]: '签约中',
+  [ContractStatus.Expired]: '已到期',
 };
 
 export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, buildings, onUpdateTenants, dashboardData, payments = [], onUpdatePayments }) => {
+  const currentCalendarYear = new Date().getFullYear();
   // Default to Analysis tab as requested
   const [activeTab, setActiveTab] = useState<'List' | 'Terminated' | 'Analysis'>('Analysis');
   const [analysisPeriod, setAnalysisPeriod] = useState<'Year' | 'Quarter' | 'Month'>('Year');
@@ -278,7 +283,9 @@ export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, build
   const filteredTenants = useMemo(() => {
     return tenants.filter(t => {
         const isTerminated = t.status === ContractStatus.Terminated;
+        const isExpired = t.status === ContractStatus.Expired;
         if (activeTab === 'List' && isTerminated) return false;
+        if (activeTab === 'List' && isExpired) return false; // 续租后的旧合同不应出现在在租明细
         if (activeTab === 'Terminated' && !isTerminated) return false;
 
         const matchesSearch = t.name?.toLowerCase().includes(searchTerm.toLowerCase());
@@ -301,7 +308,94 @@ export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, build
       return Object.keys(groups).map(Number).sort((a,b) => b-a).map(year => ({ year, tenants: groups[year] }));
   }, [filteredTenants, activeTab]);
 
+  const buildingFloorGroups = useMemo(() => {
+      if (activeTab !== 'List') return [];
+      const grouped = new Map<string, { buildingId: string; buildingName: string; floors: Map<string, Tenant[]> }>();
+
+      filteredTenants.forEach((t) => {
+          const building = buildings.find((b) => b.id === t.buildingId);
+          const buildingId = t.buildingId || 'unknown';
+          const buildingName = building?.name || '未知楼栋';
+          if (!grouped.has(buildingId)) {
+              grouped.set(buildingId, { buildingId, buildingName, floors: new Map<string, Tenant[]>() });
+          }
+          const unitFloors = new Set<number>();
+          t.unitIds.forEach((uid) => {
+              const f = building?.units.find((u) => u.id === uid)?.floor;
+              if (typeof f === 'number') unitFloors.add(f);
+          });
+          const floorLabel =
+              unitFloors.size === 0
+                  ? '未标注楼层'
+                  : unitFloors.size === 1
+                    ? `${Array.from(unitFloors)[0]}层`
+                    : '多楼层';
+          const floorMap = grouped.get(buildingId)!.floors;
+          if (!floorMap.has(floorLabel)) floorMap.set(floorLabel, []);
+          floorMap.get(floorLabel)!.push(t);
+      });
+
+      return Array.from(grouped.values())
+          .sort((a, b) => a.buildingName.localeCompare(b.buildingName, 'zh-CN'))
+          .map((g) => {
+              const floors = Array.from(g.floors.entries())
+                  .sort((a, b) => {
+                      const aNum = parseInt(a[0], 10);
+                      const bNum = parseInt(b[0], 10);
+                      if (Number.isNaN(aNum) && Number.isNaN(bNum)) return a[0].localeCompare(b[0], 'zh-CN');
+                      if (Number.isNaN(aNum)) return 1;
+                      if (Number.isNaN(bNum)) return -1;
+                      return aNum - bNum;
+                  })
+                  .map(([floorLabel, tenants]) => ({
+                      floorLabel,
+                      tenants: tenants.sort((x, y) => new Date(y.leaseStart).getTime() - new Date(x.leaseStart).getTime()),
+                  }));
+              return { ...g, floors };
+          });
+  }, [activeTab, filteredTenants, buildings]);
+
   const COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#64748b'];
+
+  const renewalHistory = useMemo(() => {
+      const root = currentTenant.rootId || currentTenant.id;
+      if (!root) return [];
+
+      const chain = tenants.filter((t) => (t.rootId || t.id) === root);
+      const hasDraft =
+          currentTenant.id &&
+          (renewingFromId || currentTenant.rootId) &&
+          !chain.some((t) => t.id === currentTenant.id) &&
+          currentTenant.leaseStart &&
+          currentTenant.leaseEnd;
+
+      if (hasDraft) {
+          chain.push({
+              ...(currentTenant as Tenant),
+              id: currentTenant.id!,
+              name: currentTenant.name || '当前编辑合同',
+              buildingId: currentTenant.buildingId || '',
+              unitIds: currentTenant.unitIds || [],
+              totalArea: currentTenant.totalArea || 0,
+              leaseStart: currentTenant.leaseStart!,
+              leaseEnd: currentTenant.leaseEnd!,
+              monthlyRent: currentTenant.monthlyRent || 0,
+              paymentCycle: currentTenant.paymentCycle || 'Quarterly',
+              firstPaymentDate: currentTenant.firstPaymentDate || currentTenant.leaseStart!,
+              rentFreePeriods: currentTenant.rentFreePeriods || [],
+              depositAmount: currentTenant.depositAmount || 0,
+              depositStatus: currentTenant.depositStatus || DepositStatus.Unpaid,
+              status: currentTenant.status || ContractStatus.Pending,
+          });
+      }
+
+      return chain
+          .sort((a, b) => new Date(a.leaseStart).getTime() - new Date(b.leaseStart).getTime())
+          .map((item) => ({
+              ...item,
+              isCurrentEditing: item.id === currentTenant.id,
+          }));
+  }, [currentTenant, renewingFromId, tenants]);
 
   if (isEditing) {
      const targetBuilding = buildings.find(b => b.id === currentTenant.buildingId);
@@ -356,13 +450,55 @@ export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, build
                                 )}
                             </div>
 
-                            <div className="grid grid-cols-1 md:grid-cols-3 gap-4 md:col-span-2">
+                            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 md:col-span-2">
                                 <div><label className="block text-sm font-medium mb-1.5 text-slate-600">签约日期 <span className="text-red-500">*</span></label><input type="date" className={`w-full border p-2.5 rounded-lg text-sm ${formErrors.signingDate ? 'border-red-500' : 'border-slate-300'}`} value={currentTenant.signingDate || ''} onChange={e => setCurrentTenant({...currentTenant, signingDate: e.target.value})} /></div>
                                 <div><label className="block text-sm font-medium mb-1.5 text-slate-600">起租日期 <span className="text-red-500">*</span></label><input type="date" className={`w-full border p-2.5 rounded-lg text-sm ${formErrors.leaseStart ? 'border-red-500' : 'border-slate-300'}`} value={currentTenant.leaseStart || ''} onChange={e => setCurrentTenant({...currentTenant, leaseStart: e.target.value})} /></div>
                                 <div><label className="block text-sm font-medium mb-1.5 text-slate-600">结束日期 <span className="text-red-500">*</span></label><input type="date" className={`w-full border p-2.5 rounded-lg text-sm ${formErrors.leaseEnd ? 'border-red-500' : 'border-slate-300'}`} value={currentTenant.leaseEnd || ''} onChange={e => setCurrentTenant({...currentTenant, leaseEnd: e.target.value})} /></div>
+                                <div><label className="block text-sm font-medium mb-1.5 text-slate-600">实际入驻日期</label><input type="date" className="w-full border border-slate-300 p-2.5 rounded-lg text-sm" value={currentTenant.moveInDate || ''} onChange={e => setCurrentTenant({...currentTenant, moveInDate: e.target.value || undefined})} /><p className="text-[10px] text-slate-400 mt-1">用于入园周年等关键时刻；不填则按起租日</p></div>
                             </div>
                         </div>
                     </section>
+
+                    {renewalHistory.length > 1 && (
+                        <section className="bg-white p-6 rounded-xl border border-slate-100 shadow-sm space-y-4">
+                            <div className="flex items-center gap-2 text-violet-600 font-bold mb-2"><Clock size={18}/> <span>历史签约记录</span></div>
+                            <div className="overflow-x-auto border border-slate-200 rounded-lg">
+                                <table className="w-full text-sm min-w-[720px]">
+                                    <thead className="bg-slate-50 text-slate-500">
+                                        <tr>
+                                            <th className="px-4 py-2 text-left">期次</th>
+                                            <th className="px-4 py-2 text-left">签约日期</th>
+                                            <th className="px-4 py-2 text-left">租期</th>
+                                            <th className="px-4 py-2 text-left">合同单价</th>
+                                            <th className="px-4 py-2 text-left">状态</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody className="divide-y divide-slate-100">
+                                        {renewalHistory.map((h, idx) => {
+                                            const unitPrice = h.unitPrice || (h.totalArea ? (h.monthlyRent / h.totalArea * 12 / 365) : 0);
+                                            return (
+                                                <tr key={h.id} className={h.isCurrentEditing ? 'bg-violet-50/50' : ''}>
+                                                    <td className="px-4 py-2 text-slate-700 font-medium">
+                                                        第{idx + 1}期
+                                                        {h.isCurrentEditing && <span className="ml-2 text-[10px] bg-violet-100 text-violet-700 px-1.5 py-0.5 rounded">当前编辑</span>}
+                                                    </td>
+                                                    <td className="px-4 py-2 text-slate-600">{h.signingDate || '-'}</td>
+                                                    <td className="px-4 py-2 text-slate-600">{h.leaseStart} ~ {h.leaseEnd}</td>
+                                                    <td className="px-4 py-2 text-blue-600 font-bold">¥{unitPrice.toFixed(2)}</td>
+                                                    <td className="px-4 py-2">
+                                                        <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${h.status === ContractStatus.Active ? 'bg-blue-100 text-blue-700' : h.status === ContractStatus.Terminated ? 'bg-rose-100 text-rose-700' : 'bg-amber-100 text-amber-700'}`}>
+                                                            {h.status === ContractStatus.Terminated && h.terminationType === 'Early' ? '提前退租' : contractStatusTextMap[h.status]}
+                                                        </span>
+                                                    </td>
+                                                </tr>
+                                            );
+                                        })}
+                                    </tbody>
+                                </table>
+                            </div>
+                            <p className="text-xs text-slate-400">同一客户续签链按租期顺序展示，用于核对历史合同演进。</p>
+                        </section>
+                    )}
 
                     {/* 2. Rent & Payments */}
                     <section className="bg-white p-6 rounded-xl border border-slate-100 shadow-sm space-y-4">
@@ -1108,12 +1244,59 @@ export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, build
 
             <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
                 <div className="hidden md:block overflow-x-auto">
-                    <table className="w-full text-sm text-left min-w-[1000px]">
+                    <table className="w-full text-sm text-left min-w-[920px]">
                     <thead className="bg-slate-50 text-slate-500 font-bold border-b border-slate-200">
-                        <tr><th className="px-6 py-4">客户名称</th><th className="px-6 py-4">租赁位置</th><th className="px-6 py-4">{activeTab === 'Terminated' ? '退租日期' : '起租日期'}</th><th className="px-6 py-4">合同期 & 单价</th><th className="px-6 py-4">状态</th><th className="px-6 py-4 text-right">操作</th></tr>
+                        <tr><th className="px-6 py-4">客户名称</th><th className="px-6 py-4">租赁位置</th><th className="px-6 py-4">{activeTab === 'Terminated' ? '退租日期' : '起租日期'}</th><th className="px-6 py-4">实际入驻</th><th className="px-6 py-4">合同期 & 单价</th><th className="px-6 py-4 text-right">操作</th></tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100">
-                        {sortedYears.map(group => (
+                        {activeTab === 'List' ? buildingFloorGroups.map(group => (
+                            <React.Fragment key={group.buildingId}>
+                                <tr className="bg-blue-50/40 border-y border-slate-100">
+                                    <td colSpan={6} className="px-6 py-2 font-bold text-xs text-blue-800">{group.buildingName} ({group.floors.reduce((acc, f) => acc + f.tenants.length, 0)}家)</td>
+                                </tr>
+                                {group.floors.map(fg => (
+                                    <React.Fragment key={`${group.buildingId}_${fg.floorLabel}`}>
+                                        <tr className="bg-slate-50/60 border-y border-slate-100">
+                                            <td colSpan={6} className="px-6 py-2 font-semibold text-[11px] text-slate-600">{fg.floorLabel} ({fg.tenants.length}家)</td>
+                                        </tr>
+                                        {fg.tenants.map(t => {
+                                            const building = buildings.find(b => b.id === t.buildingId);
+                                            const unitNames = t.unitIds.map(uid => building?.units.find(u => u.id === uid)?.name || uid).join(', ');
+                                            const displayPrice = t.unitPrice || (t.totalArea ? (t.monthlyRent / t.totalArea * 12 / 365) : 0);
+                                            const contractYear = Number((t.signingDate || t.leaseStart || '').slice(0, 4));
+                                            const isThisYearContract = contractYear === currentCalendarYear;
+                                            const isRenewalContract = Boolean(t.rootId);
+                                            return (
+                                                <tr key={t.id} className="hover:bg-slate-50 transition-colors">
+                                                    <td className="px-6 py-4">
+                                                        <div className="flex items-center gap-2">
+                                                            <span className="font-bold text-slate-800">{t.name}</span>
+                                                            {isThisYearContract && (
+                                                                <span className={`text-[10px] px-2 py-0.5 rounded-md border font-bold ${isRenewalContract ? 'bg-violet-50 text-violet-700 border-violet-200' : 'bg-cyan-50 text-cyan-700 border-cyan-200'}`}>
+                                                                    {isRenewalContract ? '本年续租' : '本年新签'}
+                                                                </span>
+                                                            )}
+                                                            {t.isRisk && <ShieldAlert size={14} className="text-red-500" />}
+                                                            {t.rentFreePeriods && t.rentFreePeriods.length > 0 && t.freeRentHandling === 'Defer' && (
+                                                                <span className="text-[10px] bg-indigo-50 text-indigo-700 px-2 py-0.5 rounded-md border border-indigo-200 font-bold">账期顺延</span>
+                                                            )}
+                                                            {t.rentFreePeriods && t.rentFreePeriods.length > 0 && t.freeRentHandling === 'Deduct' && (
+                                                                <span className="text-[10px] bg-green-50 text-green-700 px-2 py-0.5 rounded-md border border-green-200 font-bold">当期扣除</span>
+                                                            )}
+                                                        </div>
+                                                    </td>
+                                                    <td className="px-6 py-4 text-slate-600">{building?.name} <span className="text-xs bg-slate-100 px-1 rounded font-medium">{unitNames}</span></td>
+                                                    <td className="px-6 py-4"><div className="text-slate-700 font-bold">{t.leaseStart}</div></td>
+                                                    <td className="px-6 py-4 text-slate-600 text-xs">{t.moveInDate ? <span className="font-medium text-slate-800">{t.moveInDate}</span> : <span className="text-slate-400">同起租</span>}</td>
+                                                    <td className="px-6 py-4"><div className="text-slate-500 text-xs">{t.leaseStart} ~ {t.leaseEnd}</div><div className="text-blue-600 font-bold">¥{displayPrice.toFixed(2)}</div></td>
+                                                    <td className="px-6 py-4 text-right space-x-3"><button onClick={() => handleEdit(t)} className="text-blue-600 font-bold text-xs hover:underline">详情</button>{(t.status === ContractStatus.Expiring || t.status === ContractStatus.Active) && <button onClick={() => handleRenewal(t)} className="text-emerald-600 font-bold text-xs hover:underline">续签</button>}{t.status !== ContractStatus.Terminated && <button onClick={() => initiateTermination(t.id)} className="text-amber-600 font-bold text-xs hover:underline">退租</button>}</td>
+                                                </tr>
+                                            );
+                                        })}
+                                    </React.Fragment>
+                                ))}
+                            </React.Fragment>
+                        )) : sortedYears.map(group => (
                             <React.Fragment key={group.year}>
                                 <tr className={`${activeTab === 'Terminated' ? 'bg-rose-50/30' : 'bg-blue-50/30'} border-y border-slate-100`}><td colSpan={6} className={`px-6 py-2 font-bold text-xs ${activeTab === 'Terminated' ? 'text-rose-800' : 'text-blue-800'}`}>{group.year}年度{activeTab === 'Terminated' ? '退租' : '起租'} ({group.tenants.length}家)</td></tr>
                                 {group.tenants.map(t => {
@@ -1126,7 +1309,6 @@ export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, build
                                                 <div className="flex items-center gap-2">
                                                     <span className="font-bold text-slate-800">{t.name}</span>
                                                     {t.isRisk && <ShieldAlert size={14} className="text-red-500" />}
-                                                    {isInfoIncomplete(t) && <span className="text-[10px] bg-amber-50 text-amber-600 px-1.5 py-0.5 rounded border border-amber-100 font-medium">待完善</span>}
                                                     {/* 免租期处理方式标识 */}
                                                     {t.rentFreePeriods && t.rentFreePeriods.length > 0 && t.freeRentHandling === 'Defer' && (
                                                         <span className="text-[10px] bg-indigo-50 text-indigo-700 px-2 py-0.5 rounded-md border border-indigo-200 font-bold">
@@ -1142,9 +1324,9 @@ export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, build
                                             </td>
                                             <td className="px-6 py-4 text-slate-600">{building?.name} <span className="text-xs bg-slate-100 px-1 rounded font-medium">{unitNames}</span></td>
                                             <td className="px-6 py-4">{activeTab === 'Terminated' ? <div className="text-rose-600 font-bold">{t.terminationDate || t.leaseEnd}</div> : <div className="text-slate-700 font-bold">{t.leaseStart}</div>}</td>
+                                            <td className="px-6 py-4 text-slate-600 text-xs">{t.moveInDate ? <span className="font-medium text-slate-800">{t.moveInDate}</span> : <span className="text-slate-400">同起租</span>}</td>
                                             <td className="px-6 py-4"><div className="text-slate-500 text-xs">{t.leaseStart} ~ {t.leaseEnd}</div><div className="text-blue-600 font-bold">¥{displayPrice.toFixed(2)}</div></td>
-                                            <td className="px-6 py-4"><span className={`px-2 py-1 rounded-md text-[10px] font-bold uppercase ${t.status === ContractStatus.Active ? 'bg-blue-100 text-blue-700' : t.status === ContractStatus.Terminated ? 'bg-rose-100 text-rose-700' : 'bg-amber-100 text-amber-700'}`}>{t.status === ContractStatus.Terminated && t.terminationType === 'Early' ? '提前退租' : t.status === ContractStatus.Active ? '履约中' : t.status}</span></td>
-                                            <td className="px-6 py-4 text-right space-x-3"><button onClick={() => handleEdit(t)} className="text-blue-600 font-bold text-xs hover:underline">详情</button>{activeTab === 'List' && (t.status === ContractStatus.Expiring || t.status === ContractStatus.Active) && <button onClick={() => handleRenewal(t)} className="text-emerald-600 font-bold text-xs hover:underline">续签</button>}{activeTab === 'List' && t.status !== ContractStatus.Terminated && <button onClick={() => initiateTermination(t.id)} className="text-amber-600 font-bold text-xs hover:underline">退租</button>}</td>
+                                            <td className="px-6 py-4 text-right space-x-3"><button onClick={() => handleEdit(t)} className="text-blue-600 font-bold text-xs hover:underline">详情</button></td>
                                         </tr>
                                     );
                                 })}

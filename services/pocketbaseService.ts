@@ -35,21 +35,84 @@ export const getPocketBaseInfo = () => {
 
 export const authenticatePocketBase = async (email: string, password: string) => {
     if (!pb) return false;
+    const safeEmail = (email || '').trim();
+    const safePassword = (password || '').trim();
+    if (!safeEmail || !safePassword) {
+        console.warn('PocketBase 登录已跳过：未填写账号或密码');
+        return false;
+    }
+
+    const loginByAdminsEndpoint = async (): Promise<boolean> => {
+        if (!pb) return false;
+        const baseUrl = pb.baseUrl.replace(/\/+$/, '');
+        const endpoint = `${baseUrl}/api/admins/auth-with-password`;
+
+        const loginPayloads = [
+            { email: safeEmail, password: safePassword },      // 旧版常见格式
+            { identity: safeEmail, password: safePassword },   // 新版常见格式
+        ];
+
+        let lastError: any = null;
+        for (const payload of loginPayloads) {
+            const resp = await fetch(endpoint, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload),
+            });
+
+            if (resp.ok) {
+                const data = await resp.json();
+                if (data?.token) {
+                    pb.authStore.save(data.token, data.admin || data.record || null);
+                    return true;
+                }
+                throw new Error('admins 登录响应缺少 token');
+            }
+
+            const message = await resp.text();
+            lastError = new Error(`admins 登录失败: ${resp.status} ${resp.statusText}`);
+            (lastError as any).status = resp.status;
+            (lastError as any).message = message || (lastError as any).message;
+        }
+
+        throw lastError || new Error('admins 登录失败');
+    };
+
     try {
-        console.log('PocketBase 尝试登录:', email);
-        const authData = await pb.collection('users').authWithPassword(email, password);
-        console.log('PocketBase 登录成功:', authData.record.email);
+        console.log('PocketBase 尝试登录(_superusers):', safeEmail);
+        const authData = await pb.collection('_superusers').authWithPassword(safeEmail, safePassword);
+        console.log('PocketBase 管理员登录成功:', authData.record?.email || safeEmail);
         console.log('Token:', pb.authStore.token ? '已生成' : '未生成');
         return true;
     } catch (e: any) {
-        console.error("PocketBase 认证失败:", e);
-        console.error('错误详情:', {
-            status: e.status,
-            message: e.message,
-            data: e.data
-        });
-        // 不再弹窗提示，静默失败
-        return false;
+        // 回退 1：兼容旧版本 PocketBase admins 认证端点
+        try {
+            console.log('PocketBase 回退登录(admins endpoint):', safeEmail);
+            await loginByAdminsEndpoint();
+            console.log('PocketBase admins 登录成功:', safeEmail);
+            console.log('Token:', pb.authStore.token ? '已生成' : '未生成');
+            return true;
+        } catch (adminErr: any) {
+            // 回退 2：兼容使用 users 集合做登录的旧配置
+            try {
+                console.log('PocketBase 回退登录(users):', safeEmail);
+                const authData = await pb.collection('users').authWithPassword(safeEmail, safePassword);
+                console.log('PocketBase 用户登录成功:', authData.record?.email || safeEmail);
+                console.log('Token:', pb.authStore.token ? '已生成' : '未生成');
+                return true;
+            } catch (userErr: any) {
+                // 认证失败不再打红色 error，避免控制台噪音；保存接口可按 API Rules 直接工作
+                console.warn("PocketBase 认证失败（已跳过登录，继续匿名模式）", {
+                    superuserStatus: e?.status,
+                    superuserMessage: e?.message,
+                    adminStatus: adminErr?.status,
+                    adminMessage: adminErr?.message,
+                    userStatus: userErr?.status,
+                    userMessage: userErr?.message,
+                });
+                return false;
+            }
+        }
     }
 };
 

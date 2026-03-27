@@ -47,9 +47,12 @@ const ActivityCard: React.FC<{ tenant: any, buildingName: string, unitNames: str
 export const RecentActivityTable: React.FC<{ data: DashboardData }> = ({ data }) => {
   return (
     <div className="bg-white rounded-xl shadow-sm border border-slate-100 overflow-hidden h-full">
-      <div className="p-4 md:p-6 border-b border-slate-100 flex justify-between items-center">
-        <h3 className="text-lg font-semibold text-slate-800">最新签约动态</h3>
-        <button className="text-sm text-blue-600 hover:text-blue-700 font-medium">查看全部</button>
+      <div className="p-4 md:p-6 border-b border-slate-100 flex justify-between items-start gap-3">
+        <div>
+          <h3 className="text-lg font-semibold text-slate-800">最新签约动态</h3>
+          <p className="text-[11px] text-slate-500 mt-1">仅展示最近 1 个月内签约（优先签约日，否则起租日）</p>
+        </div>
+        <span className="text-xs font-medium text-slate-500 bg-slate-100 px-2 py-1 rounded-md shrink-0">近 1 个月</span>
       </div>
       
       {/* Desktop View */}
@@ -65,6 +68,11 @@ export const RecentActivityTable: React.FC<{ data: DashboardData }> = ({ data })
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-100">
+            {data.recentSignings.length === 0 && (
+              <tr>
+                <td colSpan={5} className="px-6 py-10 text-center text-slate-400 text-sm">近一个月内暂无签约记录</td>
+              </tr>
+            )}
             {data.recentSignings.map((tenant) => {
               const building = data.buildings.find(b => b.id === tenant.buildingId);
               const unitNames = tenant.unitIds.map(uid => {
@@ -188,6 +196,7 @@ interface BudgetExecutionProps {
 export const BudgetExecutionSummaryTable: React.FC<BudgetExecutionProps> = ({ data, selectedYear, onYearChange }) => {
   let cumulativeBudget = 0;
   let cumulativeActual = 0;
+  const formatWanCurrency = (val: number) => `${Math.round(val / 10000)}万`;
   
   const displayYear = selectedYear || new Date().getFullYear();
   const now = new Date();
@@ -200,9 +209,12 @@ export const BudgetExecutionSummaryTable: React.FC<BudgetExecutionProps> = ({ da
   return (
     <div className="bg-white rounded-xl shadow-sm border border-slate-100 overflow-hidden h-full">
       <div className="p-4 md:p-6 border-b border-slate-100 flex justify-between items-center bg-emerald-50/30">
-        <div className="flex items-center gap-2 md:gap-4">
-            <h3 className="text-base md:text-lg font-semibold text-emerald-900">预算执行 (Budget vs Actual)</h3>
-            <span className="hidden md:inline text-xs font-semibold bg-emerald-100 text-emerald-700 px-2 py-1 rounded">实时监控</span>
+        <div>
+            <div className="flex items-center gap-2 md:gap-4">
+                <h3 className="text-base md:text-lg font-semibold text-emerald-900">预算执行 (Budget vs Actual)</h3>
+                <span className="hidden md:inline text-xs font-semibold bg-emerald-100 text-emerald-700 px-2 py-1 rounded">实时监控</span>
+            </div>
+            <div className="mt-1 text-[11px] text-emerald-700/80">数据源：生效预算方案（月度应收）</div>
         </div>
         
         {onYearChange && (
@@ -230,9 +242,9 @@ export const BudgetExecutionSummaryTable: React.FC<BudgetExecutionProps> = ({ da
           <thead className="bg-slate-50 text-slate-500 font-medium">
             <tr>
               <th className="px-4 py-3 text-center sticky left-0 bg-slate-50 z-10 shadow-[2px_0_5px_-2px_rgba(0,0,0,0.1)]">月份</th>
-              <th className="px-4 py-3 text-right bg-blue-50/30 text-blue-700">预算收入</th>
-              <th className="px-4 py-3 text-right bg-emerald-50/30 text-emerald-700">实际收入</th>
-              <th className="px-4 py-3 text-right hidden sm:table-cell">去年同期</th>
+              <th className="px-4 py-3 text-right bg-blue-50/30 text-blue-700">预算收入(万元)</th>
+              <th className="px-4 py-3 text-right bg-emerald-50/30 text-emerald-700">实际收入(万元)</th>
+              <th className="px-4 py-3 text-right hidden sm:table-cell">去年同期(万元)</th>
               <th className="px-4 py-3 text-right">同比</th>
               <th className="px-4 py-3 text-right">当月完成率</th>
               <th className="px-4 py-3 text-right border-l border-slate-100 hidden sm:table-cell">累计达成率</th>
@@ -266,12 +278,12 @@ export const BudgetExecutionSummaryTable: React.FC<BudgetExecutionProps> = ({ da
                 return (
                     <tr key={index} className="hover:bg-slate-50 transition-colors">
                     <td className="px-4 py-3 font-medium text-slate-700 text-center sticky left-0 bg-white z-10 shadow-[2px_0_5px_-2px_rgba(0,0,0,0.05)] border-r border-slate-100">{monthData.month}</td>
-                    <td className="px-4 py-3 text-right text-slate-600 bg-blue-50/10">¥{monthData.revenueTarget.toLocaleString()}</td>
+                    <td className="px-4 py-3 text-right text-slate-600 bg-blue-50/10">{formatWanCurrency(monthData.revenueTarget)}</td>
                     <td className="px-4 py-3 text-right font-medium text-slate-800 bg-emerald-50/10">
-                        {hasActual ? `¥${monthData.revenueCollected!.toLocaleString()}` : <span className="text-slate-300">-</span>}
+                        {hasActual ? formatWanCurrency(monthData.revenueCollected!) : <span className="text-slate-300">-</span>}
                     </td>
                     <td className="px-4 py-3 text-right text-slate-400 text-xs hidden sm:table-cell">
-                        ¥{prevActual.toLocaleString()}
+                        {formatWanCurrency(prevActual)}
                     </td>
                     <td className="px-4 py-3 text-right">
                         {hasActual && prevActual > 0 ? (
@@ -326,6 +338,7 @@ interface AnnualMetricComparisonTableProps {
 }
 
 export const AnnualMetricComparisonTable: React.FC<AnnualMetricComparisonTableProps> = ({ data }) => {
+    const formatWanInt = (val: number) => `${Math.round(val / 10000)}万`;
     return (
         <div className="bg-white rounded-xl shadow-sm border border-slate-100 overflow-hidden mb-6">
             <div className="p-4 md:p-6 border-b border-slate-100 bg-gradient-to-r from-blue-50 to-white">
@@ -338,8 +351,8 @@ export const AnnualMetricComparisonTable: React.FC<AnnualMetricComparisonTablePr
                     <thead className="bg-slate-50 text-slate-500 font-medium">
                         <tr>
                             <th className="px-6 py-3">年度</th>
-                            <th className="px-6 py-3 text-right">年度营收目标</th>
-                            <th className="px-6 py-3 text-right">实际营收达成</th>
+                            <th className="px-6 py-3 text-right">年度营收目标(万元)</th>
+                            <th className="px-6 py-3 text-right">实际营收达成(万元)</th>
                             <th className="px-6 py-3 text-right">指标完成率</th>
                             <th className="px-6 py-3 text-right">营收同比</th>
                             <th className="px-6 py-3 text-right">年末出租率</th>
@@ -352,11 +365,11 @@ export const AnnualMetricComparisonTable: React.FC<AnnualMetricComparisonTablePr
                                 <td className="px-6 py-4 text-right text-slate-500">
                                     <div className="flex items-center justify-end gap-1">
                                         <Target size={12} className="text-slate-300"/>
-                                        ¥{(row.revenueTarget / 10000).toFixed(1)}万
+                                        {formatWanInt(row.revenueTarget)}
                                     </div>
                                 </td>
                                 <td className="px-6 py-4 text-right font-medium text-slate-800">
-                                    ¥{(row.revenueActual / 10000).toFixed(1)}万
+                                    {formatWanInt(row.revenueActual)}
                                 </td>
                                 <td className="px-6 py-4 text-right">
                                     <span className={`px-2 py-1 rounded text-xs font-bold ${row.revenueCompletionRate >= 100 ? 'bg-emerald-100 text-emerald-700' : row.revenueCompletionRate >= 90 ? 'bg-blue-100 text-blue-700' : 'bg-amber-100 text-amber-700'}`}>

@@ -77,7 +77,9 @@ export interface Tenant {
   signingDate?: string; // 新增：合同签约时间
   leaseStart: string;
   leaseEnd: string;
-  
+  /** 实际入驻日期（用于入园周年等关键时刻；未填时回退为起租日） */
+  moveInDate?: string;
+
   // Rent
   unitPrice?: number; // Price per sqm per DAY
   monthlyRent: number; // Total monthly rent (calculated)
@@ -131,6 +133,8 @@ export interface PaymentRecord {
   amount: number;
   type: 'Rent' | 'Deposit' | 'ManagementFee' | 'ParkingFee' | 'Other' | 'DepositToRent' | 'DepositRefund'; // Added ParkingFee
   date: string;
+  /** 关联账期，支持单个或多个 YYYY-MM（逗号分隔），用于提前收款核销未来应收 */
+  period?: string;
   status: 'Received' | 'Pending';
   invoiceStatus?: 'Pending' | 'Invoiced'; // New: Track if fapiao has been issued for this payment
   remarks?: string;
@@ -152,6 +156,13 @@ export interface BillingDetail {
   amountDue: number;
   amountPaid: number;
   status: 'Paid' | 'Unpaid' | 'Partial' | 'Overdue';
+  deferredToPeriod?: string;
+  deferredFromPeriod?: string;
+  deferredAmount?: number;
+  /** 自其他账期缓缴调入的金额合计（目标账期行展示） */
+  deferredInAmount?: number;
+  /** 调入来源账期标签，如 "2026-03" 或多条用顿号连接 */
+  deferredInFromSummary?: string;
 }
 
 export interface ParkingStatDetail {
@@ -208,6 +219,8 @@ export interface BudgetAdjustment {
   adjustedMonth: number; // 0-11
   amount: number;
   reason: string; // e.g., "Pre-payment for next year", "Deferred payment"
+  /** period_shift: 账期调整；amount_delta: 仅金额增减（此时 original 常为 -1，由 billingService 只做加项） */
+  adjustmentKind?: 'period_shift' | 'amount_delta';
 }
 
 export interface BudgetAnalysisData {
@@ -217,16 +230,10 @@ export interface BudgetAnalysisData {
 }
 
 export interface CloudConfig {
-    // 通用配置
-    provider: 'supabase' | 'pocketbase'; // 后端提供商
+    /** 仅使用 PocketBase 作为持久化后端 */
+    provider: 'pocketbase';
     autoSync: boolean;
     projectId: string; // Identifier for this park's data
-    
-    // Supabase 配置（向后兼容）
-    supabaseUrl?: string;
-    supabaseKey?: string;
-    
-    // PocketBase 配置
     pocketbaseUrl?: string;
     pocketbaseEmail?: string;
     pocketbasePassword?: string;
@@ -250,9 +257,13 @@ export interface CloudBackupMetadata {
 export interface BudgetScenario {
     id: string;
     name: string;
+    /** 方案归属预算年度（例如 2026 / 2027） */
+    budgetYear: number;
     description?: string;
     createdAt: string;
-    isActive: boolean; // Indicates if this is the one currently affecting the Dashboard
+    isActive: boolean; // Active within its budgetYear
+    /** 应收款专用方案（每年最多一个），用于工作台/财务应收口径 */
+    isReceivableActive?: boolean;
     
     // The Rules
     assumptions: BudgetAssumption[];
@@ -350,6 +361,9 @@ export interface DashboardData {
 
   // New: Invoice Records
   invoices?: InvoiceRecord[];
+
+  /** 缓缴等仅影响应收展示，不写入 budgetAdjustments */
+  billingPeriodNotes?: Record<string, string>;
 }
 
 export interface ChatMessage {

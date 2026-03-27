@@ -157,6 +157,7 @@ export const generateInitialData = (): DashboardData => {
     },
     budgetAssumptions: [],
     budgetAdjustments: [],
+    billingPeriodNotes: {},
     budgetAnalysis: {
         occupancy: '',
         revenue: ''

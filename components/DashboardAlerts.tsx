@@ -8,6 +8,9 @@ interface DashboardAlertsProps {
   invoices?: InvoiceRecord[];
 }
 
+/** 入园关键时刻基准日：优先实际入驻，否则起租日 */
+const parkEntryDate = (t: Tenant) => t.moveInDate || t.leaseStart;
+
 export const DashboardAlerts: React.FC<DashboardAlertsProps> = ({ tenants, invoices = [] }) => {
   const today = new Date();
   const currentMonth = today.getMonth() + 1; // 1-12
@@ -45,8 +48,9 @@ export const DashboardAlerts: React.FC<DashboardAlertsProps> = ({ tenants, invoi
   const getAlertsForMonth = (targetMonth: number, targetYear: number) => {
       // Park Anniversaries (Must be active and start year < target year)
       const park = tenants.filter(t => {
-          if (t.status !== ContractStatus.Active || !t.leaseStart) return false;
-          const start = new Date(t.leaseStart);
+          const ref = parkEntryDate(t);
+          if (t.status !== ContractStatus.Active || !ref) return false;
+          const start = new Date(ref);
           const startMonth = start.getMonth() + 1;
           const startYear = start.getFullYear();
           return startMonth === targetMonth && targetYear > startYear;
@@ -137,7 +141,7 @@ export const DashboardAlerts: React.FC<DashboardAlertsProps> = ({ tenants, invoi
                                             iconColor="text-emerald-600"
                                             items={currentAlerts.park}
                                             renderItem={(t) => {
-                                                const years = currentYear - parseInt(t.leaseStart.split('-')[0]);
+                                                const years = currentYear - parseInt(parkEntryDate(t)!.split('-')[0]);
                                                 return (
                                                     <>
                                                         <span className="truncate flex-1 pr-2">{t.name}</span>
@@ -222,7 +226,7 @@ export const DashboardAlerts: React.FC<DashboardAlertsProps> = ({ tenants, invoi
                                             bgColor="bg-white"
                                             items={nextAlerts.park}
                                             renderItem={(t) => {
-                                                const years = nextMonthYear - parseInt(t.leaseStart.split('-')[0]);
+                                                const years = nextMonthYear - parseInt(parkEntryDate(t)!.split('-')[0]);
                                                 return (
                                                     <>
                                                         <span className="truncate flex-1 pr-2">{t.name}</span>

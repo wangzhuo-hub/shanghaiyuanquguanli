@@ -1,0 +1,2929 @@
+{
+  "buildings": [
+    {
+      "id": "b1",
+      "name": "1号楼",
+      "type": "Building",
+      "units": [
+        {
+          "id": "b1-101",
+          "name": "101",
+          "area": 2263.51,
+          "status": "Vacant",
+          "floor": 1,
+          "isSelfUse": true
+        },
+        {
+          "id": "b1-102",
+          "name": "102",
+          "area": 999.52,
+          "status": "Occupied",
+          "floor": 1,
+          "isSelfUse": false
+        },
+        {
+          "id": "b1-201",
+          "name": "2F",
+          "area": 3263.03,
+          "status": "Vacant",
+          "floor": 2,
+          "isSelfUse": true
+        },
+        {
+          "id": "b1-301",
+          "name": "301-303",
+          "area": 930.4,
+          "status": "Occupied",
+          "floor": 3,
+          "isSelfUse": false
+        },
+        {
+          "id": "b1-302",
+          "name": "305-313",
+          "area": 1066,
+          "status": "Occupied",
+          "floor": 3,
+          "isSelfUse": false
+        },
+        {
+          "id": "b1-305",
+          "name": "306",
+          "area": 99.98,
+          "status": "Occupied",
+          "floor": 3,
+          "isSelfUse": false
+        },
+        {
+          "id": "b1-306",
+          "name": "308-310",
+          "area": 243.91,
+          "status": "Occupied",
+          "floor": 3,
+          "isSelfUse": false
+        },
+        {
+          "id": "b1-303",
+          "name": "312",
+          "area": 414.83,
+          "status": "Occupied",
+          "floor": 3,
+          "isSelfUse": false
+        },
+        {
+          "id": "b1-316-318",
+          "name": "316-318",
+          "area": 582.7,
+          "status": "Vacant",
+          "floor": 3,
+          "isSelfUse": false
+        },
+        {
+          "id": "b1-307",
+          "name": "319",
+          "area": 63.22,
+          "status": "Occupied",
+          "floor": 3,
+          "isSelfUse": false
+        },
+        {
+          "id": "b1-308",
+          "name": "321",
+          "area": 63.22,
+          "status": "Vacant",
+          "floor": 3,
+          "isSelfUse": false
+        },
+        {
+          "id": "b1-323",
+          "name": "323",
+          "area": 130.13,
+          "status": "Occupied",
+          "floor": 3,
+          "isSelfUse": false
+        },
+        {
+          "id": "b1-401",
+          "name": "403",
+          "area": 360.76,
+          "status": "Occupied",
+          "floor": 4,
+          "isSelfUse": false
+        },
+        {
+          "id": "b1-406",
+          "name": "406",
+          "area": 101.8,
+          "status": "Occupied",
+          "floor": 4,
+          "isSelfUse": false
+        },
+        {
+          "id": "b1-407",
+          "name": "407-409",
+          "area": 507.45,
+          "status": "Occupied",
+          "floor": 4,
+          "isSelfUse": false
+        },
+        {
+          "id": "b1-402",
+          "name": "408-410",
+          "area": 248.37,
+          "status": "Occupied",
+          "floor": 4,
+          "isSelfUse": false
+        },
+        {
+          "id": "b1-403",
+          "name": "411-413",
+          "area": 662,
+          "status": "Occupied",
+          "floor": 4,
+          "isSelfUse": false
+        },
+        {
+          "id": "b1-404",
+          "name": "412",
+          "area": 405,
+          "status": "Occupied",
+          "floor": 4,
+          "isSelfUse": false
+        },
+        {
+          "id": "b1-408",
+          "name": "416-418",
+          "area": 610.75,
+          "status": "Vacant",
+          "floor": 4,
+          "isSelfUse": false
+        },
+        {
+          "id": "b1-417-419",
+          "name": "417-419",
+          "area": 390,
+          "status": "Vacant",
+          "floor": 4,
+          "isSelfUse": false
+        },
+        {
+          "id": "b1-423",
+          "name": "423",
+          "area": 62.83,
+          "status": "Occupied",
+          "floor": 4,
+          "isSelfUse": false
+        },
+        {
+          "id": "b1-425",
+          "name": "425",
+          "area": 132.51,
+          "status": "Vacant",
+          "floor": 4,
+          "isSelfUse": true
+        },
+        {
+          "id": "b1-405",
+          "name": "428",
+          "area": 1,
+          "status": "Vacant",
+          "floor": 4,
+          "isSelfUse": true
+        }
+      ]
+    },
+    {
+      "id": "b1767516490601",
+      "name": "园区公共场地",
+      "type": "Site",
+      "units": [
+        {
+          "id": "b1767516490601-109咖啡",
+          "name": "109咖啡",
+          "area": 25,
+          "status": "Occupied",
+          "floor": 1,
+          "isSelfUse": false
+        },
+        {
+          "id": "b1767516490601-112超市",
+          "name": "112超市",
+          "area": 47,
+          "status": "Occupied",
+          "floor": 1,
+          "isSelfUse": false
+        },
+        {
+          "id": "b1767516490601-停车场",
+          "name": "停车场",
+          "area": 1,
+          "status": "Occupied",
+          "floor": 1,
+          "isSelfUse": false
+        },
+        {
+          "id": "b1767516490601-001",
+          "name": "移动",
+          "area": 1,
+          "status": "Occupied",
+          "floor": 1,
+          "isSelfUse": false
+        },
+        {
+          "id": "b1767516490601-联通",
+          "name": "联通",
+          "area": 1,
+          "status": "Occupied",
+          "floor": 1,
+          "isSelfUse": false
+        }
+      ]
+    },
+    {
+      "id": "b2",
+      "name": "2号楼",
+      "type": "Building",
+      "units": [
+        {
+          "id": "b2-101",
+          "name": "1F",
+          "area": 2337.49,
+          "status": "Occupied",
+          "floor": 1,
+          "isSelfUse": false
+        },
+        {
+          "id": "b2-201",
+          "name": "201",
+          "area": 345,
+          "status": "Occupied",
+          "floor": 2,
+          "isSelfUse": false
+        },
+        {
+          "id": "b2-202",
+          "name": "202",
+          "area": 307.9,
+          "status": "Occupied",
+          "floor": 2,
+          "isSelfUse": false
+        },
+        {
+          "id": "b2-203",
+          "name": "203",
+          "area": 428,
+          "status": "Occupied",
+          "floor": 2,
+          "isSelfUse": false
+        },
+        {
+          "id": "b2-204",
+          "name": "204",
+          "area": 484,
+          "status": "Occupied",
+          "floor": 2,
+          "isSelfUse": false
+        },
+        {
+          "id": "b2-205",
+          "name": "205",
+          "area": 347.22,
+          "status": "Occupied",
+          "floor": 2,
+          "isSelfUse": false
+        },
+        {
+          "id": "b2-206",
+          "name": "206",
+          "area": 230,
+          "status": "Vacant",
+          "floor": 2,
+          "isSelfUse": false
+        },
+        {
+          "id": "b2-207",
+          "name": "207",
+          "area": 220,
+          "status": "Occupied",
+          "floor": 2,
+          "isSelfUse": false
+        },
+        {
+          "id": "b2-208",
+          "name": "208",
+          "area": 344.77,
+          "status": "Occupied",
+          "floor": 2,
+          "isSelfUse": false
+        },
+        {
+          "id": "b2-301",
+          "name": "3F",
+          "area": 3023.37,
+          "status": "Occupied",
+          "floor": 3,
+          "isSelfUse": false
+        },
+        {
+          "id": "b2-401",
+          "name": "401",
+          "area": 582.25,
+          "status": "Occupied",
+          "floor": 4,
+          "isSelfUse": false
+        },
+        {
+          "id": "b2-402",
+          "name": "403",
+          "area": 294,
+          "status": "Occupied",
+          "floor": 4,
+          "isSelfUse": false
+        },
+        {
+          "id": "b2-404",
+          "name": "405-407",
+          "area": 596,
+          "status": "Occupied",
+          "floor": 4,
+          "isSelfUse": false
+        },
+        {
+          "id": "b2-405",
+          "name": "406",
+          "area": 546,
+          "status": "Occupied",
+          "floor": 4,
+          "isSelfUse": false
+        },
+        {
+          "id": "b2-403",
+          "name": "411",
+          "area": 935,
+          "status": "Occupied",
+          "floor": 4,
+          "isSelfUse": false
+        },
+        {
+          "id": "b2-406",
+          "name": "备用",
+          "area": 1,
+          "status": "Vacant",
+          "floor": 4,
+          "isSelfUse": true
+        }
+      ]
+    },
+    {
+      "id": "b3",
+      "name": "3号楼",
+      "type": "Building",
+      "units": [
+        {
+          "id": "b3-101",
+          "name": "1F",
+          "area": 1197,
+          "status": "Occupied",
+          "floor": 1,
+          "isSelfUse": false
+        },
+        {
+          "id": "b3-201",
+          "name": "2F",
+          "area": 1000,
+          "status": "Occupied",
+          "floor": 2,
+          "isSelfUse": false
+        }
+      ]
+    }
+  ],
+  "tenants": [
+    {
+      "id": "t1772517163739",
+      "name": "上海管易云计算软件有限公司",
+      "foundingDate": "2013-09-13",
+      "legalRepName": "许彬",
+      "buildingId": "b2",
+      "unitIds": [
+        "b2-403"
+      ],
+      "totalArea": 935,
+      "signingDate": "2024-11-01",
+      "leaseStart": "2024-11-06",
+      "leaseEnd": "2027-11-05",
+      "unitPrice": 2.6,
+      "monthlyRent": 73943,
+      "rentFreePeriods": [],
+      "paymentCycle": "Monthly",
+      "paymentCycleMonths": 1,
+      "firstPaymentDate": "2024-11-06",
+      "firstPaymentMonths": 1,
+      "depositAmount": 0,
+      "depositStatus": "Paid",
+      "status": "Active",
+      "isRisk": false,
+      "keyMoments": []
+    },
+    {
+      "id": "t1770692098136_renewal",
+      "rootId": "t1764134550887",
+      "name": "上海纪世嘉游信息技术有限公司",
+      "industry": "软件开发",
+      "foundingDate": "2023-10-11",
+      "legalRepName": "钱嘉纬",
+      "buildingId": "b1",
+      "unitIds": [
+        "b1-402"
+      ],
+      "totalArea": 248.37,
+      "signingDate": "2026-02-10",
+      "leaseStart": "2026-03-01",
+      "leaseEnd": "2027-03-01",
+      "unitPrice": 2.8,
+      "monthlyRent": 21153,
+      "rentFreePeriods": [
+        {
+          "description": "",
+          "end": "2025-03-31",
+          "start": "2025-03-01"
+        }
+      ],
+      "paymentCycle": "Quarterly",
+      "firstPaymentDate": "2026-03-01",
+      "firstPaymentMonths": 3,
+      "freeRentHandling": "Deduct",
+      "depositAmount": 49860.28,
+      "depositStatus": "Paid",
+      "status": "Pending",
+      "isRisk": false,
+      "contractParkingSpaces": 2,
+      "actualParkingSpaces": 2,
+      "parkingUnitPrice": 300,
+      "keyMoments": []
+    },
+    {
+      "id": "t1770692072209_renewal",
+      "rootId": "t1764124137033",
+      "name": "上海柒游网络科技有限公司（原和柒）",
+      "buildingId": "b1",
+      "unitIds": [
+        "b1-307"
+      ],
+      "totalArea": 63.22,
+      "signingDate": "2026-02-10",
+      "leaseStart": "2026-03-01",
+      "leaseEnd": "2027-03-01",
+      "unitPrice": 2.8,
+      "monthlyRent": 5384,
+      "rentFreePeriods": [],
+      "paymentCycle": "Quarterly",
+      "firstPaymentDate": "2026-03-01",
+      "firstPaymentMonths": 3,
+      "depositAmount": 12691.42,
+      "depositStatus": "Paid",
+      "status": "Pending",
+      "isRisk": false,
+      "contractParkingSpaces": 1,
+      "actualParkingSpaces": 1,
+      "parkingUnitPrice": 300,
+      "keyMoments": []
+    },
+    {
+      "id": "t1770691095053_renewal",
+      "rootId": "t1764123968511",
+      "name": "上海月之岛信息技术有限公司",
+      "industry": "游戏开发",
+      "foundingDate": "2024-07-23",
+      "legalRepName": "罗晓彬",
+      "buildingId": "b1",
+      "unitIds": [
+        "b1-306"
+      ],
+      "totalArea": 243.91,
+      "signingDate": "2026-02-10",
+      "leaseStart": "2026-03-01",
+      "leaseEnd": "2027-03-01",
+      "unitPrice": 2.8,
+      "monthlyRent": 20773,
+      "rentFreePeriods": [
+        {
+          "description": "",
+          "end": "2025-03-31",
+          "start": "2025-03-01"
+        }
+      ],
+      "paymentCycle": "Quarterly",
+      "firstPaymentDate": "2026-03-01",
+      "firstPaymentMonths": 3,
+      "freeRentHandling": "Deduct",
+      "depositAmount": 48964.93,
+      "depositStatus": "Paid",
+      "status": "Pending",
+      "isRisk": false,
+      "contractParkingSpaces": 2,
+      "actualParkingSpaces": 2,
+      "parkingUnitPrice": 300,
+      "keyMoments": []
+    },
+    {
+      "id": "t1770621484485_renewal",
+      "rootId": "t1764123406177",
+      "name": "奥迪康（上海）听力技术有限公司",
+      "industry": "医疗设备",
+      "foundingDate": "2006-02-28",
+      "legalRepName": "SOEREN NIELSEN",
+      "buildingId": "b1",
+      "unitIds": [
+        "b1-102"
+      ],
+      "totalArea": 999.52,
+      "signingDate": "2026-02-09",
+      "leaseStart": "2026-02-01",
+      "leaseEnd": "2029-01-31",
+      "unitPrice": 3.11,
+      "monthlyRent": 94550,
+      "rentFreePeriods": [],
+      "paymentCycle": "Quarterly",
+      "firstPaymentDate": "2023-02-01",
+      "firstPaymentMonths": 3,
+      "depositAmount": 37394.55,
+      "depositStatus": "Paid",
+      "status": "Pending",
+      "isRisk": false,
+      "contractParkingSpaces": 4,
+      "actualParkingSpaces": 4,
+      "parkingUnitPrice": 300,
+      "keyMoments": []
+    },
+    {
+      "id": "t1767579337008",
+      "name": "停车场",
+      "buildingId": "b1767516490601",
+      "unitIds": [
+        "b1767516490601-停车场"
+      ],
+      "totalArea": 1,
+      "signingDate": "2024-12-01",
+      "leaseStart": "2024-12-31",
+      "leaseEnd": "2026-12-31",
+      "unitPrice": 1808.23,
+      "monthlyRent": 55000,
+      "rentFreePeriods": [],
+      "paymentCycle": "Monthly",
+      "paymentCycleMonths": 3,
+      "firstPaymentDate": "2024-11-01",
+      "firstPaymentMonths": 3,
+      "depositAmount": 0,
+      "depositStatus": "Unpaid",
+      "status": "Active",
+      "isRisk": false,
+      "keyMoments": []
+    },
+    {
+      "id": "t1767578933648",
+      "name": "中国移动通信集团上海有限公司",
+      "buildingId": "b1767516490601",
+      "unitIds": [
+        "b1767516490601-001"
+      ],
+      "totalArea": 1,
+      "signingDate": "2025-08-01",
+      "leaseStart": "2025-09-01",
+      "leaseEnd": "2027-12-31",
+      "unitPrice": 52.069,
+      "monthlyRent": 1584,
+      "rentFreePeriods": [],
+      "paymentCycle": "Annual",
+      "paymentCycleMonths": 12,
+      "firstPaymentDate": "2025-08-01",
+      "firstPaymentMonths": 12,
+      "depositAmount": 0,
+      "depositStatus": "Unpaid",
+      "status": "Active",
+      "isRisk": false,
+      "keyMoments": []
+    },
+    {
+      "id": "t1767578792057",
+      "name": "中国联合网络通信有限公司上海分公司",
+      "buildingId": "b1767516490601",
+      "unitIds": [
+        "b1767516490601-联通"
+      ],
+      "totalArea": 1,
+      "signingDate": "2025-08-01",
+      "leaseStart": "2025-09-01",
+      "leaseEnd": "2027-12-31",
+      "unitPrice": 54.8,
+      "monthlyRent": 1667,
+      "rentFreePeriods": [],
+      "paymentCycle": "Annual",
+      "paymentCycleMonths": 3,
+      "firstPaymentDate": "2025-08-01",
+      "firstPaymentMonths": 3,
+      "depositAmount": 0,
+      "depositStatus": "Unpaid",
+      "status": "Active",
+      "isRisk": false,
+      "keyMoments": []
+    },
+    {
+      "id": "t1767578667570",
+      "name": "陈林林",
+      "buildingId": "b1767516490601",
+      "unitIds": [
+        "b1767516490601-109咖啡"
+      ],
+      "totalArea": 25,
+      "signingDate": "2023-08-10",
+      "leaseStart": "2023-09-01",
+      "leaseEnd": "2026-08-31",
+      "unitPrice": 6,
+      "monthlyRent": 4563,
+      "rentFreePeriods": [],
+      "paymentCycle": "Quarterly",
+      "paymentCycleMonths": 3,
+      "firstPaymentDate": "2023-08-01",
+      "firstPaymentMonths": 3,
+      "depositAmount": 14187.5,
+      "depositStatus": "Paid",
+      "status": "Active",
+      "isRisk": false,
+      "keyMoments": []
+    },
+    {
+      "id": "t1767578543511",
+      "name": "上海花辰餐饮管理有限公司",
+      "buildingId": "b1767516490601",
+      "unitIds": [
+        "b1767516490601-112超市"
+      ],
+      "totalArea": 47,
+      "signingDate": "2025-06-04",
+      "leaseStart": "2025-06-01",
+      "leaseEnd": "2028-05-31",
+      "unitPrice": 0.6998,
+      "monthlyRent": 1000,
+      "rentFreePeriods": [],
+      "paymentCycle": "Quarterly",
+      "paymentCycleMonths": 3,
+      "firstPaymentDate": "2025-06-01",
+      "firstPaymentMonths": 3,
+      "depositAmount": 3906,
+      "depositStatus": "Paid",
+      "status": "Active",
+      "isRisk": false,
+      "keyMoments": []
+    },
+    {
+      "id": "t1766997069578",
+      "name": "上海禅定信息科技有限公司",
+      "industry": "金融-私募机构",
+      "foundingDate": "2015-01-12",
+      "legalRepName": "潘鹏",
+      "buildingId": "b1",
+      "unitIds": [
+        "b1-423"
+      ],
+      "totalArea": 62.83,
+      "signingDate": "2025-11-05",
+      "leaseStart": "2025-12-15",
+      "leaseEnd": "2028-12-14",
+      "unitPrice": 3.3,
+      "monthlyRent": 6307,
+      "rentFreePeriods": [
+        {
+          "description": "",
+          "end": "2026-01-14",
+          "start": "2025-12-15"
+        },
+        {
+          "description": "",
+          "end": "2027-01-14",
+          "start": "2026-12-15"
+        },
+        {
+          "description": "",
+          "end": "2027-12-31",
+          "start": "2027-12-15"
+        }
+      ],
+      "paymentCycle": "Quarterly",
+      "paymentCycleMonths": 3,
+      "firstPaymentDate": "2025-11-05",
+      "firstPaymentMonths": 3,
+      "depositAmount": 20176.28,
+      "depositStatus": "Paid",
+      "status": "Active",
+      "isRisk": false,
+      "keyMoments": []
+    },
+    {
+      "id": "t1766734464976",
+      "name": "戴孟特（上海）医疗科技有限公司",
+      "industry": "医疗器械",
+      "foundingDate": "2004-05-31",
+      "legalRepName": "RENE SCHNEIDER- 丹麦人",
+      "buildingId": "b1",
+      "unitIds": [
+        "b1-302",
+        "b1-304"
+      ],
+      "totalArea": 1066,
+      "signingDate": "2025-12-04",
+      "leaseStart": "2026-04-01",
+      "leaseEnd": "2029-03-31",
+      "unitPrice": 2.95,
+      "monthlyRent": 95651,
+      "rentFreePeriods": [
+        {
+          "description": "",
+          "end": "2026-08-31",
+          "start": "2026-07-01"
+        },
+        {
+          "description": "",
+          "end": "2027-08-31",
+          "start": "2027-07-01"
+        },
+        {
+          "description": "",
+          "end": "2028-08-31",
+          "start": "2028-07-01"
+        }
+      ],
+      "paymentCycle": "Quarterly",
+      "paymentCycleMonths": 3,
+      "firstPaymentDate": "2025-12-01",
+      "firstPaymentMonths": 3,
+      "depositAmount": 308273.88,
+      "depositStatus": "Paid",
+      "status": "Active",
+      "isRisk": false,
+      "keyMoments": []
+    },
+    {
+      "id": "t1765528788916",
+      "name": "上海沙里淘屋技术有限公司",
+      "industry": "互联网租房",
+      "foundingDate": "2025-09-10",
+      "legalRepName": "罗鑫",
+      "buildingId": "b2",
+      "unitIds": [
+        "b2-206"
+      ],
+      "totalArea": 230,
+      "signingDate": "2025-09-25",
+      "leaseStart": "2025-10-01",
+      "leaseEnd": "2026-01-31",
+      "unitPrice": 3,
+      "monthlyRent": 20988,
+      "rentFreePeriods": [],
+      "paymentCycle": "Quarterly",
+      "paymentCycleMonths": 3,
+      "firstPaymentDate": "2025-10-01",
+      "firstPaymentMonths": 3,
+      "depositAmount": 0,
+      "depositStatus": "Unpaid",
+      "status": "Terminated",
+      "terminationDate": "2026-01-31",
+      "terminationType": "Early",
+      "terminationReason": "业务收缩搬迁",
+      "isRisk": false,
+      "keyMoments": []
+    },
+    {
+      "id": "t1764135284860",
+      "name": "上海童锐网络科技有限公司",
+      "industry": "网络教育",
+      "foundingDate": "2011-08-18",
+      "legalRepName": "李文华",
+      "buildingId": "b1",
+      "unitIds": [
+        "b1-403"
+      ],
+      "totalArea": 662,
+      "signingDate": "2025-09-28",
+      "leaseStart": "2026-03-01",
+      "leaseEnd": "2029-02-28",
+      "unitPrice": 3.2,
+      "monthlyRent": 64435,
+      "rentFreePeriods": [
+        {
+          "description": "",
+          "end": "2026-07-31",
+          "start": "2026-06-01"
+        },
+        {
+          "description": "",
+          "end": "2027-07-31",
+          "start": "2027-06-01"
+        },
+        {
+          "description": "",
+          "end": "2028-07-31",
+          "start": "2028-06-01"
+        }
+      ],
+      "paymentCycle": "Quarterly",
+      "paymentCycleMonths": 3,
+      "firstPaymentDate": "2025-11-01",
+      "firstPaymentMonths": 3,
+      "depositAmount": 185640,
+      "depositStatus": "Paid",
+      "status": "Active",
+      "isRisk": false,
+      "contractParkingSpaces": 5,
+      "actualParkingSpaces": 5,
+      "parkingUnitPrice": 300,
+      "keyMoments": []
+    },
+    {
+      "id": "t1764135021477",
+      "name": "上海采古信息科技有限公司（偕聚）",
+      "industry": "软件开发",
+      "foundingDate": "2017-08-08",
+      "legalRepName": "杨彪",
+      "buildingId": "b1",
+      "unitIds": [
+        "b1-408"
+      ],
+      "totalArea": 610.75,
+      "signingDate": "2025-02-01",
+      "leaseStart": "2025-03-01",
+      "leaseEnd": "2026-02-28",
+      "unitPrice": 2.2,
+      "monthlyRent": 40869,
+      "rentFreePeriods": [
+        {
+          "description": "",
+          "end": "2025-03-31",
+          "start": "2025-03-01"
+        }
+      ],
+      "paymentCycle": "Quarterly",
+      "firstPaymentDate": "2025-04-01",
+      "firstPaymentMonths": 3,
+      "depositAmount": 134823.06,
+      "depositStatus": "Paid",
+      "status": "Terminated",
+      "terminationDate": "2026-01-31",
+      "terminationType": "Normal",
+      "terminationReason": "业务收缩搬迁",
+      "specialRequirements": "租金支付不及时",
+      "isRisk": true,
+      "contractParkingSpaces": 2,
+      "actualParkingSpaces": 2,
+      "parkingUnitPrice": 300,
+      "keyMoments": []
+    },
+    {
+      "id": "t1764134883429",
+      "name": "浙江智行微电子有限公司",
+      "industry": "集成电路",
+      "foundingDate": "2022-10-17",
+      "legalRepName": "潘建考",
+      "buildingId": "b1",
+      "unitIds": [
+        "b1-404"
+      ],
+      "totalArea": 405,
+      "signingDate": "2025-05-20",
+      "leaseStart": "2025-09-01",
+      "leaseEnd": "2028-08-31",
+      "unitPrice": 3.2,
+      "monthlyRent": 39420,
+      "rentFreePeriods": [
+        {
+          "description": "",
+          "end": "2025-10-31",
+          "start": "2025-09-01"
+        },
+        {
+          "description": "",
+          "end": "2026-10-31",
+          "start": "2026-10-01"
+        },
+        {
+          "description": "",
+          "end": "2027-10-31",
+          "start": "2027-10-01"
+        }
+      ],
+      "paymentCycle": "Quarterly",
+      "paymentCycleMonths": 3,
+      "firstPaymentDate": "2025-08-10",
+      "firstPaymentMonths": 3,
+      "depositAmount": 126360,
+      "depositStatus": "Paid",
+      "status": "Active",
+      "isRisk": false,
+      "contractParkingSpaces": 3,
+      "actualParkingSpaces": 3,
+      "parkingUnitPrice": 300,
+      "keyMoments": []
+    },
+    {
+      "id": "t1764134550887",
+      "name": "上海壹贰参信息技术有限公司",
+      "industry": "软件开发",
+      "foundingDate": "2023-10-11",
+      "legalRepName": "钱嘉纬",
+      "buildingId": "b1",
+      "unitIds": [
+        "b1-402"
+      ],
+      "totalArea": 248.37,
+      "signingDate": "2025-03-17",
+      "leaseStart": "2025-03-01",
+      "leaseEnd": "2026-02-28",
+      "unitPrice": 2.2,
+      "monthlyRent": 16620,
+      "rentFreePeriods": [
+        {
+          "description": "",
+          "end": "2025-03-31",
+          "start": "2025-03-01"
+        }
+      ],
+      "paymentCycle": "Quarterly",
+      "firstPaymentDate": "2025-04-01",
+      "firstPaymentMonths": 3,
+      "depositAmount": 49860.28,
+      "depositStatus": "Paid",
+      "status": "Expired",
+      "isRisk": false,
+      "contractParkingSpaces": 2,
+      "actualParkingSpaces": 2,
+      "parkingUnitPrice": 300,
+      "keyMoments": []
+    },
+    {
+      "id": "t1764134406144",
+      "name": "上海游牛信息科技有限公司",
+      "foundingDate": "2016-08-02",
+      "legalRepName": "姜波",
+      "buildingId": "b1",
+      "unitIds": [
+        "b1-407"
+      ],
+      "totalArea": 507.45,
+      "signingDate": "2025-02-01",
+      "leaseStart": "2025-03-01",
+      "leaseEnd": "2027-02-28",
+      "unitPrice": 2.2,
+      "monthlyRent": 33957,
+      "rentFreePeriods": [
+        {
+          "description": "",
+          "end": "2025-04-30",
+          "start": "2025-03-01"
+        },
+        {
+          "description": "",
+          "end": "2026-04-30",
+          "start": "2026-03-01"
+        }
+      ],
+      "paymentCycle": "Quarterly",
+      "paymentCycleMonths": 3,
+      "firstPaymentDate": "2025-02-01",
+      "firstPaymentMonths": 3,
+      "depositAmount": 112019.59,
+      "depositStatus": "Paid",
+      "status": "Active",
+      "specialRequirements": "客户2017年9月入驻",
+      "isRisk": false,
+      "contractParkingSpaces": 2,
+      "actualParkingSpaces": 2,
+      "parkingUnitPrice": 300,
+      "keyMoments": []
+    },
+    {
+      "id": "t1764133760351",
+      "name": "上海润景晖科技有限公司",
+      "industry": "零售",
+      "foundingDate": "2020-04-14",
+      "legalRepName": "李鹏瑶",
+      "buildingId": "b1",
+      "unitIds": [
+        "b1-406"
+      ],
+      "totalArea": 101.8,
+      "signingDate": "2025-08-20",
+      "leaseStart": "2025-11-01",
+      "leaseEnd": "2028-10-31",
+      "unitPrice": 3,
+      "monthlyRent": 9289,
+      "rentFreePeriods": [
+        {
+          "description": "",
+          "end": "2025-11-30",
+          "start": "2025-11-01"
+        },
+        {
+          "description": "",
+          "end": "2026-11-30",
+          "start": "2026-11-01"
+        },
+        {
+          "description": "",
+          "end": "2027-11-30",
+          "start": "2027-11-01"
+        }
+      ],
+      "paymentCycle": "Quarterly",
+      "paymentCycleMonths": 3,
+      "firstPaymentDate": "2025-10-01",
+      "firstPaymentMonths": 3,
+      "depositAmount": 29903.9,
+      "depositStatus": "Paid",
+      "status": "Active",
+      "isRisk": false,
+      "contractParkingSpaces": 1,
+      "actualParkingSpaces": 1,
+      "parkingUnitPrice": 300,
+      "keyMoments": []
+    },
+    {
+      "id": "t1764124446633",
+      "name": "上海脉科医疗科技有限公司",
+      "industry": "医疗科技",
+      "foundingDate": "2016-05-17",
+      "legalRepName": "李斌",
+      "buildingId": "b1",
+      "unitIds": [
+        "b1-401"
+      ],
+      "totalArea": 360.76,
+      "signingDate": "2025-02-17",
+      "leaseStart": "2025-04-01",
+      "leaseEnd": "2028-03-31",
+      "unitPrice": 2.9,
+      "monthlyRent": 31822,
+      "rentFreePeriods": [
+        {
+          "description": "",
+          "end": "2025-08-31",
+          "start": "2025-07-01"
+        },
+        {
+          "description": "",
+          "end": "2026-04-30",
+          "start": "2026-03-01"
+        },
+        {
+          "description": "",
+          "end": "2027-02-28",
+          "start": "2027-02-01"
+        }
+      ],
+      "paymentCycle": "Quarterly",
+      "firstPaymentDate": "2025-04-01",
+      "firstPaymentMonths": 3,
+      "depositAmount": 102681.32,
+      "depositStatus": "Paid",
+      "status": "Active",
+      "specialRequirements": "2个免费车，3个收费车位",
+      "isRisk": false,
+      "contractParkingSpaces": 3,
+      "actualParkingSpaces": 3,
+      "parkingUnitPrice": 300,
+      "keyMoments": []
+    },
+    {
+      "id": "t1764124194626",
+      "name": "上海麦可洛自动化科技有限公司",
+      "industry": "设备制造",
+      "foundingDate": "2018-12-21",
+      "legalRepName": "郑华强",
+      "buildingId": "b1",
+      "unitIds": [
+        "b1-323"
+      ],
+      "totalArea": 130.13,
+      "signingDate": "2025-02-01",
+      "leaseStart": "2025-03-01",
+      "leaseEnd": "2027-02-28",
+      "unitPrice": 2.2,
+      "monthlyRent": 8708,
+      "rentFreePeriods": [],
+      "paymentCycle": "Quarterly",
+      "paymentCycleMonths": 3,
+      "firstPaymentDate": "2025-03-01",
+      "firstPaymentMonths": 3,
+      "depositAmount": 28726.2,
+      "depositStatus": "Paid",
+      "status": "Active",
+      "isRisk": false,
+      "contractParkingSpaces": 1,
+      "actualParkingSpaces": 1,
+      "parkingUnitPrice": 300,
+      "keyMoments": []
+    },
+    {
+      "id": "t1764124137033",
+      "name": "上海柒游网络科技有限公司（原和柒）",
+      "buildingId": "b1",
+      "unitIds": [
+        "b1-307"
+      ],
+      "totalArea": 63.22,
+      "leaseStart": "2025-03-01",
+      "leaseEnd": "2026-02-28",
+      "unitPrice": 2.2,
+      "monthlyRent": 4230,
+      "rentFreePeriods": [],
+      "paymentCycle": "Quarterly",
+      "firstPaymentDate": "2025-03-01",
+      "firstPaymentMonths": 3,
+      "depositAmount": 12691.42,
+      "depositStatus": "Paid",
+      "status": "Expired",
+      "isRisk": false,
+      "contractParkingSpaces": 1,
+      "actualParkingSpaces": 1,
+      "parkingUnitPrice": 300,
+      "keyMoments": []
+    },
+    {
+      "id": "t1764124057542",
+      "name": "上海智浦欣微电子有限公司",
+      "industry": "微电子",
+      "foundingDate": "2010-05-25",
+      "legalRepName": "周塔",
+      "buildingId": "b1",
+      "unitIds": [
+        "b1-303"
+      ],
+      "totalArea": 414.83,
+      "signingDate": "2025-02-01",
+      "leaseStart": "2025-03-01",
+      "leaseEnd": "2027-02-28",
+      "unitPrice": 2.2,
+      "monthlyRent": 27759,
+      "rentFreePeriods": [],
+      "paymentCycle": "Quarterly",
+      "firstPaymentDate": "2025-03-01",
+      "firstPaymentMonths": 3,
+      "depositAmount": 83277.12,
+      "depositStatus": "Paid",
+      "status": "Active",
+      "specialRequirements": "首期合同：2020年10月入驻",
+      "isRisk": false,
+      "contractParkingSpaces": 2,
+      "actualParkingSpaces": 2,
+      "parkingUnitPrice": 300,
+      "keyMoments": []
+    },
+    {
+      "id": "t1764123968511",
+      "name": "上海月之岛信息技术有限公司",
+      "industry": "游戏开发",
+      "foundingDate": "2024-07-23",
+      "legalRepName": "罗晓彬",
+      "buildingId": "b1",
+      "unitIds": [
+        "b1-306"
+      ],
+      "totalArea": 243.91,
+      "signingDate": "2025-03-17",
+      "leaseStart": "2025-03-01",
+      "leaseEnd": "2026-02-28",
+      "unitPrice": 2.2,
+      "monthlyRent": 16322,
+      "rentFreePeriods": [
+        {
+          "description": "",
+          "end": "2025-03-31",
+          "start": "2025-03-01"
+        }
+      ],
+      "paymentCycle": "Quarterly",
+      "firstPaymentDate": "2025-04-01",
+      "firstPaymentMonths": 3,
+      "depositAmount": 48964.93,
+      "depositStatus": "Paid",
+      "status": "Expired",
+      "isRisk": false,
+      "contractParkingSpaces": 2,
+      "actualParkingSpaces": 2,
+      "parkingUnitPrice": 300,
+      "keyMoments": []
+    },
+    {
+      "id": "t1764123807288",
+      "name": "上海哈卡信息科技有限公司",
+      "foundingDate": "2018-04-03",
+      "legalRepName": "蔡晨业",
+      "buildingId": "b1",
+      "unitIds": [
+        "b1-305"
+      ],
+      "totalArea": 99.98,
+      "signingDate": "2025-02-01",
+      "leaseStart": "2025-03-01",
+      "leaseEnd": "2027-02-28",
+      "unitPrice": 2.2,
+      "monthlyRent": 6690,
+      "rentFreePeriods": [],
+      "paymentCycle": "Quarterly",
+      "firstPaymentDate": "2025-03-01",
+      "firstPaymentMonths": 3,
+      "depositAmount": 20070.99,
+      "depositStatus": "Paid",
+      "status": "Active",
+      "isRisk": false,
+      "contractParkingSpaces": 2,
+      "actualParkingSpaces": 2,
+      "parkingUnitPrice": 300,
+      "keyMoments": []
+    },
+    {
+      "id": "t1764123596456",
+      "name": "上海极然微电子有限公司 ",
+      "industry": "集成电路",
+      "foundingDate": "2019-09-24",
+      "legalRepName": "刘夏冰",
+      "buildingId": "b1",
+      "unitIds": [
+        "b1-301"
+      ],
+      "totalArea": 930.4,
+      "signingDate": "2025-07-16",
+      "leaseStart": "2025-11-15",
+      "leaseEnd": "2028-11-14",
+      "unitPrice": 3,
+      "monthlyRent": 84899,
+      "rentFreePeriods": [
+        {
+          "description": "",
+          "end": "2026-05-14",
+          "start": "2026-02-15"
+        },
+        {
+          "description": "",
+          "end": "2027-05-14",
+          "start": "2027-02-15"
+        },
+        {
+          "description": "",
+          "end": "2028-04-14",
+          "start": "2028-02-15"
+        }
+      ],
+      "paymentCycle": "Quarterly",
+      "paymentCycleMonths": 3,
+      "firstPaymentDate": "2025-11-01",
+      "firstPaymentMonths": 3,
+      "freeRentHandling": "Defer",
+      "depositAmount": 266725,
+      "depositStatus": "Paid",
+      "status": "Active",
+      "specialRequirements": "定制装修交付：\n装修费用由甲方承担，无论乙方因何原因搬离该房屋，该装修均归甲方所有。该装修系附合同义务之有偿提供，如因乙方原因未履行至本合同租赁期限届满，甲方有权要求乙方按照未履行租赁期限与本合同约定的租赁期限的比例向甲方支付装修补偿费用。 \n11、其它： \n（1）甲方在该房屋所使用的装修材料以及甲方提供之家具符合国家环保要求； \n（2）机房采用双层砌墙内加隔音棉； \n（3）该房屋除实验室和机房采用地面铺设地砖；\n（4）甲方承担机房及两个老板间的空调安装，其它公区加装空调由乙方承担设备费用； \n（5）乙方在租赁期结束后按装修现状交付，不对装修部分做复原。 \n",
+      "isRisk": false,
+      "contractParkingSpaces": 12,
+      "actualParkingSpaces": 12,
+      "parkingUnitPrice": 300,
+      "keyMoments": []
+    },
+    {
+      "id": "t1764123406177",
+      "name": "奥迪康（上海）听力技术有限公司",
+      "industry": "医疗设备",
+      "foundingDate": "2006-02-28",
+      "legalRepName": "SOEREN NIELSEN",
+      "buildingId": "b1",
+      "unitIds": [
+        "b1-102"
+      ],
+      "totalArea": 999.52,
+      "signingDate": "2020-01-20",
+      "leaseStart": "2020-02-01",
+      "leaseEnd": "2029-02-28",
+      "unitPrice": 3.11,
+      "monthlyRent": 94550,
+      "rentFreePeriods": [],
+      "paymentCycle": "Quarterly",
+      "firstPaymentDate": "2023-02-01",
+      "firstPaymentMonths": 3,
+      "depositAmount": 37394.55,
+      "depositStatus": "Paid",
+      "status": "Expired",
+      "isRisk": false,
+      "contractParkingSpaces": 4,
+      "actualParkingSpaces": 4,
+      "parkingUnitPrice": 300,
+      "keyMoments": []
+    },
+    {
+      "id": "t1764123167900",
+      "name": "上海象帝先计算技术有限公司",
+      "industry": "GPU芯片",
+      "foundingDate": "2022-02-18",
+      "legalRepName": "唐志敏",
+      "buildingId": "b2",
+      "unitIds": [
+        "b2-404"
+      ],
+      "totalArea": 596,
+      "signingDate": "2025-02-26",
+      "leaseStart": "2025-03-01",
+      "leaseEnd": "2028-02-29",
+      "unitPrice": 3,
+      "monthlyRent": 54385,
+      "rentFreePeriods": [
+        {
+          "description": "",
+          "end": "2025-07-15",
+          "start": "2025-06-01"
+        },
+        {
+          "description": "",
+          "end": "2026-05-31",
+          "start": "2026-04-16"
+        },
+        {
+          "description": "",
+          "end": "2027-04-15",
+          "start": "2027-03-01"
+        }
+      ],
+      "paymentCycle": "Quarterly",
+      "paymentCycleMonths": 3,
+      "firstPaymentDate": "2025-03-01",
+      "firstPaymentMonths": 3,
+      "depositAmount": 175075,
+      "depositStatus": "Paid",
+      "status": "Active",
+      "specialRequirements": "定制装修交付",
+      "isRisk": false,
+      "contractParkingSpaces": 6,
+      "actualParkingSpaces": 6,
+      "parkingUnitPrice": 300,
+      "keyMoments": []
+    },
+    {
+      "id": "t1764123010207",
+      "name": "上海津领信息科技有限公司",
+      "industry": "软件开发",
+      "foundingDate": "2016-11-17",
+      "legalRepName": "张小龙",
+      "buildingId": "b2",
+      "unitIds": [
+        "b2-405"
+      ],
+      "totalArea": 546,
+      "signingDate": "2024-12-10",
+      "leaseStart": "2024-12-20",
+      "leaseEnd": "2027-12-19",
+      "unitPrice": 2.9,
+      "monthlyRent": 48162,
+      "rentFreePeriods": [
+        {
+          "description": "",
+          "end": "2025-05-19",
+          "start": "2025-03-20"
+        },
+        {
+          "description": "",
+          "end": "2026-05-19",
+          "start": "2026-03-20"
+        },
+        {
+          "description": "",
+          "end": "2027-04-19",
+          "start": "2027-03-20"
+        }
+      ],
+      "paymentCycle": "Quarterly",
+      "firstPaymentDate": "2024-11-20",
+      "firstPaymentMonths": 3,
+      "depositAmount": 155405.25,
+      "depositStatus": "Paid",
+      "status": "Active",
+      "isRisk": false,
+      "contractParkingSpaces": 3,
+      "actualParkingSpaces": 3,
+      "parkingUnitPrice": 300,
+      "keyMoments": []
+    },
+    {
+      "id": "t1764122895524",
+      "name": "上海伽马伊塔科技有限公司（何毅）",
+      "industry": "科技公司",
+      "legalRepName": "公司成立中",
+      "buildingId": "b2",
+      "unitIds": [
+        "b2-402"
+      ],
+      "totalArea": 294,
+      "signingDate": "2025-09-22",
+      "leaseStart": "2025-12-15",
+      "leaseEnd": "2028-12-14",
+      "unitPrice": 2.8,
+      "monthlyRent": 25039,
+      "rentFreePeriods": [
+        {
+          "description": "",
+          "end": "2026-04-14",
+          "start": "2026-03-15"
+        },
+        {
+          "description": "",
+          "end": "2027-04-14",
+          "start": "2027-03-15"
+        },
+        {
+          "description": "",
+          "end": "2028-04-14",
+          "start": "2028-03-15"
+        }
+      ],
+      "paymentCycle": "Quarterly",
+      "paymentCycleMonths": 3,
+      "firstPaymentDate": "2025-11-15",
+      "firstPaymentMonths": 3,
+      "depositAmount": 80997,
+      "depositStatus": "Paid",
+      "status": "Active",
+      "specialRequirements": "精装修交付：装修费用由甲方承担，无论乙方因何原因搬离该房屋，该装修均归甲方所有。该装修系附合同义务之有偿提供，如因乙方原因未履行至本合同租赁期限届满，甲方有权要求乙方按照未履行租赁期限与本合同约定的租赁期限的比例向甲方支付装修补偿费用。\n",
+      "isRisk": false,
+      "contractParkingSpaces": 3,
+      "actualParkingSpaces": 3,
+      "parkingUnitPrice": 300,
+      "keyMoments": []
+    },
+    {
+      "id": "t1764122771210",
+      "name": "上海列拓科技有限公司",
+      "foundingDate": "2016-06-01",
+      "legalRepName": "易志中",
+      "buildingId": "b2",
+      "unitIds": [
+        "b2-401"
+      ],
+      "totalArea": 582.25,
+      "signingDate": "2025-02-05",
+      "leaseStart": "2025-03-01",
+      "leaseEnd": "2028-02-29",
+      "unitPrice": 2.9,
+      "monthlyRent": 51359,
+      "rentFreePeriods": [
+        {
+          "description": "",
+          "end": "2025-07-31",
+          "start": "2025-06-01"
+        },
+        {
+          "description": "",
+          "end": "2026-03-31",
+          "start": "2026-02-01"
+        },
+        {
+          "description": "",
+          "end": "2027-01-31",
+          "start": "2027-01-01"
+        }
+      ],
+      "paymentCycle": "Quarterly",
+      "paymentCycleMonths": 3,
+      "firstPaymentDate": "2025-03-01",
+      "firstPaymentMonths": 3,
+      "depositAmount": 165722.91,
+      "depositStatus": "Paid",
+      "status": "Active",
+      "specialRequirements": "1个免费车位，3个收费车位",
+      "isRisk": false,
+      "contractParkingSpaces": 3,
+      "actualParkingSpaces": 3,
+      "parkingUnitPrice": 300,
+      "keyMoments": []
+    },
+    {
+      "id": "t1764122632556",
+      "name": "上海慧佰奕信息科技服务有限公司",
+      "industry": "企业服务",
+      "foundingDate": "2024-07-25",
+      "legalRepName": "付彬彬",
+      "buildingId": "b2",
+      "unitIds": [
+        "b2-301"
+      ],
+      "totalArea": 3023.37,
+      "signingDate": "2025-01-18",
+      "leaseStart": "2025-03-01",
+      "leaseEnd": "2028-02-28",
+      "unitPrice": 3,
+      "monthlyRent": 275883,
+      "rentFreePeriods": [
+        {
+          "description": "",
+          "end": "2025-10-31",
+          "start": "2025-06-01"
+        },
+        {
+          "description": "",
+          "end": "2026-04-30",
+          "start": "2026-02-01"
+        },
+        {
+          "description": "",
+          "end": "2027-02-28",
+          "start": "2027-02-01"
+        }
+      ],
+      "paymentCycle": "Quarterly",
+      "paymentCycleMonths": 3,
+      "firstPaymentDate": "2025-02-01",
+      "firstPaymentMonths": 3,
+      "freeRentHandling": "Defer",
+      "depositAmount": 551765.03,
+      "depositStatus": "Paid",
+      "status": "Active",
+      "specialRequirements": "部分装修：已在合同内列明相关责任说明。同时已确认好图纸",
+      "isRisk": true,
+      "contractParkingSpaces": 40,
+      "actualParkingSpaces": 40,
+      "parkingUnitPrice": 300,
+      "keyMoments": []
+    },
+    {
+      "id": "t1764122467244",
+      "name": "上海硕力知识产权代理事务所（特殊普通合伙）",
+      "industry": "企业服务",
+      "foundingDate": "2008-08-06",
+      "legalRepName": "王法男",
+      "buildingId": "b2",
+      "unitIds": [
+        "b2-208"
+      ],
+      "totalArea": 344.77,
+      "signingDate": "2024-11-05",
+      "leaseStart": "2024-12-01",
+      "leaseEnd": "2027-11-30",
+      "unitPrice": 2.7,
+      "monthlyRent": 28314,
+      "rentFreePeriods": [
+        {
+          "description": "",
+          "end": "2025-03-31",
+          "start": "2025-03-01"
+        },
+        {
+          "description": "",
+          "end": "2026-03-31",
+          "start": "2026-03-01"
+        },
+        {
+          "description": "",
+          "end": "2027-03-31",
+          "start": "2027-03-01"
+        }
+      ],
+      "paymentCycle": "Quarterly",
+      "firstPaymentDate": "2024-12-01",
+      "firstPaymentMonths": 3,
+      "depositAmount": 91838.11,
+      "depositStatus": "Paid",
+      "status": "Active",
+      "isRisk": false,
+      "contractParkingSpaces": 2,
+      "actualParkingSpaces": 2,
+      "parkingUnitPrice": 300,
+      "keyMoments": []
+    },
+    {
+      "id": "t1764122253533",
+      "name": "上海云道信息技术股份有限公司",
+      "industry": "互联网科技",
+      "foundingDate": "2011-11-21",
+      "legalRepName": "禹波",
+      "buildingId": "b2",
+      "unitIds": [
+        "b2-207"
+      ],
+      "totalArea": 220,
+      "signingDate": "2025-07-04",
+      "leaseStart": "2025-09-01",
+      "leaseEnd": "2028-08-31",
+      "unitPrice": 2.8,
+      "monthlyRent": 18737,
+      "rentFreePeriods": [
+        {
+          "description": "",
+          "end": "2025-10-31",
+          "start": "2025-09-01"
+        }
+      ],
+      "paymentCycle": "Quarterly",
+      "paymentCycleMonths": 2,
+      "firstPaymentDate": "2025-11-01",
+      "firstPaymentMonths": 2,
+      "depositAmount": 41873.33,
+      "depositStatus": "Paid",
+      "status": "Active",
+      "specialRequirements": "精装交付：包括对该房屋现有隔断大小进行部分调整、室内灯管色温进行调整、吊顶喷白并配置办公家私、制作LOGO墙、开关移位、交房前根据要求对地毯进行卫生处理。",
+      "isRisk": false,
+      "contractParkingSpaces": 2,
+      "actualParkingSpaces": 2,
+      "parkingUnitPrice": 300,
+      "keyMoments": []
+    },
+    {
+      "id": "t1764122055372",
+      "name": "小慧医疗科技（上海）有限公司",
+      "industry": "智能科技",
+      "foundingDate": "2016-01-21",
+      "legalRepName": "刘泽红",
+      "buildingId": "b2",
+      "unitIds": [
+        "b2-205"
+      ],
+      "totalArea": 347.22,
+      "signingDate": "2024-10-11",
+      "leaseStart": "2024-12-20",
+      "leaseEnd": "2027-12-19",
+      "unitPrice": 2.3,
+      "monthlyRent": 24291,
+      "rentFreePeriods": [
+        {
+          "description": "",
+          "end": "2025-05-03",
+          "start": "2025-03-20"
+        },
+        {
+          "description": "",
+          "end": "2026-05-03",
+          "start": "2026-03-20"
+        },
+        {
+          "description": "",
+          "end": "2027-05-03",
+          "start": "2027-03-20"
+        }
+      ],
+      "paymentCycle": "Quarterly",
+      "paymentCycleMonths": 3,
+      "firstPaymentDate": "2024-12-20",
+      "firstPaymentMonths": 3,
+      "freeRentHandling": "Deduct",
+      "depositAmount": 72872.8,
+      "depositStatus": "Paid",
+      "status": "Active",
+      "isRisk": false,
+      "contractParkingSpaces": 2,
+      "actualParkingSpaces": 2,
+      "parkingUnitPrice": 300,
+      "keyMoments": []
+    },
+    {
+      "id": "t1764120384124",
+      "name": "上海乾合微电子有限公司",
+      "industry": "微电子",
+      "foundingDate": "2020-04-08",
+      "legalRepName": "赵鹏",
+      "buildingId": "b2",
+      "unitIds": [
+        "b2-204"
+      ],
+      "totalArea": 484,
+      "signingDate": "2024-11-20",
+      "leaseStart": "2024-12-25",
+      "leaseEnd": "2027-12-24",
+      "unitPrice": 2.7,
+      "monthlyRent": 39748.5,
+      "rentFreePeriods": [
+        {
+          "description": "",
+          "end": "2025-05-24",
+          "start": "2025-03-25"
+        },
+        {
+          "description": "",
+          "end": "2026-05-24",
+          "start": "2026-03-25"
+        },
+        {
+          "description": "",
+          "end": "2027-04-24",
+          "start": "2027-03-25"
+        }
+      ],
+      "paymentCycle": "Quarterly",
+      "firstPaymentDate": "2024-12-25",
+      "firstPaymentMonths": 3,
+      "depositAmount": 89177,
+      "depositStatus": "Paid",
+      "status": "Active",
+      "isRisk": false,
+      "contractParkingSpaces": 2,
+      "actualParkingSpaces": 2,
+      "parkingUnitPrice": 300,
+      "keyMoments": []
+    },
+    {
+      "id": "t1764120246078",
+      "name": "都创（上海）医药科技股份有限公司",
+      "industry": "生物制药",
+      "foundingDate": "2015-01-12",
+      "legalRepName": "王雷",
+      "buildingId": "b2",
+      "unitIds": [
+        "b2-203"
+      ],
+      "totalArea": 428,
+      "signingDate": "2025-07-09",
+      "leaseStart": "2025-10-01",
+      "leaseEnd": "2028-09-30",
+      "unitPrice": 2.9,
+      "monthlyRent": 37753.17,
+      "rentFreePeriods": [
+        {
+          "description": "",
+          "end": "2026-02-28",
+          "start": "2026-01-01"
+        },
+        {
+          "description": "",
+          "end": "2027-04-30",
+          "start": "2027-04-01"
+        },
+        {
+          "description": "",
+          "end": "2028-04-30",
+          "start": "2028-04-01"
+        }
+      ],
+      "paymentCycle": "Quarterly",
+      "firstPaymentDate": "2025-10-01",
+      "firstPaymentMonths": 3,
+      "depositAmount": 121819.5,
+      "depositStatus": "Paid",
+      "status": "Active",
+      "specialRequirements": "客户26年一季度要退租",
+      "isRisk": true,
+      "contractParkingSpaces": 6,
+      "actualParkingSpaces": 6,
+      "parkingUnitPrice": 300,
+      "keyMoments": []
+    },
+    {
+      "id": "t1764119941416",
+      "name": "赛珂信息技术（上海）有限公司",
+      "industry": "软件开发",
+      "foundingDate": "2013-03-21",
+      "legalRepName": "SERGEJ ANATOL STOTZ",
+      "buildingId": "b2",
+      "unitIds": [
+        "b2-202"
+      ],
+      "totalArea": 307.9,
+      "signingDate": "2025-09-25",
+      "leaseStart": "2025-12-15",
+      "leaseEnd": "2028-12-14",
+      "unitPrice": 2.9,
+      "monthlyRent": 27159,
+      "rentFreePeriods": [
+        {
+          "description": "",
+          "end": "2026-04-14",
+          "start": "2026-03-15"
+        },
+        {
+          "description": "",
+          "end": "2027-04-14",
+          "start": "2027-03-15"
+        },
+        {
+          "description": "",
+          "end": "2028-04-14",
+          "start": "2028-03-15"
+        }
+      ],
+      "paymentCycle": "Quarterly",
+      "firstPaymentDate": "2025-11-01",
+      "firstPaymentMonths": 3,
+      "depositAmount": 88518.37,
+      "depositStatus": "Paid",
+      "status": "Active",
+      "specialRequirements": "高新技术企业\n科技型中小企业\n专精特新中小企业",
+      "isRisk": false,
+      "contractParkingSpaces": 3,
+      "actualParkingSpaces": 3,
+      "parkingUnitPrice": 300,
+      "keyMoments": []
+    },
+    {
+      "id": "t1764119113299",
+      "name": "上海蜂虎信息科技有限公司",
+      "industry": "软件开发",
+      "foundingDate": "2016-04-07",
+      "legalRepName": "王红梅",
+      "buildingId": "b2",
+      "unitIds": [
+        "b2-201"
+      ],
+      "totalArea": 345,
+      "signingDate": "2025-05-19",
+      "leaseStart": "2025-08-16",
+      "leaseEnd": "2028-08-15",
+      "unitPrice": 3,
+      "monthlyRent": 31481,
+      "rentFreePeriods": [
+        {
+          "description": "",
+          "end": "2025-11-15",
+          "start": "2025-09-16"
+        },
+        {
+          "description": "",
+          "end": "2026-09-15",
+          "start": "2026-08-16"
+        },
+        {
+          "description": "",
+          "end": "2027-09-15",
+          "start": "2027-08-16"
+        }
+      ],
+      "paymentCycle": "Monthly",
+      "paymentCycleMonths": 1,
+      "firstPaymentDate": "2025-08-16",
+      "firstPaymentMonths": 1,
+      "depositAmount": 101343.75,
+      "depositStatus": "Paid",
+      "status": "Active",
+      "isRisk": false,
+      "contractParkingSpaces": 2,
+      "actualParkingSpaces": 2,
+      "parkingUnitPrice": 300,
+      "keyMoments": []
+    },
+    {
+      "id": "t1764118677214",
+      "name": "军科正源（上海）生物医药科技有限公司",
+      "industry": "生物制药",
+      "foundingDate": "2021-11-10",
+      "legalRepName": "马克",
+      "buildingId": "b2",
+      "unitIds": [
+        "b2-101"
+      ],
+      "totalArea": 2337.49,
+      "signingDate": "2024-02-01",
+      "leaseStart": "2024-04-01",
+      "leaseEnd": "2029-02-28",
+      "unitPrice": 3.5,
+      "monthlyRent": 248845.29,
+      "rentFreePeriods": [
+        {
+          "description": "",
+          "end": "2024-04-30",
+          "start": "2024-03-01"
+        },
+        {
+          "description": "",
+          "end": "2025-04-30",
+          "start": "2025-03-01"
+        },
+        {
+          "description": "",
+          "end": "2026-04-30",
+          "start": "2026-03-01"
+        }
+      ],
+      "paymentCycle": "Quarterly",
+      "paymentCycleMonths": 3,
+      "firstPaymentDate": "2024-02-01",
+      "firstPaymentMonths": 3,
+      "freeRentHandling": "Deduct",
+      "depositAmount": 544440.38,
+      "depositStatus": "Paid",
+      "status": "Active",
+      "specialRequirements": "客户实际起租日期为：2024年3月1日，客户首期租金按合同只需付1个月，实际支付2个月，为了账期和系统一致，所以起租日期调整为4月1日。",
+      "isRisk": false,
+      "contractParkingSpaces": 15,
+      "actualParkingSpaces": 15,
+      "parkingUnitPrice": 300,
+      "keyMoments": []
+    },
+    {
+      "id": "t1764070778416",
+      "name": "亚舍立半导体贸易（上海）有限公司",
+      "industry": "芯片贸易",
+      "foundingDate": "2001-10-15",
+      "legalRepName": "RUSSELL JOHN LOW",
+      "buildingId": "b3",
+      "unitIds": [
+        "b3-101",
+        "b3-201"
+      ],
+      "totalArea": 2197,
+      "signingDate": "2025-03-31",
+      "leaseStart": "2025-06-01",
+      "leaseEnd": "2031-05-31",
+      "unitPrice": 3,
+      "monthlyRent": 200476,
+      "rentFreePeriods": [
+        {
+          "description": "",
+          "end": "2025-09-30",
+          "start": "2025-06-01"
+        },
+        {
+          "description": "",
+          "end": "2026-07-31",
+          "start": "2026-07-01"
+        },
+        {
+          "description": "",
+          "end": "2027-08-31",
+          "start": "2027-08-01"
+        },
+        {
+          "description": "",
+          "end": "2028-09-30",
+          "start": "2028-09-01"
+        },
+        {
+          "description": "",
+          "end": "2029-07-31",
+          "start": "2029-07-01"
+        },
+        {
+          "description": "",
+          "end": "2030-08-31",
+          "start": "2030-08-01"
+        }
+      ],
+      "paymentCycle": "Quarterly",
+      "paymentCycleMonths": 3,
+      "firstPaymentDate": "2025-05-01",
+      "firstPaymentMonths": 3,
+      "depositAmount": 444892.5,
+      "depositStatus": "Paid",
+      "status": "Active",
+      "specialRequirements": "外资企业",
+      "isRisk": false,
+      "contractParkingSpaces": 10,
+      "actualParkingSpaces": 10,
+      "parkingUnitPrice": 150,
+      "keyMoments": []
+    }
+  ],
+  "payments": [
+    {
+      "id": "p1770624801567_col_virt_vac_b2-206",
+      "tenantId": "t1765528788916",
+      "tenantName": "上海沙里淘屋技术有限公司",
+      "amount": 83950,
+      "type": "Rent",
+      "date": "2026-03-15",
+      "status": "Received",
+      "invoiceStatus": "Pending",
+      "period": "2026-03",
+      "remarks": "[2026-01] 月度账单"
+    },
+    {
+      "id": "p1772523904815_col_t1764123807288",
+      "tenantId": "t1764123807288",
+      "tenantName": "上海哈卡信息科技有限公司",
+      "amount": 20070,
+      "type": "Rent",
+      "date": "2026-03-15",
+      "status": "Received",
+      "invoiceStatus": "Pending",
+      "period": "2026-03",
+      "remarks": "[2026-03] 月度账单"
+    },
+    {
+      "id": "p1772523586095_col_t1767578667570",
+      "tenantId": "t1767578667570",
+      "tenantName": "陈林林",
+      "amount": 13689,
+      "type": "Rent",
+      "date": "2026-03-15",
+      "status": "Received",
+      "invoiceStatus": "Pending",
+      "period": "2026-03",
+      "remarks": "[2026-03] 月度账单"
+    },
+    {
+      "id": "p1770709885092_col_t1764119113299",
+      "tenantId": "t1764119113299",
+      "tenantName": "上海蜂虎信息科技有限公司",
+      "amount": 31481,
+      "type": "Rent",
+      "date": "2026-02-15",
+      "status": "Received",
+      "invoiceStatus": "Pending",
+      "remarks": "[2026-02] 月度账单"
+    },
+    {
+      "id": "p1770273191687_col_t1764133760351",
+      "tenantId": "t1764133760351",
+      "tenantName": "上海润景晖科技有限公司",
+      "amount": 27867,
+      "type": "Rent",
+      "date": "2026-02-15",
+      "status": "Received",
+      "invoiceStatus": "Pending",
+      "remarks": "[2026-02] 月度账单"
+    },
+    {
+      "id": "p1772502105995_col_t1764122895524",
+      "tenantId": "t1764122895524",
+      "tenantName": "上海伽马伊塔科技有限公司（何毅）",
+      "amount": 835,
+      "type": "Rent",
+      "date": "2026-02-15",
+      "status": "Received",
+      "invoiceStatus": "Pending",
+      "remarks": "[2026-02] 月度账单"
+    },
+    {
+      "id": "p1772435837291_col_t1767579337008",
+      "tenantId": "t1767579337008",
+      "tenantName": "停车场",
+      "amount": 36207.72,
+      "type": "Rent",
+      "date": "2026-02-15",
+      "status": "Received",
+      "invoiceStatus": "Pending",
+      "remarks": "[2026-02] 月度账单"
+    },
+    {
+      "id": "p1772269862074_col_t1764122771210",
+      "tenantId": "t1764122771210",
+      "tenantName": "上海列拓科技有限公司",
+      "amount": 102718,
+      "type": "Rent",
+      "date": "2026-02-15",
+      "status": "Received",
+      "invoiceStatus": "Pending",
+      "remarks": "[2026-02] 月度账单"
+    },
+    {
+      "id": "p1772184903572_col_t1764122895524",
+      "tenantId": "t1764122895524",
+      "tenantName": "上海伽马伊塔科技有限公司（何毅）",
+      "amount": 49243,
+      "type": "Rent",
+      "date": "2026-02-15",
+      "status": "Received",
+      "invoiceStatus": "Pending",
+      "remarks": "[2026-02] 月度账单"
+    },
+    {
+      "id": "p1771986413328_col_t1764122253533",
+      "tenantId": "t1764122253533",
+      "tenantName": "上海云道信息技术股份有限公司",
+      "amount": 37474,
+      "type": "Rent",
+      "date": "2026-02-15",
+      "status": "Received",
+      "invoiceStatus": "Pending",
+      "remarks": "[2026-02] 月度账单"
+    },
+    {
+      "id": "p1771915215684_col_t1764122467244",
+      "tenantId": "t1764122467244",
+      "tenantName": "上海硕力知识产权代理事务所（特殊普通合伙）",
+      "amount": 56628,
+      "type": "Rent",
+      "date": "2026-02-12",
+      "status": "Received",
+      "invoiceStatus": "Pending",
+      "remarks": "[2026-03] 月度账单"
+    },
+    {
+      "id": "p1770273009344",
+      "tenantId": "t1764123807288",
+      "tenantName": "上海哈卡信息科技有限公司",
+      "amount": 20070.99,
+      "type": "Rent",
+      "date": "2026-02-03",
+      "status": "Received",
+      "invoiceStatus": "Pending"
+    },
+    {
+      "id": "p1770273188380_col_t1764123318181",
+      "tenantId": "t1772517163739",
+      "tenantName": "上海管易云计算软件有限公司",
+      "amount": 73943,
+      "type": "Rent",
+      "date": "2026-01-31",
+      "status": "Received",
+      "invoiceStatus": "Pending",
+      "period": "2026-02",
+      "remarks": "[2026-02] 月度账单"
+    },
+    {
+      "id": "p1770263028889",
+      "tenantId": "t1764135021477",
+      "tenantName": "上海采古信息科技有限公司（偕聚）",
+      "amount": 51989.79,
+      "type": "Rent",
+      "date": "2026-01-30",
+      "status": "Received",
+      "invoiceStatus": "Pending"
+    },
+    {
+      "id": "p1769593134349",
+      "tenantId": "t1764135021477",
+      "tenantName": "上海采古信息科技有限公司（偕聚）",
+      "amount": 81738.7,
+      "type": "Rent",
+      "date": "2026-01-28",
+      "status": "Received",
+      "invoiceStatus": "Pending"
+    },
+    {
+      "id": "p1769399704174",
+      "tenantId": "t1764124194626",
+      "tenantName": "上海麦可洛自动化科技有限公司",
+      "amount": 26123.6,
+      "type": "Rent",
+      "date": "2026-01-26",
+      "status": "Received",
+      "invoiceStatus": "Pending"
+    },
+    {
+      "id": "p1769399740076",
+      "tenantId": "t1764124137033",
+      "tenantName": "上海柒游网络科技有限公司（原和柒）",
+      "amount": 12691.42,
+      "type": "Rent",
+      "date": "2026-01-26",
+      "status": "Received",
+      "invoiceStatus": "Pending"
+    },
+    {
+      "id": "p1768980051971_col_t1764134883429",
+      "tenantId": "t1764134883429",
+      "tenantName": "浙江智行微电子有限公司",
+      "amount": 118260,
+      "type": "Rent",
+      "date": "2026-01-15",
+      "status": "Received",
+      "invoiceStatus": "Pending",
+      "remarks": "[2026-01] 月度账单"
+    },
+    {
+      "id": "p1768470302277_col_t1764119113299",
+      "tenantId": "t1764119113299",
+      "tenantName": "上海蜂虎信息科技有限公司",
+      "amount": 31481,
+      "type": "Rent",
+      "date": "2026-01-15",
+      "status": "Received",
+      "invoiceStatus": "Pending",
+      "remarks": "[2026-01] 月度账单"
+    },
+    {
+      "id": "p1768181369068_col_t1764123318181",
+      "tenantId": "t1764123318181",
+      "tenantName": "上海管易云计算软件有限公司",
+      "amount": 73943,
+      "type": "Rent",
+      "date": "2026-01-15",
+      "status": "Received",
+      "invoiceStatus": "Pending",
+      "remarks": "[2026-01] 月度账单"
+    },
+    {
+      "id": "p1772432888261_col_t1767579337008",
+      "tenantId": "t1767579337008",
+      "tenantName": "停车场",
+      "amount": 19665.38,
+      "type": "Rent",
+      "date": "2026-01-15",
+      "status": "Received",
+      "invoiceStatus": "Pending",
+      "remarks": "[2026-01] 月度账单"
+    },
+    {
+      "id": "p1764558741776_col_t1764070778416",
+      "tenantId": "t1764070778416",
+      "tenantName": "亚舍立半导体贸易（上海）有限公司",
+      "amount": 593190,
+      "type": "Other",
+      "date": "2025-12-15",
+      "status": "Received",
+      "remarks": "[2025-12] 月度账单确认收款"
+    },
+    {
+      "id": "p1764136388735",
+      "tenantId": "t1764070778416",
+      "tenantName": "亚舍立半导体贸易（上海）有限公司",
+      "amount": 1000000,
+      "type": "Other",
+      "date": "2025-11-26",
+      "status": "Received"
+    },
+    {
+      "id": "p1764638319575_col_t1764119113299",
+      "tenantId": "t1764119113299",
+      "tenantName": "上海蜂虎信息科技有限公司",
+      "amount": 31481,
+      "type": "Rent",
+      "date": "2025-11-15",
+      "status": "Received",
+      "remarks": "[2025-11] 月度账单确认收款"
+    },
+    {
+      "id": "p1764638306711_col_t1764070778416",
+      "tenantId": "t1764070778416",
+      "tenantName": "亚舍立半导体贸易（上海）有限公司",
+      "amount": 601428,
+      "type": "Rent",
+      "date": "2025-11-15",
+      "status": "Received",
+      "remarks": "[2025-11] 月度账单确认收款"
+    },
+    {
+      "id": "p1764638287063_col_t1764134550887",
+      "tenantId": "t1764134550887",
+      "tenantName": "上海壹贰参信息技术有限公司",
+      "amount": 49860,
+      "type": "Rent",
+      "date": "2025-11-15",
+      "status": "Received",
+      "remarks": "[2025-11] 月度账单确认收款"
+    },
+    {
+      "id": "p1764638258007_col_t1764123167900",
+      "tenantId": "t1764123167900",
+      "tenantName": "上海象帝先计算技术有限公司",
+      "amount": 163155,
+      "type": "Rent",
+      "date": "2025-11-15",
+      "status": "Received",
+      "remarks": "[2025-11] 月度账单确认收款"
+    },
+    {
+      "id": "p1764638076671_col_t1764123010207",
+      "tenantId": "t1764123010207",
+      "tenantName": "上海津领信息科技有限公司",
+      "amount": 144486,
+      "type": "Rent",
+      "date": "2025-11-15",
+      "status": "Received",
+      "remarks": "[2025-11] 月度账单确认收款"
+    },
+    {
+      "id": "p1764638047103_col_t1764122467244",
+      "tenantId": "t1764122467244",
+      "tenantName": "上海硕力知识产权代理事务所（特殊普通合伙）",
+      "amount": 84942,
+      "type": "Rent",
+      "date": "2025-11-15",
+      "status": "Received",
+      "remarks": "[2025-11] 月度账单确认收款"
+    },
+    {
+      "id": "p1764638028727_col_t1764123968511",
+      "tenantId": "t1764123968511",
+      "tenantName": "上海月之岛信息技术有限公司",
+      "amount": 48966,
+      "type": "Rent",
+      "date": "2025-11-15",
+      "status": "Received",
+      "remarks": "[2025-11] 月度账单确认收款"
+    },
+    {
+      "id": "p1764638011366_col_t1764572720447",
+      "tenantId": "t1764572720447",
+      "tenantName": "陈林林-咖啡",
+      "amount": 13689,
+      "type": "Rent",
+      "date": "2025-11-15",
+      "status": "Received",
+      "remarks": "[2025-11] 月度账单确认收款"
+    },
+    {
+      "id": "p1764637971198_col_t1764124057542",
+      "tenantId": "t1764124057542",
+      "tenantName": "上海智浦欣微电子有限公司",
+      "amount": 83277,
+      "type": "Rent",
+      "date": "2025-11-15",
+      "status": "Received",
+      "remarks": "[2025-11] 月度账单确认收款"
+    },
+    {
+      "id": "p1764637919006_col_t1764135021477",
+      "tenantId": "t1764135021477",
+      "tenantName": "上海采古信息科技有限公司（偕聚）",
+      "amount": 122607,
+      "type": "Rent",
+      "date": "2025-11-15",
+      "status": "Received",
+      "remarks": "[2025-11] 月度账单确认收款"
+    }
+  ],
+  "yearlyTargets": {
+    "2024": {
+      "revenue": 20163800,
+      "occupancy": 88
+    },
+    "2025": {
+      "revenue": 12873800,
+      "occupancy": 92
+    },
+    "2026": {
+      "revenue": 15422021.26,
+      "occupancy": 95
+    }
+  },
+  "initializationData": [
+    {
+      "year": 2023,
+      "month": 1,
+      "revenueTarget": 2183200,
+      "revenueCollected": 1940100,
+      "occupancyRate": 100,
+      "accumulatedArrears": 0
+    },
+    {
+      "year": 2023,
+      "month": 2,
+      "revenueTarget": 1439600,
+      "revenueCollected": 1629000,
+      "occupancyRate": 95.18,
+      "accumulatedArrears": 0
+    },
+    {
+      "year": 2023,
+      "month": 3,
+      "revenueTarget": 1580500,
+      "revenueCollected": 1040000,
+      "occupancyRate": 84.54,
+      "accumulatedArrears": 0
+    },
+    {
+      "year": 2023,
+      "month": 4,
+      "revenueTarget": 2297600,
+      "revenueCollected": 3537200,
+      "occupancyRate": 84.54,
+      "accumulatedArrears": 0
+    },
+    {
+      "year": 2023,
+      "month": 5,
+      "revenueTarget": 1612700,
+      "revenueCollected": 1782800,
+      "occupancyRate": 89.36,
+      "accumulatedArrears": 0
+    },
+    {
+      "year": 2023,
+      "month": 6,
+      "revenueTarget": 1927000,
+      "revenueCollected": 1960100,
+      "occupancyRate": 100,
+      "accumulatedArrears": 0
+    },
+    {
+      "year": 2023,
+      "month": 7,
+      "revenueTarget": 1725600,
+      "revenueCollected": 1475800,
+      "occupancyRate": 88.72,
+      "accumulatedArrears": 0
+    },
+    {
+      "year": 2023,
+      "month": 8,
+      "revenueTarget": 1612700,
+      "revenueCollected": 1718700,
+      "occupancyRate": 88.72,
+      "accumulatedArrears": 0
+    },
+    {
+      "year": 2023,
+      "month": 9,
+      "revenueTarget": 1865100,
+      "revenueCollected": 1903000,
+      "occupancyRate": 88.72,
+      "accumulatedArrears": 0
+    },
+    {
+      "year": 2023,
+      "month": 10,
+      "revenueTarget": 1932100,
+      "revenueCollected": 1296300,
+      "occupancyRate": 88.72,
+      "accumulatedArrears": 0
+    },
+    {
+      "year": 2023,
+      "month": 11,
+      "revenueTarget": 1634500,
+      "revenueCollected": 1838700,
+      "occupancyRate": 100,
+      "accumulatedArrears": 0
+    },
+    {
+      "year": 2023,
+      "month": 12,
+      "revenueTarget": 1865100,
+      "revenueCollected": 1630200,
+      "occupancyRate": 100,
+      "accumulatedArrears": 0
+    },
+    {
+      "year": 2024,
+      "month": 1,
+      "revenueTarget": 828046.15,
+      "revenueCollected": 100196.33,
+      "occupancyRate": 74,
+      "accumulatedArrears": 0
+    },
+    {
+      "year": 2024,
+      "month": 2,
+      "revenueTarget": 1510330.27,
+      "revenueCollected": 1996872.12,
+      "occupancyRate": 74,
+      "accumulatedArrears": 0
+    },
+    {
+      "year": 2024,
+      "month": 3,
+      "revenueTarget": 1976440.39,
+      "revenueCollected": 2426679.67,
+      "occupancyRate": 84.77,
+      "accumulatedArrears": 0
+    },
+    {
+      "year": 2024,
+      "month": 4,
+      "revenueTarget": 851478.28,
+      "revenueCollected": 1023807.57,
+      "occupancyRate": 84.58,
+      "accumulatedArrears": 0
+    },
+    {
+      "year": 2024,
+      "month": 5,
+      "revenueTarget": 1547330.27,
+      "revenueCollected": 2227501.98,
+      "occupancyRate": 84.4,
+      "accumulatedArrears": 0
+    },
+    {
+      "year": 2024,
+      "month": 6,
+      "revenueTarget": 2618511.89,
+      "revenueCollected": 843058.66,
+      "occupancyRate": 84.58,
+      "accumulatedArrears": 0
+    },
+    {
+      "year": 2024,
+      "month": 7,
+      "revenueTarget": 1365082.74,
+      "revenueCollected": 2338144.19,
+      "occupancyRate": 80.21,
+      "accumulatedArrears": 0
+    },
+    {
+      "year": 2024,
+      "month": 8,
+      "revenueTarget": 1489733.34,
+      "revenueCollected": 2006831.3,
+      "occupancyRate": 80.21,
+      "accumulatedArrears": 0
+    },
+    {
+      "year": 2024,
+      "month": 9,
+      "revenueTarget": 1927995.59,
+      "revenueCollected": 2121112.81,
+      "occupancyRate": 84.58,
+      "accumulatedArrears": 0
+    },
+    {
+      "year": 2024,
+      "month": 10,
+      "revenueTarget": 1050587.35,
+      "revenueCollected": 963348.33,
+      "occupancyRate": 62.39,
+      "accumulatedArrears": 0
+    },
+    {
+      "year": 2024,
+      "month": 11,
+      "revenueTarget": 2220286.31,
+      "revenueCollected": 1682132.33,
+      "occupancyRate": 66.39,
+      "accumulatedArrears": 0
+    },
+    {
+      "year": 2024,
+      "month": 12,
+      "revenueTarget": 2723941.92,
+      "revenueCollected": 2606769.2,
+      "occupancyRate": 66.39,
+      "accumulatedArrears": 0
+    },
+    {
+      "year": 2025,
+      "month": 1,
+      "revenueTarget": 1127205.37,
+      "revenueCollected": 901590.46,
+      "occupancyRate": 84,
+      "accumulatedArrears": 0
+    },
+    {
+      "year": 2025,
+      "month": 2,
+      "revenueTarget": 774192.13,
+      "revenueCollected": 1300260.04,
+      "occupancyRate": 91.65,
+      "accumulatedArrears": 0
+    },
+    {
+      "year": 2025,
+      "month": 3,
+      "revenueTarget": 416325.29,
+      "revenueCollected": 1435119.21,
+      "occupancyRate": 79.81,
+      "accumulatedArrears": 0
+    },
+    {
+      "year": 2025,
+      "month": 4,
+      "revenueTarget": 1091387.52,
+      "revenueCollected": 267623.16,
+      "occupancyRate": 79.81,
+      "accumulatedArrears": 0
+    },
+    {
+      "year": 2025,
+      "month": 5,
+      "revenueTarget": 677308.61,
+      "revenueCollected": 1033457.55,
+      "occupancyRate": 68.72,
+      "accumulatedArrears": 0
+    },
+    {
+      "year": 2025,
+      "month": 6,
+      "revenueTarget": 756600.37,
+      "revenueCollected": 1986342.55,
+      "occupancyRate": 81.53,
+      "accumulatedArrears": 0
+    },
+    {
+      "year": 2025,
+      "month": 7,
+      "revenueTarget": 1548836.85,
+      "revenueCollected": 377757.79,
+      "occupancyRate": 89.16,
+      "accumulatedArrears": 0
+    },
+    {
+      "year": 2025,
+      "month": 8,
+      "revenueTarget": 154510.7,
+      "revenueCollected": 771104.7,
+      "occupancyRate": 88.03,
+      "accumulatedArrears": 0
+    },
+    {
+      "year": 2025,
+      "month": 9,
+      "revenueTarget": 854999.99,
+      "revenueCollected": 1962947.28,
+      "occupancyRate": 94.12,
+      "accumulatedArrears": 0
+    },
+    {
+      "year": 2025,
+      "month": 10,
+      "revenueTarget": 1548836.85,
+      "revenueCollected": 1629334.26,
+      "occupancyRate": 91.31,
+      "accumulatedArrears": 0
+    },
+    {
+      "year": 2025,
+      "month": 11,
+      "revenueTarget": 1678015.25,
+      "revenueCollected": 530277.73,
+      "occupancyRate": 91.31,
+      "accumulatedArrears": 0
+    },
+    {
+      "year": 2025,
+      "month": 12,
+      "revenueTarget": 854999.99,
+      "revenueCollected": 2816750.66,
+      "occupancyRate": 95.1,
+      "accumulatedArrears": 0
+    }
+  ],
+  "invoices": [
+    {
+      "id": "inv_t1764070778416_2026-03-01",
+      "tenantId": "t1764070778416",
+      "billDate": "2026-03-01",
+      "targetInvoiceDate": "2026-03-01",
+      "amount": 601428,
+      "status": "Invoiced",
+      "invoicedAt": "2026-02-12T02:15:01.477Z"
+    },
+    {
+      "id": "inv_t1764118677214_2026-03-01",
+      "tenantId": "t1764118677214",
+      "billDate": "2026-03-01",
+      "targetInvoiceDate": "2026-03-01",
+      "amount": 497691,
+      "status": "Invoiced",
+      "invoicedAt": "2026-02-12T02:15:02.340Z"
+    },
+    {
+      "id": "inv_t1764119113299_2026-03-01",
+      "tenantId": "t1764119113299",
+      "billDate": "2026-03-01",
+      "targetInvoiceDate": "2026-03-01",
+      "amount": 31481,
+      "status": "Invoiced",
+      "invoicedAt": "2026-02-12T02:15:03.217Z"
+    },
+    {
+      "id": "inv_t1764119941416_2026-03-01",
+      "tenantId": "t1764119941416",
+      "billDate": "2026-03-01",
+      "targetInvoiceDate": "2026-03-01",
+      "amount": 53413,
+      "status": "Invoiced",
+      "invoicedAt": "2026-02-12T02:15:04.859Z"
+    },
+    {
+      "id": "inv_t1764120384124_2026-03-01",
+      "tenantId": "t1764120384124",
+      "billDate": "2026-03-01",
+      "targetInvoiceDate": "2026-03-01",
+      "amount": 38424,
+      "status": "Invoiced",
+      "invoicedAt": "2026-02-12T02:15:07.201Z"
+    },
+    {
+      "id": "inv_t1764122055372_2026-03-01",
+      "tenantId": "t1764122055372",
+      "billDate": "2026-03-01",
+      "targetInvoiceDate": "2026-03-01",
+      "amount": 36437,
+      "status": "Invoiced",
+      "invoicedAt": "2026-02-12T02:15:08.618Z"
+    },
+    {
+      "id": "inv_t1764122467244_2026-03-01",
+      "tenantId": "t1764122467244",
+      "billDate": "2026-03-01",
+      "targetInvoiceDate": "2026-03-01",
+      "amount": 56628,
+      "status": "Invoiced",
+      "invoicedAt": "2026-02-12T02:15:09.435Z"
+    },
+    {
+      "id": "inv_t1764123010207_2026-03-01",
+      "tenantId": "t1764123010207",
+      "billDate": "2026-03-01",
+      "targetInvoiceDate": "2026-03-01",
+      "amount": 46557,
+      "status": "Invoiced",
+      "invoicedAt": "2026-02-12T02:15:10.365Z"
+    },
+    {
+      "id": "inv_t1764123167900_2026-03-01",
+      "tenantId": "t1764123167900",
+      "billDate": "2026-03-01",
+      "targetInvoiceDate": "2026-03-01",
+      "amount": 81578,
+      "status": "Invoiced",
+      "invoicedAt": "2026-02-12T02:15:11.775Z"
+    },
+    {
+      "id": "inv_t1764123318181_2026-03-01",
+      "tenantId": "t1764123318181",
+      "billDate": "2026-03-01",
+      "targetInvoiceDate": "2026-03-01",
+      "amount": 73943,
+      "status": "Invoiced",
+      "invoicedAt": "2026-02-12T02:15:13.348Z"
+    },
+    {
+      "id": "inv_t1764124057542_2026-03-01",
+      "tenantId": "t1764124057542",
+      "billDate": "2026-03-01",
+      "targetInvoiceDate": "2026-03-01",
+      "amount": 83277,
+      "status": "Invoiced",
+      "invoicedAt": "2026-02-12T02:15:15.203Z"
+    },
+    {
+      "id": "inv_t1764123807288_2026-03-01",
+      "tenantId": "t1764123807288",
+      "billDate": "2026-03-01",
+      "targetInvoiceDate": "2026-03-01",
+      "amount": 20070,
+      "status": "Invoiced",
+      "invoicedAt": "2026-02-12T02:15:16.253Z"
+    },
+    {
+      "id": "inv_t1764124194626_2026-03-01",
+      "tenantId": "t1764124194626",
+      "billDate": "2026-03-01",
+      "targetInvoiceDate": "2026-03-01",
+      "amount": 26124,
+      "status": "Invoiced",
+      "invoicedAt": "2026-02-12T02:15:18.090Z"
+    },
+    {
+      "id": "inv_t1764124446633_2026-03-01",
+      "tenantId": "t1764124446633",
+      "billDate": "2026-03-01",
+      "targetInvoiceDate": "2026-03-01",
+      "amount": 63644,
+      "status": "Invoiced",
+      "invoicedAt": "2026-02-12T02:15:19.283Z"
+    },
+    {
+      "id": "inv_t1764134406144_2026-03-01",
+      "tenantId": "t1764134406144",
+      "billDate": "2026-03-01",
+      "targetInvoiceDate": "2026-03-01",
+      "amount": 33957,
+      "status": "Invoiced",
+      "invoicedAt": "2026-02-12T02:15:20.168Z"
+    },
+    {
+      "id": "inv_t1766997069578_2026-03-01",
+      "tenantId": "t1766997069578",
+      "billDate": "2026-03-01",
+      "targetInvoiceDate": "2026-03-01",
+      "amount": 18921,
+      "status": "Invoiced",
+      "invoicedAt": "2026-02-12T02:15:21.486Z"
+    },
+    {
+      "id": "inv_t1767578667570_2026-03-01",
+      "tenantId": "t1767578667570",
+      "billDate": "2026-03-01",
+      "targetInvoiceDate": "2026-03-01",
+      "amount": 13689,
+      "status": "Invoiced",
+      "invoicedAt": "2026-02-12T02:15:23.069Z"
+    },
+    {
+      "id": "inv_t1770691095053_renewal_2026-03-01",
+      "tenantId": "t1770691095053_renewal",
+      "billDate": "2026-03-01",
+      "targetInvoiceDate": "2026-03-01",
+      "amount": 62319,
+      "status": "Invoiced",
+      "invoicedAt": "2026-02-12T02:15:25.253Z"
+    },
+    {
+      "id": "inv_t1770692072209_renewal_2026-03-01",
+      "tenantId": "t1770692072209_renewal",
+      "billDate": "2026-03-01",
+      "targetInvoiceDate": "2026-03-01",
+      "amount": 16152,
+      "status": "Invoiced",
+      "invoicedAt": "2026-02-12T02:15:26.865Z"
+    },
+    {
+      "id": "inv_t1770692098136_renewal_2026-03-01",
+      "tenantId": "t1770692098136_renewal",
+      "billDate": "2026-03-01",
+      "targetInvoiceDate": "2026-03-01",
+      "amount": 63459,
+      "status": "Invoiced",
+      "invoicedAt": "2026-02-12T02:15:27.705Z"
+    },
+    {
+      "id": "inv_t1772517163739_2026-03-01",
+      "tenantId": "t1772517163739",
+      "billDate": "2026-03-01",
+      "targetInvoiceDate": "2026-03-01",
+      "amount": 73943,
+      "status": "Invoiced",
+      "invoicedAt": "2026-03-05T07:57:28.610Z"
+    },
+    {
+      "id": "inv_t1764119113299_2026-02-01",
+      "tenantId": "t1764119113299",
+      "billDate": "2026-02-01",
+      "targetInvoiceDate": "2026-02-01",
+      "amount": 31481,
+      "status": "Invoiced",
+      "invoicedAt": "2026-02-10T06:37:16.676Z"
+    },
+    {
+      "id": "inv_t1764122771210_2026-02-01",
+      "tenantId": "t1764122771210",
+      "billDate": "2026-02-01",
+      "targetInvoiceDate": "2026-02-01",
+      "amount": 102718,
+      "status": "Invoiced",
+      "invoicedAt": "2026-02-10T06:37:18.329Z"
+    },
+    {
+      "id": "inv_t1764122253533_2026-02-01",
+      "tenantId": "t1764122253533",
+      "billDate": "2026-02-01",
+      "targetInvoiceDate": "2026-02-01",
+      "amount": 37474,
+      "status": "Invoiced",
+      "invoicedAt": "2026-02-10T06:37:19.323Z"
+    },
+    {
+      "id": "inv_t1764122895524_2026-02-01",
+      "tenantId": "t1764122895524",
+      "billDate": "2026-02-01",
+      "targetInvoiceDate": "2026-02-01",
+      "amount": 49243,
+      "status": "Invoiced",
+      "invoicedAt": "2026-02-10T06:37:20.704Z"
+    },
+    {
+      "id": "inv_t1764123318181_2026-02-01",
+      "tenantId": "t1764123318181",
+      "billDate": "2026-02-01",
+      "targetInvoiceDate": "2026-02-01",
+      "amount": 73943,
+      "status": "Invoiced",
+      "invoicedAt": "2026-02-10T06:37:21.657Z"
+    },
+    {
+      "id": "inv_t1764133760351_2026-02-01",
+      "tenantId": "t1764133760351",
+      "billDate": "2026-02-01",
+      "targetInvoiceDate": "2026-02-01",
+      "amount": 27867,
+      "status": "Invoiced",
+      "invoicedAt": "2026-02-10T06:37:23.284Z"
+    },
+    {
+      "id": "inv_t1767578543511_2026-02-01",
+      "tenantId": "t1767578543511",
+      "billDate": "2026-02-01",
+      "targetInvoiceDate": "2026-02-01",
+      "amount": 3000,
+      "status": "Invoiced",
+      "invoicedAt": "2026-02-10T06:37:23.960Z"
+    },
+    {
+      "id": "inv_t1765528788916_2026-01-01",
+      "tenantId": "t1765528788916",
+      "billDate": "2026-01-01",
+      "targetInvoiceDate": "2026-01-01",
+      "amount": 62964,
+      "status": "Invoiced",
+      "invoicedAt": "2026-01-05T06:11:43.165Z"
+    },
+    {
+      "id": "inv_t1764134883429_2026-01-01",
+      "tenantId": "t1764134883429",
+      "billDate": "2026-01-01",
+      "targetInvoiceDate": "2026-01-01",
+      "amount": 118260,
+      "status": "Invoiced",
+      "invoicedAt": "2026-01-05T06:11:43.981Z"
+    },
+    {
+      "id": "inv_t1764123318181_2026-01-01",
+      "tenantId": "t1764123318181",
+      "billDate": "2026-01-01",
+      "targetInvoiceDate": "2026-01-01",
+      "amount": 73943,
+      "status": "Invoiced",
+      "invoicedAt": "2026-01-05T06:11:45.681Z"
+    },
+    {
+      "id": "inv_t1764119113299_2026-01-01",
+      "tenantId": "t1764119113299",
+      "billDate": "2026-01-01",
+      "targetInvoiceDate": "2026-01-01",
+      "amount": 31481,
+      "status": "Invoiced",
+      "invoicedAt": "2026-01-05T06:11:46.711Z"
+    },
+    {
+      "id": "inv_t1767578543511_2026-01-01",
+      "tenantId": "t1767578543511",
+      "billDate": "2026-01-01",
+      "targetInvoiceDate": "2026-01-01",
+      "amount": 3000,
+      "status": "Invoiced",
+      "invoicedAt": "2026-01-12T02:12:17.927Z"
+    }
+  ]
+}
