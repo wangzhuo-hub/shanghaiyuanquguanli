@@ -1,6 +1,6 @@
-// AI API代理服务器 - 使用原生http模块
+// AI API代理服务器 - 使用原生 http + Node 18+ 全局 fetch
 import http from 'http';
-import fetch from 'node-fetch';
+import os from 'os';
 
 const PORT = 3010;
 const QWEN_BASE_URL = 'https://coding.dashscope.aliyuncs.com/v1';
@@ -84,10 +84,21 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
+function firstLanIPv4() {
+  const nets = os.networkInterfaces();
+  for (const name of Object.keys(nets)) {
+    for (const net of nets[name] || []) {
+      if (net.family === 'IPv4' && !net.internal) return net.address;
+    }
+  }
+  return null;
+}
+
 server.listen(PORT, '0.0.0.0', () => {
+  const lan = firstLanIPv4();
   console.log(`\n✅ AI代理服务器已启动`);
-  console.log(`   本地地址: http://localhost:${PORT}`);
-  console.log(`   局域网地址: http://192.168.0.11:${PORT}`);
+  console.log(`   本地: http://127.0.0.1:${PORT}`);
+  if (lan) console.log(`   局域网: http://${lan}:${PORT}`);
   console.log(`   端点: POST /api/chat\n`);
 });
 

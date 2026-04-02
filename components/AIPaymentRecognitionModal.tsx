@@ -2,6 +2,7 @@ import React, { useState, useRef, useCallback } from 'react';
 import { X, Sparkles, Upload, FileText, Image as ImageIcon, FileSpreadsheet, Loader2, Check, Trash2, AlertCircle, CheckCircle, ChevronDown } from 'lucide-react';
 import { PaymentRecord, Tenant } from '../types';
 import * as XLSX from 'xlsx';
+import { getAiProxyChatUrl } from '../config/urls';
 
 // ---- 类型定义 ----
 interface RecognizedItem {
@@ -10,7 +11,7 @@ interface RecognizedItem {
   matchedTenantId: string; // 匹配到的系统客户 ID（空=未匹配）
   amount: number;
   date: string;            // YYYY-MM-DD
-  type: 'Rent' | 'Deposit' | 'ParkingFee' | 'ManagementFee' | 'Other';
+  type: 'Rent' | 'Deposit' | 'ManagementFee' | 'Other';
   remarks: string;
   confidence: number;      // 匹配置信度 0-1
   selected: boolean;       // 是否选中导入
@@ -58,7 +59,6 @@ function fuzzyMatchTenant(name: string, tenants: Tenant[]): { id: string; confid
 function inferPaymentType(text: string): RecognizedItem['type'] {
   const lower = text.toLowerCase();
   if (lower.includes('押金') || lower.includes('保证金')) return 'Deposit';
-  if (lower.includes('车位') || lower.includes('停车')) return 'ParkingFee';
   if (lower.includes('物业') || lower.includes('管理费')) return 'ManagementFee';
   if (lower.includes('租金') || lower.includes('租赁') || lower.includes('房租')) return 'Rent';
   return 'Rent'; // 默认租金
@@ -66,20 +66,17 @@ function inferPaymentType(text: string): RecognizedItem['type'] {
 
 // ---- AI 代理调用 ----
 async function callAIForRecognition(payload: { type: 'image' | 'text' | 'excel'; content: string }): Promise<any[]> {
-  const hostname = window.location.hostname;
-  const apiUrl = (hostname === 'localhost' || hostname === '127.0.0.1')
-    ? 'http://localhost:3010/api/chat'
-    : `http://${hostname.includes('192.168') ? hostname : '192.168.0.11'}:3010/api/chat`;
+  const apiUrl = getAiProxyChatUrl();
 
   let userContent: string;
 
   if (payload.type === 'image') {
     // 发送 base64 图片让 AI 识别
-    userContent = `请识别以下银行流水截图中的收款信息。图片内容（base64）：\n${payload.content}\n\n请提取每一笔交易，返回JSON数组格式：[{"payerName":"付款方名称","amount":金额数字,"date":"YYYY-MM-DD","type":"款项类型","remarks":"备注"}]\n\n款项类型只能是：租金、押金、车位费、物业费、其他。金额必须是正数。如果日期不完整请用今天的日期。只返回JSON数组，不要其他文字。`;
+    userContent = `请识别以下银行流水截图中的收款信息。图片内容（base64）：\n${payload.content}\n\n请提取每一笔交易，返回JSON数组格式：[{"payerName":"付款方名称","amount":金额数字,"date":"YYYY-MM-DD","type":"款项类型","remarks":"备注"}]\n\n款项类型只能是：租金、押金、物业费、其他。金额必须是正数。如果日期不完整请用今天的日期。只返回JSON数组，不要其他文字。`;
   } else if (payload.type === 'text') {
-    userContent = `请从以下银行流水文本中提取收款信息：\n\n${payload.content}\n\n请提取每一笔交易，返回JSON数组格式：[{"payerName":"付款方名称","amount":金额数字,"date":"YYYY-MM-DD","type":"款项类型","remarks":"备注"}]\n\n款项类型只能是：租金、押金、车位费、物业费、其他。金额必须是正数。如果日期不完整请用今天的日期。只返回JSON数组，不要其他文字。`;
+    userContent = `请从以下银行流水文本中提取收款信息：\n\n${payload.content}\n\n请提取每一笔交易，返回JSON数组格式：[{"payerName":"付款方名称","amount":金额数字,"date":"YYYY-MM-DD","type":"款项类型","remarks":"备注"}]\n\n款项类型只能是：租金、押金、物业费、其他。金额必须是正数。如果日期不完整请用今天的日期。只返回JSON数组，不要其他文字。`;
   } else {
-    userContent = `请从以下Excel表格数据（JSON格式）中提取收款信息：\n\n${payload.content}\n\n请提取每一笔交易，返回JSON数组格式：[{"payerName":"付款方名称","amount":金额数字,"date":"YYYY-MM-DD","type":"款项类型","remarks":"备注"}]\n\n款项类型只能是：租金、押金、车位费、物业费、其他。金额必须是正数。如果日期不完整请用今天的日期。只返回JSON数组，不要其他文字。`;
+    userContent = `请从以下Excel表格数据（JSON格式）中提取收款信息：\n\n${payload.content}\n\n请提取每一笔交易，返回JSON数组格式：[{"payerName":"付款方名称","amount":金额数字,"date":"YYYY-MM-DD","type":"款项类型","remarks":"备注"}]\n\n款项类型只能是：租金、押金、物业费、其他。金额必须是正数。如果日期不完整请用今天的日期。只返回JSON数组，不要其他文字。`;
   }
 
   const messages: any[] = [
@@ -92,7 +89,7 @@ async function callAIForRecognition(payload: { type: 'image' | 'text' | 'excel';
     messages[1] = {
       role: 'user',
       content: [
-        { type: 'text', text: '请识别这张银行流水截图中的每笔收款信息，返回JSON数组格式：[{"payerName":"付款方名称","amount":金额数字,"date":"YYYY-MM-DD","type":"款项类型","remarks":"备注"}]\n款项类型只能是：租金、押金、车位费、物业费、其他。金额必须是正数。只返回JSON数组，不要其他文字。' },
+      { type: 'text', text: '请识别这张银行流水截图中的每笔收款信息，返回JSON数组格式：[{"payerName":"付款方名称","amount":金额数字,"date":"YYYY-MM-DD","type":"款项类型","remarks":"备注"}]\n款项类型只能是：租金、押金、物业费、其他。金额必须是正数。只返回JSON数组，不要其他文字。' },
         { type: 'image_url', image_url: { url: payload.content } }
       ]
     };
@@ -142,13 +139,12 @@ export const AIPaymentRecognitionModal: React.FC<AIPaymentRecognitionModalProps>
   const activeTenants = tenants.filter(t => t.status !== 'Terminated');
 
   const typeLabel = (t: string) => {
-    const map: Record<string, string> = { Rent: '租金', Deposit: '押金', ParkingFee: '车位费', ManagementFee: '物业费', Other: '其他' };
+    const map: Record<string, string> = { Rent: '租金', Deposit: '押金', ManagementFee: '物业费', Other: '其他' };
     return map[t] || t;
   };
 
   const typeFromChinese = (t: string): RecognizedItem['type'] => {
     if (t.includes('押金') || t.includes('保证金')) return 'Deposit';
-    if (t.includes('车位') || t.includes('停车')) return 'ParkingFee';
     if (t.includes('物业') || t.includes('管理费')) return 'ManagementFee';
     if (t.includes('租金') || t.includes('租赁')) return 'Rent';
     return 'Rent';
@@ -387,7 +383,7 @@ export const AIPaymentRecognitionModal: React.FC<AIPaymentRecognitionModalProps>
                 <textarea
                   value={textInput}
                   onChange={(e) => setTextInput(e.target.value)}
-                  placeholder={`粘贴银行流水文本，例如：\n\n2026-03-01  上海管易云计算软件有限公司  租金  73,943.00\n2026-03-05  上海纪世嘉游信息技术有限公司  租金  63,459.00\n2026-03-10  停车场  车位费  55,000.00\n\n支持任意格式的文本，AI会自动识别提取`}
+                  placeholder={`粘贴银行流水文本，例如：\n\n2026-03-01  上海管易云计算软件有限公司  租金  73,943.00\n2026-03-05  上海纪世嘉游信息技术有限公司  租金  63,459.00\n2026-03-10  XX物业公司  物业费  55,000.00\n\n支持任意格式的文本，AI会自动识别提取`}
                   className="w-full h-48 p-3 border border-slate-200 rounded-lg text-sm focus:ring-2 focus:ring-emerald-500 focus:border-transparent outline-none resize-none bg-white"
                 />
               </div>
@@ -545,7 +541,6 @@ export const AIPaymentRecognitionModal: React.FC<AIPaymentRecognitionModalProps>
                             >
                               <option value="Rent">租金</option>
                               <option value="Deposit">押金</option>
-                              <option value="ParkingFee">车位费</option>
                               <option value="ManagementFee">物业费</option>
                               <option value="Other">其他</option>
                             </select>

@@ -21,7 +21,8 @@ import { rentCollectionRemarkKey } from './services/receivableListHelpers';
 import { DEFAULT_CLOUD_CONFIG, mergeStoredCloudConfig } from './config/deploymentDefaults';
 
 const STORAGE_KEY = 'kingdee_park_data_v1';
-const CLOUD_CONFIG_KEY = 'kingdee_park_cloud_config';
+// 标准化交付：升级存储 key，避免历史环境把旧的内网 URL 自动带入新部署
+const CLOUD_CONFIG_KEY = 'kingdee_park_cloud_config_v2';
 
 // 核心计算逻辑：确保这里使用的逻辑与预算表(BudgetManager)完全一致
 const calculateBudgetedReceivableInPeriod = (
@@ -340,10 +341,10 @@ const App: React.FC = () => {
   }));
   
   const [aiConfig, setAiConfig] = useState<AIConfig>({
-      provider: 'qwen', // 默认使用千问
-      enabled: true,
-      qwenApiKey: 'sk-sp-1b86ef09510e4e1683454766f375ad1b',
-      qwenBaseUrl: 'https://coding.dashscope.aliyuncs.com/v1', // 默认使用 OpenAI 兼容协议
+      provider: 'none',
+      enabled: false,
+      qwenApiKey: '',
+      qwenBaseUrl: 'https://coding.dashscope.aliyuncs.com/v1',
       openaiApiKey: '',
       openaiBaseUrl: ''
   });

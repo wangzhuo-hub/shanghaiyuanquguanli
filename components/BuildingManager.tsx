@@ -577,10 +577,6 @@ export const BuildingManager: React.FC<BuildingManagerProps> = ({ buildings, ten
                  <div className="w-8 h-8 bg-gray-200 border border-gray-300 rounded opacity-75"></div>
                  <span>自用</span>
                </div>
-               <div className="flex items-center gap-1.5 ml-2 whitespace-nowrap flex-shrink-0">
-                  <div className="flex items-center text-slate-500 bg-slate-100 rounded px-1"><Car size={10} /></div>
-                  <span>车位</span>
-               </div>
           </div>
 
           {activeBuilding.units.length === 0 ? (
@@ -603,7 +599,6 @@ export const BuildingManager: React.FC<BuildingManagerProps> = ({ buildings, ten
                   {unitsByFloor[Number(floor)].map(unit => {
                     const tenant = tenants.find(t => t.unitIds.includes(unit.id) && t.status === ContractStatus.Active);
                     const isSelfUse = unit.isSelfUse;
-                    const hasParking = tenant && ((tenant.contractParkingSpaces || 0) > 0 || (tenant.actualParkingSpaces || 0) > 0);
                     return (
                         <div
                         key={unit.id}
@@ -637,12 +632,6 @@ export const BuildingManager: React.FC<BuildingManagerProps> = ({ buildings, ten
                                         {isSelfUse ? '自用保留' : (unit.status === UnitStatus.Vacant ? '待租' : tenant?.name || '已租')}
                                     </div>
                                 </div>
-                                {hasParking && !isSelfUse && (
-                                    <div className="text-[10px] text-slate-500 flex items-center gap-0.5 bg-white/50 rounded px-1 mb-0.5 hidden sm:flex" title={`车位: 约定${tenant.contractParkingSpaces} / 实际${tenant.actualParkingSpaces}`}>
-                                        <Car size={10} />
-                                        <span>{tenant?.actualParkingSpaces || 0}</span>
-                                    </div>
-                                )}
                             </div>
                         </div>
                         <div className="absolute top-1 right-1 opacity-0 group-hover:opacity-100 transition-opacity flex gap-1 bg-white/50 rounded pointer-events-none">

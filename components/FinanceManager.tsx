@@ -74,9 +74,8 @@ const PaymentCard: React.FC<{ p: PaymentRecord, onEdit: () => void, onDelete: ()
             <span className={`px-2 py-0.5 rounded 
                 ${p.type === 'DepositToRent' ? 'bg-indigo-100 text-indigo-700' 
                 : p.type === 'DepositRefund' ? 'bg-rose-100 text-rose-700' 
-                : p.type === 'ParkingFee' ? 'bg-orange-100 text-orange-700'
                 : 'bg-slate-100 text-slate-600'}`}>
-                {p.type === 'Rent' ? '租金' : p.type === 'Deposit' ? '押金' : p.type === 'DepositToRent' ? '押金转租' : p.type === 'ParkingFee' ? '车位费' : p.type}
+                {p.type === 'Rent' ? '租金' : p.type === 'Deposit' ? '押金' : p.type === 'DepositToRent' ? '押金转租' : p.type === 'DepositRefund' ? '押金退还' : '其他'}
             </span>
             <span className="text-slate-400">{p.date}</span>
         </div>
@@ -631,7 +630,7 @@ export const FinanceManager: React.FC<FinanceManagerProps> = ({ payments, tenant
         <div className="bg-emerald-50 border border-emerald-100 p-4 rounded-xl mb-6 flex flex-col items-start gap-4 animate-in fade-in slide-in-from-top-2">
            <div className="w-full grid grid-cols-1 md:grid-cols-5 gap-4">
                 <div><label className="block text-xs font-medium text-emerald-700 mb-1">付款客户</label><select className="w-full p-2 rounded border border-emerald-200 text-sm" value={currentPayment.tenantId} onChange={e => setCurrentPayment({...currentPayment, tenantId: e.target.value})}><option value="">选择客户...</option>{tenants.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}</select></div>
-                <div><label className="block text-xs font-medium text-emerald-700 mb-1">款项类型</label><select className="w-full p-2 rounded border border-emerald-200 text-sm" value={currentPayment.type} onChange={e => setCurrentPayment({...currentPayment, type: e.target.value as any})}><option value="Rent">租金收入</option><option value="ParkingFee">月卡车位费</option><option value="Deposit">押金收取</option><option value="DepositRefund">押金退还 (支出)</option><option value="ManagementFee">物业费</option><option value="Other">其他</option><option value="DepositToRent">押金转租金</option></select></div>
+                <div><label className="block text-xs font-medium text-emerald-700 mb-1">款项类型</label><select className="w-full p-2 rounded border border-emerald-200 text-sm" value={currentPayment.type} onChange={e => setCurrentPayment({...currentPayment, type: e.target.value as any})}><option value="Rent">租金收入</option><option value="Deposit">押金收取</option><option value="DepositRefund">押金退还 (支出)</option><option value="ManagementFee">物业费</option><option value="Other">其他</option><option value="DepositToRent">押金转租金</option></select></div>
                 <div><label className="block text-xs font-medium text-emerald-700 mb-1">金额 (元)</label><input type="number" className="w-full p-2 rounded border border-emerald-200 text-sm" placeholder="0.00" value={currentPayment.amount || ''} onChange={e => setCurrentPayment({...currentPayment, amount: Number(e.target.value)})}/></div>
                 <div><label className="block text-xs font-medium text-emerald-700 mb-1">入账日期</label><input type="date" className="w-full p-2 rounded border border-emerald-200 text-sm" value={currentPayment.date} onChange={e => setCurrentPayment({...currentPayment, date: e.target.value})}/></div>
                 <div>
@@ -719,7 +718,7 @@ export const FinanceManager: React.FC<FinanceManagerProps> = ({ payments, tenant
                                             <tr key={p.id} className="hover:bg-slate-50 group">
                                                 <td className="px-6 py-4 font-mono text-xs text-slate-400">#{p.id.split('_')[0]}</td>
                                                 <td className="px-6 py-4 font-medium text-slate-800">{p.tenantName}</td>
-                                                <td className="px-6 py-4"><span className={`px-2 py-1 rounded text-xs ${p.type === 'DepositToRent' ? 'bg-indigo-100 text-indigo-700' : p.type === 'DepositRefund' ? 'bg-rose-100 text-rose-700' : p.type === 'ParkingFee' ? 'bg-orange-100 text-orange-700' : 'bg-slate-100 text-slate-600'}`}>{p.type === 'Rent' ? '租金' : p.type === 'Deposit' ? '押金收取' : p.type === 'DepositRefund' ? '押金退还' : p.type === 'DepositToRent' ? '押金转租金' : p.type === 'ParkingFee' ? '月卡车位费' : '其他'}</span></td>
+                                                <td className="px-6 py-4"><span className={`px-2 py-1 rounded text-xs ${p.type === 'DepositToRent' ? 'bg-indigo-100 text-indigo-700' : p.type === 'DepositRefund' ? 'bg-rose-100 text-rose-700' : 'bg-slate-100 text-slate-600'}`}>{p.type === 'Rent' ? '租金' : p.type === 'Deposit' ? '押金收取' : p.type === 'DepositRefund' ? '押金退还' : p.type === 'DepositToRent' ? '押金转租金' : '其他'}</span></td>
                                                 <td className={`px-6 py-4 font-medium ${p.amount < 0 ? 'text-rose-600' : 'text-emerald-600'}`}>{p.amount > 0 ? '+' : ''}¥{p.amount.toLocaleString()}</td>
                                                 <td className="px-6 py-4 text-slate-600">{p.date}</td>
                                                 <td className="px-6 py-4 text-slate-600">{p.period || '-'}</td>

@@ -2,6 +2,7 @@ import React, { useState, useRef, useCallback } from 'react';
 import { X, Sparkles, Upload, FileText, Image as ImageIcon, FileSpreadsheet, Loader2, Check, AlertCircle, CheckCircle, Building as BuildingIcon } from 'lucide-react';
 import { Tenant, Building, ContractStatus, DepositStatus, UnitStatus } from '../types';
 import * as XLSX from 'xlsx';
+import { getAiProxyChatUrl } from '../config/urls';
 
 // ---- AI 识别结果 ----
 interface RecognizedContract {
@@ -39,10 +40,7 @@ type InputTab = 'image' | 'text' | 'excel';
 
 // ---- AI 代理调用 ----
 async function callAIForContractRecognition(payload: { type: InputTab; content: string }): Promise<RecognizedContract> {
-  const hostname = window.location.hostname;
-  const apiUrl = (hostname === 'localhost' || hostname === '127.0.0.1')
-    ? 'http://localhost:3010/api/chat'
-    : `http://${hostname.includes('192.168') ? hostname : '192.168.0.11'}:3010/api/chat`;
+  const apiUrl = getAiProxyChatUrl();
 
   const fieldDescription = `请从中提取以下合同信息，返回JSON对象：
 {

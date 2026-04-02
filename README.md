@@ -1,150 +1,114 @@
-<div align="center">
-<img width="1200" height="475" alt="GHBanner" src="https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6" />
-</div>
-
 # 上海园区招商管理看板
 
-一个功能完善的园区招商管理系统，支持楼宇资产管理、合同跟踪、财务分析和预算管理。
+园区招商管理系统：楼宇与单元、合同与财务、预算与报表；云端后端推荐 **PocketBase**（本地/内网部署），AI 能力通过 **千问（DashScope）** 代理调用。
 
-View your app in AI Studio: https://ai.studio/apps/drive/1GL7anAqBFNlOxbhxHolpZE9IjYFF1jfb
+## 标准交付：Docker Compose（推荐）
 
-## 功能特性
+**前置条件：** 已安装 [Docker](https://docs.docker.com/get-docker/) 与 Docker Compose v2。
 
-- 🏢 **楼宇资产管理** - 多楼宇、多单元的灵活管理
-- 📝 **合同中心** - 客户合同全生命周期管理
-- 📊 **财务报表** - 实时收款跟踪和分析
-- 💰 **预算管理** - 多场景预算模拟
-- ☁️ **云端同步** - 支持 Supabase 和 PocketBase 后端
+1. 复制环境变量并填写千问 Key：
 
-## 本地运行
-
-**前置条件:** Node.js >= 16
-
-1. 安装依赖：
    ```bash
-   npm install
+   cp .env.example .env
+   # 编辑 .env，设置 QWEN_API_KEY=你的_DashScope_Key
    ```
 
-2. 配置环境变量：
-   - 复制 `.env.local` 文件
-   - 设置 `API_KEY` 为你的 Gemini API Key
+2. 构建并启动（前端 **1001**、PocketBase **8001**、AI 代理 **3010**）：
 
-3. 启动应用：
    ```bash
-   npm run dev
+   docker compose up -d --build
    ```
 
-4. 访问：http://localhost:5173
+3. 访问：
 
-## 云端后端配置
+   - 看板前端：<http://localhost:1001>
+   - PocketBase 管理（首次需创建管理员）：<http://localhost:8001/_/>
+   - AI 代理健康检查：向 `http://localhost:3010` 发 `POST /api/chat`（需 Key 已配置）
 
-系统支持两种云端后端：
+前端在容器内通过 **同源** 路径访问后端：
 
-### PocketBase（推荐）
+- PocketBase：`/api/pb/` → 由 Nginx 反代到 PocketBase
+- 千问代理：`/api/chat` → `ai-proxy`
 
-PocketBase 是一个轻量级的开源后端，支持本地部署，无需依赖第三方服务。
+数据持久化在 Docker 卷 `pb_data`（勿把 `pocketbase/pb_data/` 提交到 Git）。
 
-**安装步骤：**
+### PocketBase 空库初始化说明
 
-1. 下载 PocketBase：
-   - 访问 https://pocketbase.io/docs/
-   - 下载适合你系统的版本
+- **Schema**：随镜像/仓库中的 `pocketbase/pb_migrations/` 在 PocketBase **首次启动时自动执行**，创建 `pb_*` 结构化集合。
+- **管理员**：首次访问 <http://localhost:8001/_/> 在界面中创建管理员账号（空库无示例业务数据）。
+- **可选**：若需用脚本补建集合（一般与 migrations 二选一即可），见 `scripts/setup-pb-collections.mjs` 与 `POCKETBASE_SETUP.md`。
 
-2. 启动 PocketBase 服务器：
-   ```bash
-   ./pocketbase serve
-   ```
+### 镜像内 PocketBase 版本
 
-3. 访问 Admin UI：
-   - 打开 http://127.0.0.1:8090/_/
-   - 创建管理员账号
+`docker/pocketbase/Dockerfile` 通过 `PB_VERSION` 从 GitHub 下载 **Linux** 二进制（仓库根目录下的 `pocketbase/pocketbase` 为 macOS 可执行文件，仅用于本机开发，不会打入镜像）。
 
-4. 创建 Collection：
-   - 在 Admin UI 中导入 `pocketbase_schema.json`
-   - 或手动创建 `park_backups` collection，包含以下字段：
-     - `project_id` (text, required, indexed)
-     - `data` (json, required)
-     - `note` (text, optional)
+## 本地开发（不使用 Docker）
 
-5. 在应用设置中配置：
-   - 选择 "PocketBase（推荐）"
-   - PocketBase URL: `http://127.0.0.1:8090`
-   - 输入管理员邮箱和密码
-   - 保存配置
+**前置条件：** Node.js ≥ 18（推荐 20）、本机已启动 PocketBase（默认 **8001**）与 `ai-proxy`（默认 **3010**）。
 
-### Supabase（兼容）
+```bash
+npm install
+cp .env.example .env.local
+# 配置 QWEN_API_KEY；按需配置 VITE_POCKETBASE_* 
+npm run dev
+```
 
-仍然支持 Supabase 作为云端后端，配置方式保持不变。
+- 开发服务器默认端口 **1001**（可用 `VITE_DEV_PORT` 覆盖）。
+- Vite 将 `/api/pb` 代理到 PocketBase、`/api/chat` 代理到 AI 代理，与生产环境路径一致。
 
-在应用设置中选择 "Supabase（当前使用）" 即可。
+一键启动（macOS/Linux，含清理端口与后台日志）：
 
-## 数据迁移
+```bash
+export QWEN_API_KEY=你的_key
+./start-all.sh
+```
 
-如果你现在使用 Supabase，可以轻松迁移到 PocketBase：
+## 环境变量说明
 
-1. 确保 PocketBase 服务器正在运行
+详见 [.env.example](.env.example)。常用项：
 
-2. 修改迁移脚本配置：
-   - 打开 `scripts/migrate-to-pocketbase.ts`
-   - 修改 `POCKETBASE_EMAIL` 和 `POCKETBASE_PASSWORD`
+| 变量 | 说明 |
+|------|------|
+| `QWEN_API_KEY` | DashScope / 千问 API Key（`ai-proxy` 使用） |
+| `VITE_POCKETBASE_URL` | 可选；不设置时浏览器默认使用同源 `/api/pb` |
+| `VITE_QWEN_PROXY_URL` | 可选；不设置时 AI 请求使用同源 `/api/chat` |
+| `VITE_DEV_PORT` / `VITE_PB_DEV_PORT` / `VITE_AI_PROXY_PORT` | 本地开发端口覆盖 |
 
-3. 运行迁移脚本：
-   ```bash
-   npx tsx scripts/migrate-to-pocketbase.ts
-   ```
+## 仓库维护检查
 
-4. 迁移完成后，在应用设置中切换到 PocketBase
+防止误提交 PocketBase 运行时库：
+
+```bash
+npm run check:pb
+```
+
+CI（`.github/workflows/ci.yml`）会在 push/PR 时执行该检查并执行 `npm run build`。
 
 ## 技术栈
 
-- **前端：** React 18 + TypeScript + Tailwind CSS
-- **图表：** Recharts
-- **后端（可选）：**
-  - PocketBase - 推荐，本地部署
-  - Supabase - 云端服务
-- **AI：** Google Gemini API
+- 前端：React 18、TypeScript、Vite、Tailwind、Recharts  
+- 后端：PocketBase（`pb_*` 结构化集合 + migrations）  
+- AI：千问 OpenAI 兼容接口（经 `ai-proxy.mjs` 或 Vite/Nginx 代理）
 
-## 项目结构
+## 项目结构（摘要）
 
 ```
 .
-├── src/
-│   ├── components/       # React 组件
-│   ├── services/         # 业务逻辑
-│   │   ├── cloudService.ts        # 云服务适配层
-│   │   ├── supabaseService.ts     # Supabase 服务
-│   │   ├── pocketbaseService.ts   # PocketBase 服务
-│   │   ├── billingService.ts      # 财务服务
-│   │   └── geminiService.ts       # AI 服务
-│   └── types.ts          # TypeScript 类型
-├── scripts/
-│   └── migrate-to-pocketbase.ts  # 数据迁移脚本
-├── pocketbase_schema.json    # PocketBase 数据库结构
-└── .env.local                # 环境变量配置
+├── components/           # UI 组件
+├── services/             # PocketBase / 云端适配
+├── config/               # deploymentDefaults、urls（同源 /api/pb、/api/chat）
+├── pocketbase/
+│   └── pb_migrations/    # 数据库迁移（交付时以此为准）
+├── docker/               # Web / Nginx / ai-proxy / PocketBase 镜像
+├── ai-proxy.mjs          # 千问代理（读取 QWEN_API_KEY）
+├── compose.yaml          # 标准一键编排
+└── start-all.sh          # 本地多进程启动
 ```
 
-## 常见问题
+## 数据迁移（旧版说明）
 
-**Q: 为什么推荐使用 PocketBase？**
+历史脚本如 `scripts/migrate-to-pocketbase.ts`（Supabase → 旧 `park_backups`）已过时；当前主线为结构化 `pb_*` 集合与 `pb_migrations`。迁移请以当前文档与 `scripts/` 下说明为准。
 
-A: PocketBase 提供以下优势：
-- 单文件部署，无需复杂配置
-- 本地优先，数据完全可控
-- 内置实时订阅和文件管理
-- 更轻量，适合中小型项目
+---
 
-**Q: 我可以同时使用两个后端吗？**
-
-A: 可以，系统支持随时切换后端，数据可以通过迁移脚本轻松同步。
-
-**Q: PocketBase 需要的系统资源？**
-
-A: 非常轻量，在普通笔记本上即可顺畅运行，内存占用不到 50MB。
-
-## 贡献
-
-欢迎提交 Issue 和 Pull Request！
-
-## 许可证
-
-MIT License
+View your app in AI Studio: https://ai.studio/apps/drive/1GL7anAqBFNlOxbhxHolpZE9IjYFF1jfb

@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { X, Send, Loader2, FileText, Calendar, TrendingUp, Sparkles, Download, Image as ImageIcon } from 'lucide-react';
 import { DashboardData } from '../types';
+import { getAiProxyBaseForMessage, getAiProxyChatUrl } from '../config/urls';
 import html2canvas from 'html2canvas';
 import jsPDF from 'jspdf';
 
@@ -416,18 +417,9 @@ function buildContext(data: DashboardData): string {
 // 调用千问API
 async function callQwenAPI(prompt: string, aiConfig: any): Promise<{ content: string; isHTML: boolean }> {
   try {
-    // 自动检测访问方式，选择合适的代理服务器地址
+    const apiUrl = getAiProxyChatUrl();
     const hostname = window.location.hostname;
-    let apiUrl;
-    
-    if (hostname === 'localhost' || hostname === '127.0.0.1') {
-      // 本地访问，使用 localhost
-      apiUrl = 'http://localhost:3010/api/chat';
-    } else {
-      // 局域网访问，使用局域网IP
-      apiUrl = 'http://192.168.0.11:3010/api/chat';
-    }
-    
+
     console.log('[AI API] 调用参数:', {
       hostname,
       apiUrl,
@@ -476,12 +468,9 @@ async function callQwenAPI(prompt: string, aiConfig: any): Promise<{ content: st
     return { content, isHTML };
   } catch (error: any) {
     console.error('[AI API] 调用异常:', error);
-    const hostname = window.location.hostname;
-    const proxyUrl = (hostname === 'localhost' || hostname === '127.0.0.1') 
-      ? 'http://localhost:3010' 
-      : 'http://192.168.0.11:3010';
+    const proxyUrl = getAiProxyBaseForMessage();
     return { 
-      content: `AI服务调用失败：${error.message}\n\n说明：请确保 AI 代理服务器正在运行 (${proxyUrl})`, 
+      content: `AI服务调用失败：${error.message}\n\n说明：请确保 AI 代理可用（${proxyUrl}，路径 /api/chat）`, 
       isHTML: false 
     };
   }

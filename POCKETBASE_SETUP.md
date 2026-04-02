@@ -1,5 +1,7 @@
 # PocketBase 配置指南
 
+> **当前主线（2025+）**：集合由 `pocketbase/pb_migrations/` 在 PocketBase 启动时自动创建（`pb_*` 结构化集合）。**标准交付**请优先阅读根目录 [README.md](README.md) 中的 **Docker Compose** 与 **空库初始化** 说明。下文中的 `park_backups` / 手动 Import schema 等方式为历史兼容说明，新部署请勿再走整包 JSON 集合路线。
+
 本指南将帮助你快速配置和部署 PocketBase 作为项目的后端数据库。
 
 ## 第一步：下载和安装 PocketBase

@@ -1,0 +1,45 @@
+services:
+  pocketbase:
+    build:
+      context: .
+      dockerfile: docker/pocketbase/Dockerfile
+    ports:
+      - "8001:8090"
+    volumes:
+      - pb_data:/pb/pb_data
+    environment:
+      TZ: Asia/Shanghai
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:8090/api/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 15s
+    restart: unless-stopped
+
+  ai-proxy:
+    build:
+      context: .
+      dockerfile: docker/ai-proxy/Dockerfile
+    ports:
+      - "3010:3010"
+    environment:
+      QWEN_API_KEY: ${QWEN_API_KEY}
+    restart: unless-stopped
+  web:
+    build:
+      context: .
+      dockerfile: docker/web/Dockerfile
+      args:
+        VITE_POCKETBASE_URL: /api/pb
+    ports:
+      - "1001:80"
+    depends_on:
+      pocketbase:
+        condition: service_healthy
+      ai-proxy:
+        condition: service_started
+    restart: unless-stopped
+
+volumes:
+  pb_data: {}

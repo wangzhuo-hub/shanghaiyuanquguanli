@@ -2,8 +2,8 @@
 
 # ============================================
 # 上海园区招商管理看板 - 一键启动脚本
-# 前端: http://192.168.0.11:2002
-# 后端管理: http://192.168.0.11:9002/_/
+# 前端: http://<本机IP>:1001（见下方 DETECT_IP）
+# PocketBase 管理: http://<本机IP>:8001/_/
 # ============================================
 
 # 颜色定义
@@ -15,22 +15,40 @@ CYAN='\033[0;36m'
 NC='\033[0m' # No Color
 
 # 服务配置
-FRONTEND_PORT=2002
-BACKEND_PORT=9002
+FRONTEND_PORT=1001
+BACKEND_PORT=8001
 AI_PROXY_PORT=3010
 
-# 实际Vite运行端口（vite.config.js中配置的端口）
-VITE_PORT=2002
+# 实际 Vite 运行端口（与 vite.config.ts 中 VITE_DEV_PORT / 默认 1001 一致）
+VITE_PORT=1001
 
 # 获取脚本所在目录
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+
+# 用于提示的局域网 IP（macOS / Linux）
+if command -v ipconfig >/dev/null 2>&1; then
+  DETECT_IP="$(ipconfig getifaddr en0 2>/dev/null || ipconfig getifaddr en1 2>/dev/null || echo "127.0.0.1")"
+else
+  DETECT_IP="$(hostname -I 2>/dev/null | awk '{print $1}' || echo "127.0.0.1")"
+fi
+
+# 加载本地环境变量（优先 .env.local，其次 .env；用于 QWEN_API_KEY 等）
+if [ -f "${SCRIPT_DIR}/.env.local" ]; then
+  set -a
+  source "${SCRIPT_DIR}/.env.local"
+  set +a
+elif [ -f "${SCRIPT_DIR}/.env" ]; then
+  set -a
+  source "${SCRIPT_DIR}/.env"
+  set +a
+fi
 
 echo -e "${CYAN}"
 echo "╔══════════════════════════════════════════════════════════════╗"
 echo "║        上海园区招商管理看板 - 服务启动程序                   ║"
 echo "╠══════════════════════════════════════════════════════════════╣"
-echo "║  前端访问: http://192.168.0.11:${VITE_PORT}                          ║"
-echo "║  后端管理: http://192.168.0.11:9002/_/                       ║"
+echo "║  前端访问: http://${DETECT_IP}:${VITE_PORT}                          ║"
+echo "║  后端管理: http://${DETECT_IP}:${BACKEND_PORT}/_/                       ║"
 echo "╚══════════════════════════════════════════════════════════════╝"
 echo -e "${NC}"
 
@@ -124,7 +142,7 @@ if ! lsof -ti :${BACKEND_PORT} > /dev/null 2>&1; then
     exit 1
 fi
 echo -e "${GREEN}✓ PocketBase 已启动 (PID: ${PB_PID})${NC}"
-echo -e "${CYAN}  管理后台: http://192.168.0.11:${BACKEND_PORT}/_/${NC}"
+echo -e "${CYAN}  管理后台: http://${DETECT_IP}:${BACKEND_PORT}/_/${NC}"
 echo ""
 
 # 启动 AI 代理服务
@@ -159,14 +177,14 @@ if ! lsof -ti :${VITE_PORT} > /dev/null 2>&1; then
     exit 1
 fi
 echo -e "${GREEN}✓ 前端服务已启动 (PID: ${FRONTEND_PID})${NC}"
-echo -e "${CYAN}  访问地址: http://192.168.0.11:${VITE_PORT}${NC}"
+echo -e "${CYAN}  访问地址: http://${DETECT_IP}:${VITE_PORT}${NC}"
 echo ""
 
 echo -e "${GREEN}╔══════════════════════════════════════════════════════════════╗${NC}"
 echo -e "${GREEN}║                    所有服务启动成功！                        ║${NC}"
 echo -e "${GREEN}╠══════════════════════════════════════════════════════════════╣${NC}"
-echo -e "${GREEN}║  🌐 前端页面: http://192.168.0.11:${VITE_PORT}                       ║${NC}"
-echo -e "${GREEN}║  ⚙️  后端管理: http://192.168.0.11:9002/_/                    ║${NC}"
+echo -e "${GREEN}║  🌐 前端页面: http://${DETECT_IP}:${VITE_PORT}                       ║${NC}"
+echo -e "${GREEN}║  ⚙️  后端管理: http://${DETECT_IP}:${BACKEND_PORT}/_/                    ║${NC}"
 echo -e "${GREEN}╠══════════════════════════════════════════════════════════════╣${NC}"
 echo -e "${GREEN}║  提示: 按 Ctrl+C 可一键停止所有服务                          ║${NC}"
 echo -e "${GREEN}╚══════════════════════════════════════════════════════════════╝${NC}"

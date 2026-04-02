@@ -578,9 +578,6 @@ export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, build
               status: (status as ContractStatus) || ContractStatus.Active,
               specialRequirements: String(row['备注'] ?? row.specialRequirements ?? '').trim() || undefined,
               isRisk: false,
-              contractParkingSpaces: parseNumber(row['约定车位'] ?? row.contractParkingSpaces) as any,
-              actualParkingSpaces: parseNumber(row['实际车位'] ?? row.actualParkingSpaces) as any,
-              parkingUnitPrice: parseNumber(row['车位单价'] ?? row.parkingUnitPrice),
               keyMoments: [],
           };
 
