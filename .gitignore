@@ -1,3 +1,34 @@
+# Dependencies
+node_modules/
+
+# Build outputs
+dist/
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Local env files
+.env
+.env.*
+!.env.example
+
+# OS/editor
+.DS_Store
+.idea/
+.vscode/
+
+# PocketBase local data (do not commit)
+pocketbase/pb_data/
+
+# Local screenshots from Playwright/debug scripts
+test-screenshots/
+test-screenshots-detailed/
+screenshot-*.png
+
 # Logs
 logs
 *.log

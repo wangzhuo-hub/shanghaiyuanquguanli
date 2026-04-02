@@ -3,8 +3,29 @@ import http from 'http';
 import fetch from 'node-fetch';
 
 const PORT = 3010;
-const QWEN_API_KEY = 'sk-sp-1b86ef09510e4e1683454766f375ad1b';
 const QWEN_BASE_URL = 'https://coding.dashscope.aliyuncs.com/v1';
+
+const QWEN_API_KEY =
+  process.env.QWEN_API_KEY ||
+  process.env.DASHSCOPE_API_KEY ||
+  process.env.QWEN_KEY ||
+  '';
+
+if (!QWEN_API_KEY) {
+  console.error(
+    [
+      '[Proxy] 缺少 API Key，AI 代理服务无法启动。',
+      '请在启动前设置环境变量之一：',
+      '  - QWEN_API_KEY（推荐）',
+      '  - DASHSCOPE_API_KEY',
+      '',
+      '示例：',
+      '  export QWEN_API_KEY="your_key_here"',
+      '  node ai-proxy.mjs',
+    ].join('\n')
+  );
+  process.exit(1);
+}
 
 const server = http.createServer(async (req, res) => {
   // CORS headers
