@@ -103,7 +103,7 @@ console.log('========================================\n');
 
 console.log('注意事项：');
 console.log('1. 请确保 PocketBase 服务器正在运行');
-console.log('2. 请先在 PocketBase Admin UI 中创建 park_backups collection');
+console.log('2. 本脚本会向 PocketBase 写入 park_backups；当前产品已废弃该集合，请改用 JSON + scripts/migrate-json-to-pb.mjs 导入 pb_*');
 console.log('3. 请修改脚本中的 POCKETBASE_EMAIL 和 POCKETBASE_PASSWORD\n');
 
 const readline = require('readline').createInterface({

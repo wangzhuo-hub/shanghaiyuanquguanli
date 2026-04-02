@@ -22,24 +22,22 @@
 
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-📍 第二步：导入数据库结构
+📍 第二步：数据库结构（已废弃整包 JSON 集合 park_backups）
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-1. 登录成功后，在左侧菜单点击 "Collections"（集合）
+业务数据保存在 PocketBase 的 pb_* 结构化集合中；启动本仓库自带的 PocketBase 时会自动执行
+pocketbase/pb_migrations/ 下的迁移（含删除遗留集合 park_backups）。
 
-2. 点击右上角的 "Import collections"（导入集合）按钮
+推荐做法（二选一即可）：
 
-3. 点击 "Load from JSON file"（从 JSON 文件加载）
+【方式 A】用项目内 PocketBase 二进制启动（迁移会自动跑）：
+   在终端进入项目的 pocketbase 目录，执行：./pocketbase serve
+   （Windows 用 pocketbase.exe serve）
 
-4. 选择文件：
-   pocketbase/schema.json
-   （在你的项目文件夹里的 pocketbase 子文件夹中）
+【方式 B】若 Admin 里还没有 pb_buildings 等集合，再执行一次脚本创建结构化表：
+   node scripts/setup-pb-collections.mjs http://127.0.0.1:8090 管理员邮箱 密码
 
-5. 点击 "Review"（审查）按钮
-
-6. 确认无误后，点击 "Confirm and import"（确认并导入）
-
-7. 导入成功！你会看到一个名为 "park_backups" 的 collection
+说明：pocketbase/schema.json 现为占位空数组，请勿再按旧文档只导入「park_backups」单集合。
 
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

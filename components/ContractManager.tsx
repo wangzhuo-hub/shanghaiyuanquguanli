@@ -6,6 +6,8 @@ import { Search, Plus, FileText, Filter, XCircle, AlertTriangle, AlertCircle, Ca
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, BarChart, Bar, Cell, PieChart as RechartsPieChart, Pie, Legend, ComposedChart, Line } from 'recharts';
 import { OccupancyTrendChart, UnitPriceTrendChart } from './Charts';
 import { generateBudgetedBills } from '../services/billingService';
+import { AIContractRecognitionModal } from './AIContractRecognitionModal';
+import * as XLSX from 'xlsx';
 
 interface ContractManagerProps {
   tenants: Tenant[];
@@ -40,6 +42,12 @@ export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, build
   const [showTerminateModal, setShowTerminateModal] = useState(false);
   const [terminateId, setTerminateId] = useState<string | null>(null);
   const [terminateData, setTerminateData] = useState({ date: '', type: 'Normal' as 'Normal' | 'Early', reason: '' });
+
+  // 批量导入/导出 & AI 识别导入
+  const [showAIContractImport, setShowAIContractImport] = useState(false);
+  const [importSummary, setImportSummary] = useState<null | { total: number; success: number; updated: number; created: number; failed: number }>(null);
+  const [importErrors, setImportErrors] = useState<Array<{ row: number; reason: string; data: Record<string, any> }>>([]);
+  const [showImportResult, setShowImportResult] = useState(false);
   
   // 初始化录入状态
   const [showInitPaymentModal, setShowInitPaymentModal] = useState(false);
@@ -296,6 +304,322 @@ export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, build
         return matchesSearch && matchesBuilding && matchesStatus;
     }).sort((a,b) => new Date(b.leaseStart).getTime() - new Date(a.leaseStart).getTime());
   }, [tenants, searchTerm, filterBuilding, filterStatus, activeTab]);
+
+  const normalizeDate = (input: any): string => {
+      const s = String(input ?? '').trim();
+      if (!s) return '';
+      // Excel 序列号日期
+      if (typeof input === 'number' && Number.isFinite(input) && input > 20000 && input < 60000) {
+          const d = XLSX.SSF.parse_date_code(input);
+          if (d?.y && d?.m && d?.d) return `${d.y}-${String(d.m).padStart(2,'0')}-${String(d.d).padStart(2,'0')}`;
+      }
+      // 兼容 YYYY/M/D
+      const m = s.match(/^(\d{4})[\/\-\.](\d{1,2})[\/\-\.](\d{1,2})$/);
+      if (m) return `${m[1]}-${String(m[2]).padStart(2,'0')}-${String(m[3]).padStart(2,'0')}`;
+      // 已是 YYYY-MM-DD 或其它，原样返回
+      return s;
+  };
+
+  const parseNumber = (input: any): number | undefined => {
+      if (input === null || input === undefined) return undefined;
+      if (typeof input === 'number' && Number.isFinite(input)) return input;
+      const s = String(input).replace(/[,\s￥¥]/g, '').trim();
+      if (!s) return undefined;
+      const n = Number(s);
+      return Number.isFinite(n) ? n : undefined;
+  };
+
+  const matchBuildingByName = (name: any): string => {
+      const raw = String(name ?? '').trim();
+      if (!raw) return '';
+      const cleaned = raw.replace(/[\s号楼栋幢]/g, '').toLowerCase();
+      for (const b of buildings) {
+          const bName = String(b.name || '').replace(/[\s号楼栋幢]/g, '').toLowerCase();
+          if (bName === cleaned || bName.includes(cleaned) || cleaned.includes(bName)) return b.id;
+      }
+      const num = cleaned.match(/\d+/)?.[0];
+      if (num) {
+          const hit = buildings.find((b) => String(b.name || '').includes(num));
+          if (hit) return hit.id;
+      }
+      return '';
+  };
+
+  const matchUnitIdsByNames = (buildingId: string, unitNames: string[]): string[] => {
+      const b = buildings.find((x) => x.id === buildingId);
+      if (!b) return [];
+      const out: string[] = [];
+      unitNames.forEach((name) => {
+          const cleaned = String(name || '').replace(/[\s室号房]/g, '').toLowerCase();
+          if (!cleaned) return;
+          const hit = b.units.find((u) => {
+              const uName = String(u.name || '').replace(/[\s室号房]/g, '').toLowerCase();
+              return uName === cleaned || uName.includes(cleaned) || cleaned.includes(uName);
+          });
+          if (hit && !out.includes(hit.id)) out.push(hit.id);
+      });
+      return out;
+  };
+
+  const inferPaymentCycle = (text: any): Tenant['paymentCycle'] => {
+      const s = String(text ?? '').trim();
+      if (!s) return 'Quarterly';
+      if (s === 'Monthly' || s.includes('月')) return 'Monthly';
+      if (s === 'SemiAnnual' || s.includes('半年')) return 'SemiAnnual';
+      if (s === 'Annual' || s.includes('年')) return 'Annual';
+      if (s === 'Quarterly' || s.includes('季')) return 'Quarterly';
+      return 'Quarterly';
+  };
+
+  const downloadXlsx = (filename: string, rows: any[], sheetName = 'Sheet1') => {
+      const ws = XLSX.utils.json_to_sheet(rows);
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, sheetName);
+      XLSX.writeFile(wb, filename);
+  };
+
+  const handleExportTenants = () => {
+      const exportRows = filteredTenants.map((t) => {
+          const building = buildings.find((b) => b.id === t.buildingId);
+          const unitNames = t.unitIds
+              .map((uid) => building?.units.find((u) => u.id === uid)?.name || uid)
+              .join(',');
+          const displayPrice = t.unitPrice || (t.totalArea ? (t.monthlyRent / t.totalArea * 12 / 365) : 0);
+          const rf = (t.rentFreePeriods || [])[0];
+          return {
+              original_id: t.id,
+              企业名称: t.name,
+              所属行业: t.industry || '',
+              所属资产: building?.name || '',
+              房号: unitNames,
+              签约日期: t.signingDate || '',
+              实际入驻日期: t.moveInDate || '',
+              起租日期: t.leaseStart,
+              结束日期: t.leaseEnd,
+              日单价: Number(displayPrice.toFixed(2)),
+              月租金: t.monthlyRent || 0,
+              面积: t.totalArea || 0,
+              支付频率: t.paymentCycle || 'Quarterly',
+              支付周期月数: t.paymentCycleMonths ?? '',
+              首次收款日期: t.firstPaymentDate || '',
+              押金: t.depositAmount || 0,
+              免租处理方式: t.freeRentHandling || '',
+              免租开始: rf?.start || '',
+              免租结束: rf?.end || '',
+              免租说明: rf?.description || '',
+              合同状态: t.status || '',
+              联系人: t.contactName || '',
+              联系方式: t.contactInfo || '',
+              法人: t.legalRepName || '',
+              成立日期: t.foundingDate || '',
+              备注: t.specialRequirements || '',
+          };
+      });
+      const fname = `客户合同导出_${activeTab === 'Terminated' ? '历史退租' : '在租明细'}_${new Date().toISOString().slice(0,10)}.xlsx`;
+      downloadXlsx(fname, exportRows, 'contracts');
+  };
+
+  const handleDownloadTemplate = () => {
+      const exampleBuilding = buildings[0];
+      const exampleUnit = exampleBuilding?.units?.[0];
+      const rows = [
+          {
+              original_id: '',
+              企业名称: '示例：上海XX科技有限公司',
+              所属行业: 'AI/软件',
+              所属资产: exampleBuilding?.name || '1号楼',
+              房号: exampleUnit?.name ? String(exampleUnit.name) : '305-308',
+              签约日期: new Date().toISOString().slice(0, 10),
+              实际入驻日期: '',
+              起租日期: new Date().toISOString().slice(0, 10),
+              结束日期: '',
+              日单价: 2.8,
+              月租金: '',
+              面积: '',
+              支付频率: 'Quarterly',
+              支付周期月数: 3,
+              首次收款日期: '',
+              押金: 0,
+              免租处理方式: 'Defer',
+              免租开始: '',
+              免租结束: '',
+              免租说明: '',
+              合同状态: 'Active',
+              联系人: '',
+              联系方式: '',
+              法人: '',
+              成立日期: '',
+              备注: '',
+          },
+      ];
+      downloadXlsx('客户合同导入模板.xlsx', rows, 'template');
+  };
+
+  const handleBatchImportFile = async (file: File) => {
+      const buf = await file.arrayBuffer();
+      const workbook = XLSX.read(new Uint8Array(buf), { type: 'array' });
+      const first = workbook.Sheets[workbook.SheetNames[0]];
+      const json = XLSX.utils.sheet_to_json<Record<string, any>>(first, { defval: '' });
+
+      const errors: Array<{ row: number; reason: string; data: Record<string, any> }> = [];
+      let updated = 0;
+      let created = 0;
+
+      const updatedTenants = [...tenants];
+
+      const findExistingIndex = (row: Record<string, any>): number => {
+          const oid = String(row.original_id || row['original_id'] || '').trim();
+          if (oid) {
+              const i = updatedTenants.findIndex((t) => t.id === oid);
+              if (i >= 0) return i;
+          }
+          const name = String(row['企业名称'] || row.name || '').trim();
+          const leaseStart = normalizeDate(row['起租日期'] || row.leaseStart);
+          if (!name || !leaseStart) return -1;
+          return updatedTenants.findIndex((t) => t.name === name && String(t.leaseStart || '') === leaseStart);
+      };
+
+      json.forEach((row, idx) => {
+          const rowNo = idx + 2; // header=1
+          const name = String(row['企业名称'] || row.name || '').trim();
+          const buildingName = row['所属资产'] || row['楼宇'] || row['楼宇名称'] || row.buildingName;
+          const buildingId = matchBuildingByName(buildingName) || String(row.buildingId || '').trim();
+          const unitNamesRaw = String(row['房号'] || row['租赁单元'] || row.unitNames || '').trim();
+          const unitNames = unitNamesRaw
+              ? unitNamesRaw.split(/[,，、;\s]+/).map((s) => s.trim()).filter(Boolean)
+              : [];
+          const unitIds = buildingId ? matchUnitIdsByNames(buildingId, unitNames) : [];
+
+          const signingDate = normalizeDate(row['签约日期'] || row.signingDate);
+          const leaseStart = normalizeDate(row['起租日期'] || row.leaseStart);
+          const leaseEnd = normalizeDate(row['结束日期'] || row['到期日期'] || row.leaseEnd);
+          const moveInDate = normalizeDate(row['实际入驻日期'] || row.moveInDate);
+
+          const unitPrice = parseNumber(row['日单价'] ?? row.unitPrice);
+          const monthlyRent = parseNumber(row['月租金'] ?? row.monthlyRent);
+          const totalArea = parseNumber(row['面积'] ?? row.totalArea);
+          const depositAmount = parseNumber(row['押金'] ?? row.depositAmount);
+
+          const paymentCycle = inferPaymentCycle(row['支付频率'] ?? row.paymentCycle);
+          const paymentCycleMonths = parseNumber(row['支付周期月数'] ?? row.paymentCycleMonths);
+          const firstPaymentDate = normalizeDate(row['首次收款日期'] ?? row.firstPaymentDate);
+
+          const freeRentHandling = String(row['免租处理方式'] ?? row.freeRentHandling ?? '').trim() as any;
+          const rfStart = normalizeDate(row['免租开始'] ?? row.rentFreeStart);
+          const rfEnd = normalizeDate(row['免租结束'] ?? row.rentFreeEnd);
+          const rfDesc = String(row['免租说明'] ?? row.rentFreeDesc ?? '').trim();
+
+          const status = String(row['合同状态'] ?? row.status ?? '').trim() as any;
+
+          if (!name) {
+              errors.push({ row: rowNo, reason: '缺少必填字段：企业名称', data: row });
+              return;
+          }
+          if (!buildingId) {
+              errors.push({ row: rowNo, reason: `无法匹配所属资产：${String(buildingName ?? '').trim() || '空'}`, data: row });
+              return;
+          }
+          if (unitNames.length > 0 && unitIds.length === 0) {
+              errors.push({ row: rowNo, reason: `无法匹配房号：${unitNamesRaw}`, data: row });
+              return;
+          }
+          if (!leaseStart || !leaseEnd || !signingDate) {
+              errors.push({ row: rowNo, reason: '缺少必填字段：签约日期/起租日期/结束日期', data: row });
+              return;
+          }
+
+          const resolvedTotalArea =
+              typeof totalArea === 'number' && Number.isFinite(totalArea) && totalArea > 0
+                  ? Number(totalArea.toFixed(2))
+                  : unitIds.reduce((sum, uid) => {
+                        const b = buildings.find((x) => x.id === buildingId);
+                        const u = b?.units.find((x) => x.id === uid);
+                        return sum + (u?.area || 0);
+                    }, 0);
+
+          const resolvedUnitPrice =
+              typeof unitPrice === 'number' && Number.isFinite(unitPrice) && unitPrice > 0
+                  ? Number(unitPrice.toFixed(2))
+                  : undefined;
+
+          const resolvedMonthlyRent =
+              typeof monthlyRent === 'number' && Number.isFinite(monthlyRent) && monthlyRent > 0
+                  ? Math.round(monthlyRent)
+                  : resolvedUnitPrice && resolvedTotalArea
+                    ? Math.round(resolvedUnitPrice * (365 / 12) * resolvedTotalArea)
+                    : 0;
+
+          const patch: Tenant = {
+              id: String(row.original_id || row['original_id'] || '').trim() || `t${Date.now()}_${idx}`,
+              rootId: String(row.rootId || row['root_id'] || '').trim() || undefined,
+              name,
+              industry: String(row['所属行业'] ?? row.industry ?? '').trim() || undefined,
+              contactInfo: String(row['联系方式'] ?? row.contactInfo ?? '').trim() || undefined,
+              contactName: String(row['联系人'] ?? row.contactName ?? '').trim() || undefined,
+              legalRepName: String(row['法人'] ?? row.legalRepName ?? '').trim() || undefined,
+              foundingDate: normalizeDate(row['成立日期'] ?? row.foundingDate) || undefined,
+              buildingId,
+              unitIds,
+              totalArea: Number(Number(resolvedTotalArea || 0).toFixed(2)),
+              signingDate,
+              moveInDate: moveInDate || undefined,
+              leaseStart,
+              leaseEnd,
+              unitPrice: resolvedUnitPrice,
+              monthlyRent: resolvedMonthlyRent,
+              rentFreePeriods: rfStart && rfEnd ? [{ start: rfStart, end: rfEnd, description: rfDesc || '免租期' }] : [],
+              paymentCycle,
+              paymentCycleMonths: typeof paymentCycleMonths === 'number' ? Math.round(paymentCycleMonths) : undefined,
+              firstPaymentDate: firstPaymentDate || leaseStart,
+              firstPaymentMonths: typeof paymentCycleMonths === 'number' ? Math.round(paymentCycleMonths) : undefined,
+              freeRentHandling: freeRentHandling === 'Deduct' || freeRentHandling === 'Defer' ? freeRentHandling : undefined,
+              depositAmount: typeof depositAmount === 'number' ? Math.round(depositAmount) : 0,
+              depositStatus: DepositStatus.Unpaid,
+              status: (status as ContractStatus) || ContractStatus.Active,
+              specialRequirements: String(row['备注'] ?? row.specialRequirements ?? '').trim() || undefined,
+              isRisk: false,
+              contractParkingSpaces: parseNumber(row['约定车位'] ?? row.contractParkingSpaces) as any,
+              actualParkingSpaces: parseNumber(row['实际车位'] ?? row.actualParkingSpaces) as any,
+              parkingUnitPrice: parseNumber(row['车位单价'] ?? row.parkingUnitPrice),
+              keyMoments: [],
+          };
+
+          // 已存在则更新（按你选择的策略）
+          const existingIndex = findExistingIndex(row);
+          if (existingIndex >= 0) {
+              const existing = updatedTenants[existingIndex];
+              updatedTenants[existingIndex] = { ...existing, ...patch, id: existing.id };
+              updated += 1;
+          } else {
+              updatedTenants.push(patch);
+              created += 1;
+          }
+      });
+
+      setImportErrors(errors);
+      setImportSummary({
+          total: json.length,
+          success: json.length - errors.length,
+          updated,
+          created,
+          failed: errors.length,
+      });
+      setShowImportResult(true);
+
+      if (json.length - errors.length > 0) {
+          onUpdateTenants(updatedTenants);
+      }
+  };
+
+  const handleImportErrorsExport = () => {
+      if (importErrors.length === 0) return;
+      const rows = importErrors.map((e) => ({
+          行号: e.row,
+          原因: e.reason,
+          ...e.data,
+      }));
+      downloadXlsx(`客户合同导入失败明细_${new Date().toISOString().slice(0,10)}.xlsx`, rows, 'errors');
+  };
 
   const sortedYears = useMemo(() => {
       const groups: Record<number, Tenant[]> = {};
@@ -1237,6 +1561,48 @@ export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, build
                 <div className="flex gap-2 w-full md:w-auto items-center md:ml-auto">
                     <div className="relative flex-1 md:w-64"><Search className="absolute left-3 top-2.5 text-slate-400 w-4 h-4" /><input type="text" placeholder="搜索企业名称..." value={searchTerm} onChange={e => setSearchTerm(e.target.value)} className="w-full pl-9 pr-4 py-2 bg-white border border-slate-200 rounded-lg text-sm focus:ring-2 focus:ring-blue-100 outline-none"/></div>
                     {activeTab === 'List' && (
+                        <>
+                            <button
+                                type="button"
+                                onClick={handleExportTenants}
+                                className="px-4 py-2 bg-white border border-slate-200 text-slate-700 rounded-lg hover:bg-slate-50 shadow-sm font-bold text-sm"
+                                title="导出当前筛选结果"
+                            >
+                                批量导出
+                            </button>
+                            <button
+                                type="button"
+                                onClick={handleDownloadTemplate}
+                                className="px-4 py-2 bg-white border border-slate-200 text-slate-700 rounded-lg hover:bg-slate-50 shadow-sm font-bold text-sm"
+                                title="下载导入模板"
+                            >
+                                下载模板
+                            </button>
+                            <label className="px-4 py-2 bg-white border border-slate-200 text-slate-700 rounded-lg hover:bg-slate-50 shadow-sm font-bold text-sm cursor-pointer" title="批量导入（Excel）">
+                                批量导入
+                                <input
+                                    type="file"
+                                    accept=".xlsx,.xls,.csv"
+                                    className="hidden"
+                                    onChange={(e) => {
+                                        const f = e.target.files?.[0];
+                                        if (!f) return;
+                                        void handleBatchImportFile(f);
+                                        e.target.value = '';
+                                    }}
+                                />
+                            </label>
+                            <button
+                                type="button"
+                                onClick={() => setShowAIContractImport(true)}
+                                className="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 shadow-md font-bold text-sm flex items-center gap-2"
+                                title="上传截图/文本/Excel，由 AI 识别并生成合同草稿"
+                            >
+                                <Sparkles size={16} /> AI识别导入
+                            </button>
+                        </>
+                    )}
+                    {activeTab === 'List' && (
                         <button onClick={() => { setCurrentTenant({ signingDate: new Date().toISOString().split('T')[0], status: ContractStatus.Active, depositStatus: DepositStatus.Unpaid, rentFreePeriods: [], paymentCycle: 'Quarterly', paymentCycleMonths: 3, firstPaymentMonths: 3 }); setIsEditing(true); }} className="px-5 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 shadow-md font-bold flex items-center gap-2 transition-all"><Plus size={18} /><span>新签客户</span></button>
                     )}
                 </div>
@@ -1350,6 +1716,87 @@ export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, build
                     <div className="flex justify-end gap-2 mt-6"><button onClick={() => setShowTerminateModal(false)} className="px-4 py-2 text-slate-600">取消</button><button onClick={() => { if (terminateId) { const updatedTenants = tenants.map(t => t.id === terminateId ? { ...t, status: ContractStatus.Terminated, terminationDate: terminateData.date, terminationType: terminateData.type, terminationReason: terminateData.reason } : t); onUpdateTenants(updatedTenants); setShowTerminateModal(false); setTerminateId(null); }}} className="px-6 py-2 bg-amber-600 text-white rounded-lg font-bold">确认退租</button></div>
                 </div>
              </div>
+          </div>
+      )}
+
+      <AIContractRecognitionModal
+          isOpen={showAIContractImport}
+          onClose={() => setShowAIContractImport(false)}
+          buildings={buildings}
+          onImport={(tenantData) => {
+              setCurrentTenant({
+                  signingDate: new Date().toISOString().split('T')[0],
+                  status: ContractStatus.Active,
+                  depositStatus: DepositStatus.Unpaid,
+                  rentFreePeriods: [],
+                  paymentCycle: 'Quarterly',
+                  paymentCycleMonths: 3,
+                  firstPaymentMonths: 3,
+                  ...tenantData,
+              });
+              setIsEditing(true);
+          }}
+      />
+
+      {showImportResult && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm p-4">
+              <div className="bg-white w-full max-w-3xl rounded-2xl shadow-xl border border-slate-200 overflow-hidden animate-in zoom-in-50 duration-200">
+                  <div className="flex items-center justify-between p-4 border-b border-slate-100 bg-slate-50">
+                      <div className="font-bold text-slate-800">批量导入结果</div>
+                      <button onClick={() => setShowImportResult(false)} className="p-2 rounded-lg hover:bg-white text-slate-500"><X size={18}/></button>
+                  </div>
+                  <div className="p-4 space-y-3">
+                      {importSummary && (
+                          <div className="grid grid-cols-2 md:grid-cols-5 gap-2 text-sm">
+                              <div className="p-3 rounded-lg border bg-white"><div className="text-xs text-slate-500">总行数</div><div className="font-black text-slate-800">{importSummary.total}</div></div>
+                              <div className="p-3 rounded-lg border bg-white"><div className="text-xs text-slate-500">成功</div><div className="font-black text-emerald-700">{importSummary.success}</div></div>
+                              <div className="p-3 rounded-lg border bg-white"><div className="text-xs text-slate-500">更新</div><div className="font-black text-blue-700">{importSummary.updated}</div></div>
+                              <div className="p-3 rounded-lg border bg-white"><div className="text-xs text-slate-500">新增</div><div className="font-black text-indigo-700">{importSummary.created}</div></div>
+                              <div className="p-3 rounded-lg border bg-white"><div className="text-xs text-slate-500">失败</div><div className="font-black text-rose-700">{importSummary.failed}</div></div>
+                          </div>
+                      )}
+
+                      {importErrors.length > 0 ? (
+                          <div className="border rounded-xl overflow-hidden">
+                              <div className="flex items-center justify-between p-3 bg-rose-50 border-b">
+                                  <div className="text-sm font-bold text-rose-800">失败明细（显示前 20 条）</div>
+                                  <button onClick={handleImportErrorsExport} className="text-xs font-bold text-rose-700 hover:underline">下载失败明细</button>
+                              </div>
+                              <div className="max-h-64 overflow-y-auto">
+                                  <table className="w-full text-xs">
+                                      <thead className="bg-slate-50 text-slate-500">
+                                          <tr>
+                                              <th className="px-3 py-2 text-left">行号</th>
+                                              <th className="px-3 py-2 text-left">原因</th>
+                                              <th className="px-3 py-2 text-left">企业</th>
+                                              <th className="px-3 py-2 text-left">资产</th>
+                                              <th className="px-3 py-2 text-left">房号</th>
+                                          </tr>
+                                      </thead>
+                                      <tbody className="divide-y">
+                                          {importErrors.slice(0, 20).map((e, i) => (
+                                              <tr key={i} className="hover:bg-slate-50">
+                                                  <td className="px-3 py-2">{e.row}</td>
+                                                  <td className="px-3 py-2 text-rose-700 font-medium">{e.reason}</td>
+                                                  <td className="px-3 py-2">{String(e.data['企业名称'] || e.data.name || '')}</td>
+                                                  <td className="px-3 py-2">{String(e.data['所属资产'] || e.data['楼宇'] || e.data.buildingName || '')}</td>
+                                                  <td className="px-3 py-2">{String(e.data['房号'] || e.data.unitNames || '')}</td>
+                                              </tr>
+                                          ))}
+                                      </tbody>
+                                  </table>
+                              </div>
+                          </div>
+                      ) : (
+                          <div className="text-sm text-emerald-700 font-bold bg-emerald-50 border border-emerald-200 p-3 rounded-xl">
+                              全部导入成功。
+                          </div>
+                      )}
+                  </div>
+                  <div className="p-4 border-t border-slate-100 flex justify-end gap-2">
+                      <button onClick={() => setShowImportResult(false)} className="px-4 py-2 border rounded-lg text-slate-600 hover:bg-slate-50 font-medium">关闭</button>
+                  </div>
+              </div>
           </div>
       )}
     </div>

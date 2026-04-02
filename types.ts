@@ -364,6 +364,12 @@ export interface DashboardData {
 
   /** 缓缴等仅影响应收展示，不写入 budgetAdjustments */
   billingPeriodNotes?: Record<string, string>;
+
+  /**
+   * 与 PocketBase 中 `dashboard_data_version` 记录对齐；保存时必须与服务器一致，否则触发冲突提示。
+   * 未从云端加载过时可视为 0。
+   */
+  cloudSaveVersion?: number;
 }
 
 export interface ChatMessage {

@@ -14,9 +14,11 @@ import { FinanceManager } from './components/FinanceManager';
 import { BudgetManager } from './components/BudgetManager';
 import { TenantInsights } from './components/TenantInsights';
 import { DashboardAlerts } from './components/DashboardAlerts';
-import { checkConnection, saveToCloud, getCloudHistory, fetchCloudBackup, initCloud } from './services/cloudService';
+import { checkConnection, saveToCloud, getCloudHistory, fetchCloudBackup, initCloud, SaveToCloudResult, scheduleUpsertIntegrationFullSnapshot } from './services/cloudService';
+import { buildIntegrationFullSnapshotV1 } from './services/integrationSnapshot';
 import { generateBudgetedBills, getVirtualTenants } from './services/billingService';
 import { rentCollectionRemarkKey } from './services/receivableListHelpers';
+import { DEFAULT_CLOUD_CONFIG, mergeStoredCloudConfig } from './config/deploymentDefaults';
 
 const STORAGE_KEY = 'kingdee_park_data_v1';
 const CLOUD_CONFIG_KEY = 'kingdee_park_cloud_config';
@@ -333,14 +335,9 @@ const SidebarItem: React.FC<SidebarItemProps> = ({ icon, label, isOpen, active, 
 
 const App: React.FC = () => {
   const [data, setData] = useState<DashboardData | null>(null);
-  const [cloudConfig, setCloudConfig] = useState<CloudConfig>({ 
-      provider: 'pocketbase',
-      pocketbaseUrl: 'http://192.168.0.11:9002',
-      pocketbaseEmail: '',
-      pocketbasePassword: '',
-      autoSync: false,
-      projectId: 'park_data_main' 
-  });
+  const [cloudConfig, setCloudConfig] = useState<CloudConfig>(() => ({
+      ...DEFAULT_CLOUD_CONFIG,
+  }));
   
   const [aiConfig, setAiConfig] = useState<AIConfig>({
       provider: 'qwen', // 默认使用千问
@@ -393,17 +390,8 @@ const App: React.FC = () => {
     const bootstrapYear = new Date().getFullYear();
     const loadData = async () => {
       try {
-        const savedConfig = localStorage.getItem(CLOUD_CONFIG_KEY);
-        let configToUse: CloudConfig = { ...cloudConfig };
-        if (savedConfig) {
-            const parsed = JSON.parse(savedConfig) as Partial<CloudConfig>;
-            configToUse = {
-                ...cloudConfig,
-                ...parsed,
-                provider: 'pocketbase',
-            };
-            setCloudConfig(configToUse);
-        }
+        const configToUse = mergeStoredCloudConfig(localStorage.getItem(CLOUD_CONFIG_KEY));
+        setCloudConfig(configToUse);
         
         const savedAIConfig = localStorage.getItem('ai_config');
         if (savedAIConfig) {
@@ -414,7 +402,7 @@ const App: React.FC = () => {
                 console.error('[App] AI配置加载失败:', e);
             }
         }
-        // 启动时自动连接后端，并仅在此时尝试拉取最新云端数据
+        // 启动时自动连接后端；连通时始终从 PocketBase 拉取一次结构化数据（后端优先），保证局域网各端一致
         await initCloud(configToUse);
         const connected = await checkConnection(configToUse);
         setIsCloudConnected(connected);
@@ -423,19 +411,33 @@ const App: React.FC = () => {
         let parsedData: DashboardData | null = null;
         if (savedData) parsedData = JSON.parse(savedData);
 
+        const hasMeaningfulCloudPayload = (d: DashboardData): boolean =>
+            (d.buildings?.length ?? 0) > 0 ||
+            (d.tenants?.length ?? 0) > 0 ||
+            (d.payments?.length ?? 0) > 0 ||
+            (d.budgetScenarios?.length ?? 0) > 0 ||
+            (d.invoices?.length ?? 0) > 0 ||
+            (d.initializationData?.length ?? 0) > 0 ||
+            (d.budgetAssumptions?.length ?? 0) > 0;
+
         if (connected) {
           try {
-            const historyRes = await getCloudHistory(configToUse);
-            if (historyRes.success && historyRes.data && historyRes.data.length > 0) {
-              const latest = historyRes.data[0];
-              setCloudHistory(historyRes.data);
-              setLatestBackup(latest);
-              const latestRes = await fetchCloudBackup(configToUse, latest.id);
-              if (latestRes.success && latestRes.data) {
-                const safeCloudData = { ...generateInitialData(), ...latestRes.data };
+            const latestRes = await fetchCloudBackup(configToUse, configToUse.projectId || '');
+            if (latestRes.success && latestRes.data) {
+              const safeCloudData = { ...generateInitialData(), ...latestRes.data };
+              if (hasMeaningfulCloudPayload(safeCloudData)) {
                 recalculateMetrics(safeCloudData, bootstrapYear, 'All');
                 localStorage.setItem(STORAGE_KEY, JSON.stringify(safeCloudData));
                 setLastSaved(new Date().toLocaleTimeString());
+                try {
+                  const historyRes = await getCloudHistory(configToUse);
+                  if (historyRes.success && historyRes.data && historyRes.data.length > 0) {
+                    setCloudHistory(historyRes.data);
+                    setLatestBackup(historyRes.data[0]);
+                  }
+                } catch {
+                  /* 历史列表仅用于展示，忽略 */
+                }
                 return;
               }
             }
@@ -511,6 +513,35 @@ const App: React.FC = () => {
       return res;
   };
 
+  /** 保存成功后把本地记录的云端版本号与服务器对齐 */
+  const applyCloudSaveSuccess = (current: DashboardData, res: SaveToCloudResult) => {
+      if (typeof res.newVersion === 'number' && Number.isFinite(res.newVersion)) {
+          recalculateMetrics({ ...current, cloudSaveVersion: res.newVersion });
+      } else {
+          recalculateMetrics(current);
+      }
+  };
+
+  /** 版本冲突：提示用户并可选从 PocketBase 重新拉取 */
+  const handleCloudSaveConflict = async (): Promise<boolean> => {
+      if (
+          !window.confirm(
+              '云端数据已被他人更新（或您在其他窗口已保存过）。\n\n若继续保留当前界面上的编辑，请先不要保存；建议点击「确定」放弃当前未同步的修改，并从服务器加载最新数据。\n\n确定要加载最新数据吗？'
+          )
+      ) {
+          return false;
+      }
+      const res = await fetchCloudBackup(cloudConfig, cloudConfig.projectId || '');
+      if (res.success && res.data) {
+          const safeData = { ...generateInitialData(), ...res.data };
+          recalculateMetrics(safeData, selectedYear, selectedQuarter);
+          alert('已加载服务器上的最新数据，版本号已更新。您可在此基础上继续编辑。');
+          return true;
+      }
+      alert('加载最新数据失败：' + (res.message || '未知错误'));
+      return false;
+  };
+
   const openSnapshotModal = () => {
       setSnapshotNote('');
       setIsSnapshotModalOpen(true);
@@ -529,8 +560,11 @@ const App: React.FC = () => {
       const res = await saveToCloud(data, cloudConfig, finalNote);
       setIsSyncing(false);
       if (res.success) {
+          applyCloudSaveSuccess(data, res);
           alert("✅ 云端备份成功！");
           fetchCloudHistory();
+      } else if (res.conflict) {
+          await handleCloudSaveConflict();
       } else {
           alert("保存失败: " + res.message);
       }
@@ -543,8 +577,14 @@ const App: React.FC = () => {
       const finalNote = `[预算方案] ${operator} ${timestamp} - ${scenarioName}`;
       const res = await saveToCloud(data, cloudConfig, finalNote);
       setIsSyncing(false);
-      if (res.success) alert("✅ 预算方案已保存至云端！");
-      else alert("保存失败: " + res.message);
+      if (res.success) {
+          applyCloudSaveSuccess(data, res);
+          alert("✅ 预算方案已保存至云端！");
+      } else if (res.conflict) {
+          await handleCloudSaveConflict();
+      } else {
+          alert("保存失败: " + res.message);
+      }
   };
 
   const handleQuickCloudSave = async () => {
@@ -570,9 +610,11 @@ const App: React.FC = () => {
       try {
           const res = await saveToCloud(data, cloudConfig, '手动保存');
           if (res.success) {
-              localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+              applyCloudSaveSuccess(data, res);
               setLastSaved(new Date().toLocaleTimeString());
               await fetchCloudHistory();
+          } else if (res.conflict) {
+              await handleCloudSaveConflict();
           } else {
               alert('保存失败：' + res.message);
           }
@@ -975,7 +1017,34 @@ const App: React.FC = () => {
           }
         : undefined;
 
-    const monthlyTrends = calculateTrends(tenants, virtualTenants, payments, totalLeasableArea, selfUseUnitIds, year, quarter, assumptions, adjustments, initData, buildings, budgetContextForYear);
+    const fullYearMonthlyTrends = calculateTrends(
+        tenants,
+        virtualTenants,
+        payments,
+        totalLeasableArea,
+        selfUseUnitIds,
+        year,
+        'All',
+        assumptions,
+        adjustments,
+        initData,
+        buildings,
+        budgetContextForYear
+    );
+    const monthlyTrends = calculateTrends(
+        tenants,
+        virtualTenants,
+        payments,
+        totalLeasableArea,
+        selfUseUnitIds,
+        year,
+        quarter,
+        assumptions,
+        adjustments,
+        initData,
+        buildings,
+        budgetContextForYear
+    );
     const prevYearMonthlyTrends = calculateTrends(tenants, virtualTenants, payments, totalLeasableArea, selfUseUnitIds, year - 1, 'All', assumptions, adjustments, initData, buildings, budgetContextForPrevYear);
 
     const annualRevenueCollected = monthlyTrends.reduce((sum, t) => sum + (t.revenueCollected || 0), 0);
@@ -1206,12 +1275,20 @@ const App: React.FC = () => {
         billingPeriodNotes: currentData.billingPeriodNotes || {},
     };
 
-    setData(processedData); 
+    const snapshotProjectId = (cloudConfig.projectId || '').trim();
+    if (snapshotProjectId) {
+        const fullSnapshot = buildIntegrationFullSnapshotV1(processedData, fullYearMonthlyTrends, {
+            statsYear: year,
+            projectId: snapshotProjectId,
+        });
+        scheduleUpsertIntegrationFullSnapshot(snapshotProjectId, fullSnapshot);
+    }
+
+    setData(processedData);
   };
 
-  const updateBuildings = (newBuildings: Building[]) => {
-      if (!data) return;
-      const updatedTenants = data.tenants.map(t => {
+  const reconcileTenantAreasWithBuildings = (newBuildings: Building[], tenants: Tenant[]): Tenant[] =>
+      tenants.map(t => {
           let newTotalArea = 0;
           t.unitIds.forEach(uid => { for (const b of newBuildings) { const unit = b.units.find(u => u.id === uid); if (unit) { newTotalArea += unit.area; break; } } });
           newTotalArea = parseFloat(newTotalArea.toFixed(2));
@@ -1222,7 +1299,16 @@ const App: React.FC = () => {
           const newMonthlyRent = Math.round(price * (365 / 12) * newTotalArea);
           return { ...t, totalArea: newTotalArea, monthlyRent: newMonthlyRent, unitPrice: price };
       });
-      recalculateMetrics({ ...data, buildings: newBuildings, tenants: updatedTenants });
+
+  const updateBuildings = (newBuildings: Building[]) => {
+      if (!data) return;
+      recalculateMetrics({ ...data, buildings: newBuildings, tenants: reconcileTenantAreasWithBuildings(newBuildings, data.tenants) });
+  };
+
+  /** 同时提交楼宇与租户（例如单元跨楼迁移后同步 unitIds / buildingId） */
+  const commitBuildingsTenants = (newBuildings: Building[], newTenants: Tenant[]) => {
+      if (!data) return;
+      recalculateMetrics({ ...data, buildings: newBuildings, tenants: reconcileTenantAreasWithBuildings(newBuildings, newTenants) });
   };
 
   const handleBatchUpdate = (updates: Partial<DashboardData>) => {
@@ -1553,7 +1639,7 @@ const App: React.FC = () => {
             </div>
           )}
 
-          {activeTab === 'buildings' && (<div className="animate-in fade-in zoom-in-50 duration-300"><BuildingManager buildings={data.buildings} tenants={data.tenants} onUpdateBuildings={updateBuildings} /></div>)}
+          {activeTab === 'buildings' && (<div className="animate-in fade-in zoom-in-50 duration-300"><BuildingManager buildings={data.buildings} tenants={data.tenants} onUpdateBuildings={updateBuildings} onCommitBuildingsTenants={commitBuildingsTenants} /></div>)}
           {activeTab === 'contracts' && (<div className="animate-in fade-in zoom-in-50 duration-300"><ContractManager tenants={data.tenants} buildings={data.buildings} onUpdateTenants={updateTenants} dashboardData={data} payments={data.payments} onUpdatePayments={updatePayments} /></div>)}
           {activeTab === 'finance' && (
               <div className="animate-in fade-in zoom-in-50 duration-300">

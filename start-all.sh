@@ -113,7 +113,8 @@ echo "────────────────────────�
 # 启动 PocketBase
 echo -e "${YELLOW}▶ 启动 PocketBase (端口 ${BACKEND_PORT})...${NC}"
 cd "${SCRIPT_DIR}/pocketbase"
-nohup "${SCRIPT_DIR}/pocketbase/pocketbase" serve --http=0.0.0.0:${BACKEND_PORT} > "${SCRIPT_DIR}/pocketbase.log" 2>&1 &
+# PocketBase 进程使用北京时间（UTC+8）
+TZ=Asia/Shanghai nohup "${SCRIPT_DIR}/pocketbase/pocketbase" serve --http=0.0.0.0:${BACKEND_PORT} > "${SCRIPT_DIR}/pocketbase.log" 2>&1 &
 PB_PID=$!
 sleep 2
 

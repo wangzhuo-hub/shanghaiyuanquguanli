@@ -245,6 +245,18 @@ const COLLECTIONS = [
     indexes: ['CREATE UNIQUE INDEX idx_bpn_oid ON pb_billing_period_notes (original_id, project_id)'],
     comment: '租金账期备注 (tenantId###YYYY-MM → 文本)',
   },
+  {
+    name: 'pb_integration_snapshots',
+    schema: [
+      { name: 'project_id', type: 'text', required: true, options: { min: null, max: null, pattern: '' } },
+      { name: 'snapshot_kind', type: 'text', required: true, options: { min: null, max: null, pattern: '' } },
+      { name: 'payload', type: 'json', required: true, options: { maxSize: 15000000 } },
+    ],
+    indexes: [
+      'CREATE UNIQUE INDEX idx_integration_snapshots_pid_kind ON pb_integration_snapshots (project_id, snapshot_kind)',
+    ],
+    comment: '集成全量快照（看板同源运算 JSON，含 kpi 子对象）',
+  },
 ];
 
 // ===================== 主逻辑 =====================

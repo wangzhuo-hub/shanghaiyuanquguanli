@@ -1,14 +1,11 @@
 /**
  * JSON 数据迁移脚本
  * 
- * 功能：将 JSON 备份文件（或 PocketBase park_backups 中的数据）拆分并导入到结构化集合中
+ * 功能：将 JSON 备份文件拆分并导入到结构化集合 pb_*（不再读取 park_backups，该集合已废弃删除）
  * 
  * 使用方法：
- *   # 从 JSON 文件导入
+ *   # 从 JSON 文件导入（必须指定备份文件路径）
  *   node scripts/migrate-json-to-pb.mjs http://127.0.0.1:8090 admin@example.com password123 ./park_data_2026-03-04.json
- * 
- *   # 从 PocketBase park_backups 集合中读取最新备份并拆分
- *   node scripts/migrate-json-to-pb.mjs http://127.0.0.1:8090 admin@example.com password123
  * 
  * 前提条件：
  *   1. 已运行 setup-pb-collections.mjs 创建集合
@@ -23,6 +20,7 @@ const ADMIN_EMAIL = process.argv[3] || 'admin@example.com';
 const ADMIN_PASSWORD = process.argv[4] || 'admin123456';
 const JSON_FILE = process.argv[5] || null;
 const PROJECT_ID = process.argv[6] || 'park_data_main';
+const REPLACE_PROJECT = process.argv.includes('--replace');
 
 // ===================== 数据转换函数 =====================
 
@@ -250,6 +248,35 @@ async function batchInsert(pb, collectionName, records, label) {
   return { inserted, skipped, failed };
 }
 
+async function clearProjectData(pb, projectId) {
+  const collections = [
+    'pb_buildings',
+    'pb_units',
+    'pb_tenants',
+    'pb_payments',
+    'pb_invoices',
+    'pb_yearly_targets',
+    'pb_monthly_init_data',
+    'pb_budget_assumptions',
+    'pb_budget_adjustments',
+    'pb_budget_scenarios',
+    'pb_billing_period_notes',
+  ];
+
+  console.log('── 清理目标项目现有结构化数据（--replace） ───────────');
+  for (const collection of collections) {
+    const rows = await pb.collection(collection).getFullList({
+      filter: `project_id = "${projectId}"`,
+      fields: 'id',
+    });
+    for (const row of rows) {
+      await pb.collection(collection).delete(row.id);
+    }
+    console.log(`  [✓] ${collection}: 已删除 ${rows.length} 条`);
+  }
+  console.log();
+}
+
 // ===================== 主逻辑 =====================
 
 async function main() {
@@ -303,23 +330,9 @@ async function main() {
       process.exit(1);
     }
   } else {
-    console.log('[i] 从 PocketBase park_backups 集合读取最新备份...');
-    try {
-      const records = await pb.collection('park_backups').getList(1, 1, {
-        filter: `project_id = "${PROJECT_ID}"`,
-        sort: '-created',
-      });
-      if (records.items.length === 0) {
-        console.error('[✗] 未找到备份记录 (project_id:', PROJECT_ID, ')');
-        console.log('    请指定 JSON 文件路径作为第5个参数');
-        process.exit(1);
-      }
-      dashboardData = records.items[0].data;
-      console.log(`[✓] 获取备份成功 (ID: ${records.items[0].id}, Note: ${records.items[0].note || '无'})`);
-    } catch (e) {
-      console.error('[✗] 读取 park_backups 失败:', e.message);
-      process.exit(1);
-    }
+    console.error('[✗] 已移除从 park_backups 读取；请传入 JSON 备份文件路径作为第 5 个参数。');
+    console.log('    示例: node scripts/migrate-json-to-pb.mjs', PB_URL, ADMIN_EMAIL, '***', './your-backup.json');
+    process.exit(1);
   }
 
   // 4. 数据统计
@@ -337,6 +350,10 @@ async function main() {
   console.log(`  预算调整:    ${(dashboardData.budgetAdjustments || []).length} 条`);
   console.log(`  预算方案:    ${(dashboardData.budgetScenarios || []).length} 套`);
   console.log();
+
+  if (REPLACE_PROJECT) {
+    await clearProjectData(pb, PROJECT_ID);
+  }
 
   // 5. 提取并插入数据
   console.log('── 开始迁移 ──────────────────────────────');

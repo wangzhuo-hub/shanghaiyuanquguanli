@@ -1,0 +1,4 @@
+schema.json / 根目录 pocketbase_schema.json 已改为空数组 []，表示不再通过「导入单集合」方式创建已废弃的 park_backups。
+
+新建库请依赖 pocketbase/pb_migrations 自动迁移，并视需要执行：
+  node scripts/setup-pb-collections.mjs <PB地址> <管理员邮箱> <密码>
