@@ -1,8 +1,15 @@
 
 import React, { useMemo } from 'react';
 import { BillingDetail, DashboardData } from '../types';
-import { CheckCircle2, AlertCircle, Building2, Wallet, Calendar, ChevronLeft, ChevronRight } from 'lucide-react';
-import { buildReceivableSections, getRentCollectionRemark, deferReceivableShellClass, receivableBudgetDisplay } from '../services/receivableListHelpers';
+import { CheckCircle2, AlertCircle, Building2, Wallet, Calendar, ChevronLeft, ChevronRight, Info } from 'lucide-react';
+import {
+    buildReceivableSections,
+    getRentCollectionRemark,
+    deferReceivableShellClass,
+    receivableBudgetDisplay,
+    parseManualReceivableLinesFromNotes,
+} from '../services/receivableListHelpers';
+import { formatCurrency } from '../services/numberFormat';
 
 const WRITEOFF_LABELS = {
   pending: '待核销',
@@ -49,10 +56,10 @@ const BillingCard: React.FC<{
                     <span>{item.tenantName}</span>
                 </div>
                 {hasDeferOut && (
-                    <div className="mt-1.5 ml-8 text-[10px] font-semibold text-orange-800 leading-snug">缓出 → {item.deferredToPeriod}（¥{(item.deferredAmount ?? 0).toLocaleString()}）</div>
+                    <div className="mt-1.5 ml-8 text-[10px] font-semibold text-orange-800 leading-snug">缓出 → {item.deferredToPeriod}（{formatCurrency(item.deferredAmount ?? 0)}）</div>
                 )}
                 {hasDeferIn && (
-                    <div className="mt-1 ml-8 text-[10px] font-semibold text-sky-800 leading-snug">缓入 ← {item.deferredInFromSummary}（¥{(item.deferredInAmount ?? 0).toLocaleString()}）</div>
+                    <div className="mt-1 ml-8 text-[10px] font-semibold text-sky-800 leading-snug">缓入 ← {item.deferredInFromSummary}（{formatCurrency(item.deferredInAmount ?? 0)}）</div>
                 )}
             </div>
             <div className={`text-xs font-medium px-2 py-0.5 rounded border flex items-center gap-1 ${writeOffBadgeClass(writeOffLabel)}`}>
@@ -65,13 +72,13 @@ const BillingCard: React.FC<{
         </div>
         <div className="flex justify-between items-center text-sm border-t border-slate-50 pt-2 mt-1">
             <div className="text-slate-500">
-                应收: <span className="font-semibold text-slate-700">¥{receivableBudgetDisplay(item).toLocaleString()}</span>
+                应收: <span className="font-semibold text-slate-700">{formatCurrency(receivableBudgetDisplay(item))}</span>
                 {hasDeferOut && (item.amountDue ?? 0) < 0.005 && (
                     <span className="block text-[10px] text-slate-400 font-normal mt-0.5">原账面应收已全部缓出</span>
                 )}
             </div>
             <div className={writeOffLabel === WRITEOFF_LABELS.settled ? 'text-green-600' : 'text-blue-600'}>
-                实收: <span className="font-bold">¥{item.amountPaid.toLocaleString()}</span>
+                实收: <span className="font-bold">{formatCurrency(item.amountPaid)}</span>
             </div>
         </div>
         <div className="mt-2">
@@ -99,6 +106,16 @@ export const BillingTable: React.FC<BillingTableProps> = ({ data, selectedMonth,
   const totalDue = billingList.reduce((acc, curr) => acc + receivableBudgetDisplay(curr), 0);
   const totalPaid = billingList.reduce((acc, curr) => acc + curr.amountPaid, 0);
 
+  // 与「财务报表 本月应收租金」对账：财务报表的合计含手工应收行，工作台不含。
+  // 这里读取本月手工应收行金额，提示用户两边差额来源，避免对账困惑。
+  const manualReceivableThisMonth = useMemo(() => {
+      const lines = parseManualReceivableLinesFromNotes(data.billingPeriodNotes);
+      return lines
+          .filter((l) => l.periodYYYYMM === selectedMonth)
+          .reduce((sum, l) => sum + (Number(l.amount) || 0), 0);
+  }, [data.billingPeriodNotes, selectedMonth]);
+  const financeTotalDue = totalDue + manualReceivableThisMonth;
+
   const renderBillingDetailRow = (item: BillingDetail, writeOffLabel: string, rowKey: string) => {
       const building = data.buildings.find(b => b.units.some(u => item.unitIds.includes(u.id)));
       const unitNames = item.unitIds.map(uid => {
@@ -125,10 +142,10 @@ export const BillingTable: React.FC<BillingTableProps> = ({ data, selectedMonth,
                       <div>
                           <div>{item.tenantName}</div>
                           {hasDeferOut && (
-                              <div className="mt-0.5 text-[10px] font-semibold text-orange-800">缓出 → {item.deferredToPeriod}（¥{(item.deferredAmount ?? 0).toLocaleString()}）</div>
+                              <div className="mt-0.5 text-[10px] font-semibold text-orange-800">缓出 → {item.deferredToPeriod}（{formatCurrency(item.deferredAmount ?? 0)}）</div>
                           )}
                           {hasDeferIn && (
-                              <div className="mt-0.5 text-[10px] font-semibold text-sky-800">缓入 ← {item.deferredInFromSummary}（¥{(item.deferredInAmount ?? 0).toLocaleString()}）</div>
+                              <div className="mt-0.5 text-[10px] font-semibold text-sky-800">缓入 ← {item.deferredInFromSummary}（{formatCurrency(item.deferredInAmount ?? 0)}）</div>
                           )}
                       </div>
                   </div>
@@ -137,13 +154,18 @@ export const BillingTable: React.FC<BillingTableProps> = ({ data, selectedMonth,
                   {building?.name} <span className="text-slate-400 ml-1">{unitNames}</span>
               </td>
               <td className="px-6 py-4 font-semibold text-slate-700 align-top">
-                  <div>¥{receivableBudgetDisplay(item).toLocaleString()}</div>
+                  <div>{formatCurrency(receivableBudgetDisplay(item))}</div>
+                  {item.earlyTerminationBreakdown && (
+                      <div className="text-[10px] text-amber-800 font-medium mt-1 max-w-[220px] leading-snug">
+                          {item.earlyTerminationBreakdown}
+                      </div>
+                  )}
                   {hasDeferOut && (item.amountDue ?? 0) < 0.005 && (
                       <div className="text-[10px] text-slate-400 font-normal mt-0.5">原账面应收已全部缓出</div>
                   )}
               </td>
               <td className="px-6 py-4">
-                  <span className={paidClass}>¥{item.amountPaid.toLocaleString()}</span>
+                  <span className={paidClass}>{formatCurrency(item.amountPaid)}</span>
               </td>
               <td className="px-6 py-4">
                   <div className={`flex items-center gap-1.5 font-medium px-2 py-1 rounded-md w-fit border ${writeOffBadgeClass(writeOffLabel)}`}>
@@ -228,14 +250,29 @@ export const BillingTable: React.FC<BillingTableProps> = ({ data, selectedMonth,
         </div>
         
         <div className="flex gap-4 md:gap-6 items-center w-full md:w-auto bg-slate-50 md:bg-transparent p-3 md:p-0 rounded-lg justify-around md:justify-end">
-             <div className="text-center md:text-right">
+             <div
+                 className="text-center md:text-right"
+                 title={
+                     manualReceivableThisMonth > 0
+                         ? `工作台：¥${totalDue.toLocaleString()}（仅系统账单口径，与「预算表 月度合计」一致）\n` +
+                           `财务报表「本月应收租金」：¥${financeTotalDue.toLocaleString()}（额外含 ¥${manualReceivableThisMonth.toLocaleString()} 手工应收行）\n\n` +
+                           `差额来源：本月在「财务报表」录入的手工应收行（如外部水电费、外卖代收等）。`
+                         : `本月应收 ¥${totalDue.toLocaleString()}（与「财务报表 本月应收租金」一致，未录入手工应收行）`
+                 }
+             >
                  <p className="text-[10px] text-slate-400 uppercase tracking-wider font-semibold">当月应收总额</p>
-                 <p className="text-base md:text-lg font-bold text-slate-800">¥{totalDue.toLocaleString()}</p>
+                 <p className="text-base md:text-lg font-bold text-slate-800">{formatCurrency(totalDue)}</p>
+                 {manualReceivableThisMonth > 0 && (
+                     <p className="text-[10px] text-amber-600 mt-0.5 inline-flex items-center gap-1 justify-end">
+                         <Info size={10}/>
+                         财务报表另含手工 <span className="font-semibold">{formatCurrency(manualReceivableThisMonth)}</span>
+                     </p>
+                 )}
              </div>
              <div className="h-8 w-px bg-slate-200 block md:hidden"></div>
              <div className="text-center md:text-right md:border-l md:border-slate-200 md:pl-6">
                  <p className="text-[10px] text-slate-400 uppercase tracking-wider font-semibold">当月实收总额</p>
-                 <p className={`text-base md:text-lg font-bold ${totalPaid >= totalDue ? 'text-emerald-600' : 'text-blue-600'}`}>¥{totalPaid.toLocaleString()}</p>
+                 <p className={`text-base md:text-lg font-bold ${totalPaid >= totalDue ? 'text-emerald-600' : 'text-blue-600'}`}>{formatCurrency(totalPaid)}</p>
              </div>
         </div>
       </div>

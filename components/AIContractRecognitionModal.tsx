@@ -1,8 +1,9 @@
 import React, { useState, useRef, useCallback } from 'react';
 import { X, Sparkles, Upload, FileText, Image as ImageIcon, FileSpreadsheet, Loader2, Check, AlertCircle, CheckCircle, Building as BuildingIcon } from 'lucide-react';
-import { Tenant, Building, ContractStatus, DepositStatus, UnitStatus } from '../types';
+import { Tenant, Building, ContractStatus, DepositStatus, UnitStatus, PaymentCycle } from '../types';
 import * as XLSX from 'xlsx';
 import { getAiProxyChatUrl } from '../config/urls';
+import { formatArea } from '../services/numberFormat';
 
 // ---- AI 识别结果 ----
 interface RecognizedContract {
@@ -55,7 +56,7 @@ async function callAIForContractRecognition(payload: { type: InputTab; content: 
   "unitPrice": 日单价数字（元/㎡/天），
   "monthlyRent": 月租金数字,
   "totalArea": 面积数字（㎡），
-  "paymentCycle": "支付频率：Monthly/Quarterly/SemiAnnual/Annual",
+  "paymentCycle": "支付频率：HalfMonthly/Monthly/BiMonthly/Quarterly/SemiAnnual/Annual/Custom",
   "depositAmount": 押金金额数字,
   "contactName": "联系人/对接人姓名",
   "contactInfo": "联系电话",
@@ -153,12 +154,25 @@ function matchUnits(names: string[] | undefined, building: Building | undefined)
   return matched;
 }
 
-function inferPaymentCycle(text: string | undefined): 'Monthly' | 'Quarterly' | 'SemiAnnual' | 'Annual' {
+function inferPaymentCycle(text: string | undefined): PaymentCycle {
   if (!text) return 'Quarterly';
+  if (text === 'HalfMonthly' || text.includes('半月') || text.includes('15天') || text.includes('十五天')) return 'HalfMonthly';
+  if (text === 'BiMonthly' || text.includes('两月') || text.includes('双月') || text.includes('2月') || text.includes('二月')) return 'BiMonthly';
   if (text === 'Monthly' || text.includes('月付') || text.includes('每月')) return 'Monthly';
   if (text === 'SemiAnnual' || text.includes('半年') || text.includes('半年付')) return 'SemiAnnual';
   if (text === 'Annual' || text.includes('年付') || text.includes('每年')) return 'Annual';
+  if (text === 'Custom' || text.includes('自定义')) return 'Custom';
   return 'Quarterly';
+}
+
+function getPaymentCycleMonths(cycle: PaymentCycle): number {
+  if (cycle === 'HalfMonthly') return 0.5;
+  if (cycle === 'Monthly') return 1;
+  if (cycle === 'BiMonthly') return 2;
+  if (cycle === 'Quarterly') return 3;
+  if (cycle === 'SemiAnnual') return 6;
+  if (cycle === 'Annual') return 12;
+  return 3;
 }
 
 // ---- 主组件 ----
@@ -275,7 +289,7 @@ export const AIContractRecognitionModal: React.FC<AIContractRecognitionModalProp
   // ---- 导入 ----
   const handleImport = () => {
     const cycle = inferPaymentCycle(editData.paymentCycle);
-    const cycleMonths = cycle === 'Monthly' ? 1 : cycle === 'Quarterly' ? 3 : cycle === 'SemiAnnual' ? 6 : 12;
+    const cycleMonths = getPaymentCycleMonths(cycle);
 
     const building = buildings.find(b => b.id === matchedBuildingId);
     const totalArea = editData.totalArea || matchedUnitIds.reduce((sum, uid) => {
@@ -503,7 +517,7 @@ export const AIContractRecognitionModal: React.FC<AIContractRecognitionModalProp
                               }}
                               className={`px-1.5 py-1.5 rounded border transition-all text-center ${matchedUnitIds.includes(u.id) ? 'bg-blue-600 text-white border-blue-600 font-bold' : 'bg-white border-slate-200 hover:border-blue-400'}`}>
                               <div>{u.name}</div>
-                              <div className="opacity-70 font-normal text-[10px]">{u.area}㎡</div>
+                              <div className="opacity-70 font-normal text-[10px]">{formatArea(u.area)}</div>
                             </button>
                           ))}
                       </div>
@@ -561,10 +575,13 @@ export const AIContractRecognitionModal: React.FC<AIContractRecognitionModalProp
                       <label className="block text-xs font-medium text-slate-500 mb-1">支付频率</label>
                       <select value={editData.paymentCycle || 'Quarterly'} onChange={e => setEditData({ ...editData, paymentCycle: e.target.value })}
                         className="w-full p-2 border border-slate-200 rounded-lg text-sm">
+                        <option value="HalfMonthly">半月付</option>
                         <option value="Monthly">月付</option>
+                        <option value="BiMonthly">两月付</option>
                         <option value="Quarterly">季付</option>
                         <option value="SemiAnnual">半年付</option>
                         <option value="Annual">年付</option>
+                        <option value="Custom">自定义</option>
                       </select>
                     </div>
                   </div>

@@ -1,4 +1,5 @@
-import type { BillingDetail, PaymentRecord, Tenant } from '../types';
+import type { BillingDetail, PaymentRecord, Tenant, ManualReceivableLine } from '../types';
+import { roundMoney2 } from './numberFormat';
 
 /** 缓缴调出 / 调入行的醒目底色与左边线（工作台账单 + 财务报表应收共用） */
 export function deferReceivableShellClass(item: BillingDetail): string {
@@ -62,13 +63,73 @@ export function getRentCollectionRemark(
     return notes[rentCollectionRemarkKey(tenantId, periodYYYYMM)] || '';
 }
 
-/** 应收列展示：缓缴行 = 当月仍计应收部分 + 已缓出部分 */
+/** 手工应收行 tenantId 前缀（不计入「本月应收租金」等与预算表对齐的汇总） */
+export function isManualArTenantId(tenantId: string): boolean {
+    return typeof tenantId === 'string' && tenantId.startsWith('manual_ar_');
+}
+
+/**
+ * 应收列展示（与预算表口径对齐）：
+ * - 缓缴调出：加回 deferredAmount（恢复原账面应收）
+ * - 缓缴调入：扣除 deferredInAmount（调入额已在调出侧体现）
+ */
 export function receivableBudgetDisplay(item: BillingDetail): number {
     const x = item as BillingDetailExtras;
+    let v = item.amountDue;
     if (x.deferredToPeriod && x.deferredAmount != null && x.deferredAmount > 0) {
-        return Math.round(item.amountDue + x.deferredAmount);
+        v += x.deferredAmount;
     }
-    return item.amountDue;
+    if ((x.deferredInAmount ?? 0) > 0.005) {
+        v -= x.deferredInAmount ?? 0;
+    }
+    return Math.round(v);
+}
+
+/**
+ * 财务报表顶部卡片应收合计：系统账单（含调价/账期/金额调整/缓缴还原）+ 手工应收行。
+ * 体现真实「本月需要催收」的口径，因此**包含手工应收行**。
+ */
+export function sumBudgetReceivableForFinance(rows: BillingDetail[]): number {
+    return rows.reduce((sum, r) => sum + receivableBudgetDisplay(r), 0);
+}
+
+/** 仅统计系统账单部分（与预算表/工作台保持一致），用于「与工作台一致」对账 */
+export function sumSystemBudgetReceivable(rows: BillingDetail[]): number {
+    return rows
+        .filter((r) => !isManualArTenantId(r.tenantId))
+        .reduce((sum, r) => sum + receivableBudgetDisplay(r), 0);
+}
+
+/** 仅统计手工应收行金额（同样的「展示口径」） */
+export function sumManualArReceivable(rows: BillingDetail[]): number {
+    return rows
+        .filter((r) => isManualArTenantId(r.tenantId))
+        .reduce((sum, r) => sum + receivableBudgetDisplay(r), 0);
+}
+
+/** 存在于 billingPeriodNotes 的手工应收 JSON（与缓缴备注并存） */
+export const MANUAL_RECEIVABLE_LINES_NOTE_KEY = '__manual_receivable_lines_v1__';
+
+export function parseManualReceivableLinesFromNotes(notes: Record<string, string> | undefined): ManualReceivableLine[] {
+    if (!notes) return [];
+    const raw = notes[MANUAL_RECEIVABLE_LINES_NOTE_KEY];
+    if (!raw || typeof raw !== 'string') return [];
+    try {
+        const arr = JSON.parse(raw) as unknown;
+        if (!Array.isArray(arr)) return [];
+        return arr
+            .filter((row) => row && typeof row === 'object')
+            .map((row: any) => ({
+                id: String(row.id || `mar_${Date.now()}`),
+                tenantId: row.tenantId ? String(row.tenantId) : undefined,
+                customerLabel: String(row.customerLabel || row.title || '').trim(),
+                title: row.title != null ? String(row.title) : undefined,
+                amount: roundMoney2(Number(row.amount) || 0),
+                periodYYYYMM: String(row.periodYYYYMM || '').slice(0, 7),
+            }));
+    } catch {
+        return [];
+    }
 }
 
 export type ReceivableListBucket = 'unsettled' | 'settled_this_month' | 'prepaid' | 'deferred';

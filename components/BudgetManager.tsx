@@ -1,11 +1,21 @@
 
-import React, { useState, useMemo, useEffect } from 'react';
-import { Building, Tenant, BudgetAssumption, ContractStatus, UnitStatus, DepositStatus, BudgetAdjustment, BudgetAnalysisData, PaymentRecord, BudgetScenario, RentFreePeriod } from '../types';
+import React, { useRef, useState, useMemo, useEffect } from 'react';
+import { Building, Tenant, Unit, BudgetAssumption, ContractStatus, UnitStatus, DepositStatus, BudgetAdjustment, BudgetAnalysisData, PaymentRecord, BudgetScenario, RentFreePeriod, MonthlyInitData, DashboardData } from '../types';
 import type ExcelJS from 'exceljs';
-import { Calculator, Calendar, DollarSign, TrendingUp, Save, Table, LayoutList, ChevronRight, ChevronDown, ChevronLeft, Download, ShieldAlert, ArrowRight, Maximize2, Minimize2, LineChart as LineChartIcon, Lightbulb, Edit3, X, Sparkles, PieChart, Activity, RotateCcw, TrendingDown, ArrowUpRight, ArrowDownRight, ArrowLeftRight, History, FileText, Info, FileWarning, Layers, Building as BuildingIcon, CheckCircle2, Copy, CloudUpload, Play, Trash2, Plus, Check, FileSpreadsheet, ArrowUpDown, List, AlertCircle, User, Briefcase, CheckCircle } from 'lucide-react';
+import { Calculator, Calendar, DollarSign, TrendingUp, Save, Table, LayoutList, ChevronRight, ChevronDown, ChevronLeft, Download, Upload, ShieldAlert, ArrowRight, Maximize2, Minimize2, LineChart as LineChartIcon, Lightbulb, Edit3, X, Sparkles, PieChart, Activity, RotateCcw, TrendingDown, ArrowUpRight, ArrowDownRight, ArrowLeftRight, History, FileText, Info, FileWarning, Layers, Building as BuildingIcon, CheckCircle2, Copy, CloudUpload, Play, Trash2, Plus, Check, FileSpreadsheet, ArrowUpDown, List, AlertCircle, User, Briefcase, CheckCircle } from 'lucide-react';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine } from 'recharts';
 import { analyzeBudget } from '../services/geminiService';
 import { generateBudgetedBills } from '../services/billingService';
+import { formatArea, formatCurrency, formatNumber, formatPercent } from '../services/numberFormat';
+import {
+    parseBudgetTableExcel,
+    mergeBudgetTotalsIntoInitData,
+    readImportedBudgetTable,
+    writeImportedBudgetTable,
+    clearImportedBudgetTable,
+    type ParsedBudgetTable,
+    type BudgetTableSnapshot,
+} from '../services/budgetTableImport';
 
 function monthOverlapsRentFree(year: number, month: number, periods: RentFreePeriod[]): boolean {
     if (!periods?.length) return false;
@@ -40,6 +50,129 @@ function formatYearRentFreeSummary(year: number, periods: RentFreePeriod[] | und
         else parts.push(`${start + 1}–${end + 1}月`);
     }
     return parts.join('、');
+}
+
+function yearRentFreeMonthFlags(year: number, periods: RentFreePeriod[] | undefined): boolean[] {
+    return Array.from({ length: 12 }, (_, m) => monthOverlapsRentFree(year, m, periods || []));
+}
+
+/** 房号/单元名：numeric 字符串比较，避免 2 与 10 错乱 */
+function compareUnitNameNumeric(a: string, b: string): number {
+    return a.localeCompare(b, 'zh-CN', { numeric: true, sensitivity: 'base' });
+}
+
+function leaseEndCalendarQuarter(date: Date): 1 | 2 | 3 | 4 {
+    const m = date.getMonth();
+    return (Math.floor(m / 3) + 1) as 1 | 2 | 3 | 4;
+}
+
+function quarterLabelCn(q: 1 | 2 | 3 | 4): string {
+    const ranges: Record<number, string> = { 1: '1–3 月', 2: '4–6 月', 3: '7–9 月', 4: '10–12 月' };
+    return `第 ${q} 季度（${ranges[q]}）`;
+}
+
+function tenantUnitsResolved(t: Tenant, building: Building | undefined): Unit[] {
+    if (!building) return [];
+    return t.unitIds.map((uid) => building.units.find((u) => u.id === uid)).filter((u): u is Unit => !!u);
+}
+
+function tenantMergedRoomLabels(t: Tenant, building: Building | undefined): string {
+    const units = tenantUnitsResolved(t, building);
+    if (!units.length) return t.unitIds.join('、');
+    return [...units].sort((a, b) => compareUnitNameNumeric(a.name, b.name)).map((u) => u.name).join('、');
+}
+
+function tenantSortRoomKey(t: Tenant, building: Building | undefined): string {
+    const units = tenantUnitsResolved(t, building);
+    if (!units.length) return '';
+    const sorted = [...units].sort((a, b) => {
+        if (a.floor !== b.floor) return a.floor - b.floor;
+        return compareUnitNameNumeric(a.name, b.name);
+    });
+    return sorted[0]?.name || '';
+}
+
+function tenantGroupFloor(t: Tenant, building: Building | undefined): number {
+    const units = tenantUnitsResolved(t, building);
+    if (!units.length) return 0;
+    return Math.min(...units.map((u) => u.floor));
+}
+
+const paymentCycleLabelMap: Record<Tenant['paymentCycle'], string> = {
+    HalfMonthly: '半月付',
+    Monthly: '月付',
+    BiMonthly: '两月付',
+    Quarterly: '季付',
+    SemiAnnual: '半年付',
+    Annual: '年付',
+    Custom: '自定义',
+};
+
+const paymentCycleOrderMap: Record<Tenant['paymentCycle'], number> = {
+    HalfMonthly: 0,
+    Monthly: 1,
+    BiMonthly: 2,
+    Quarterly: 3,
+    SemiAnnual: 4,
+    Annual: 5,
+    Custom: 6,
+};
+
+function paymentCycleLabel(cycle: Tenant['paymentCycle'] | undefined): string {
+    return paymentCycleLabelMap[cycle || 'Quarterly'] || '季付';
+}
+
+function paymentCycleOrder(cycle: Tenant['paymentCycle'] | undefined): number {
+    return paymentCycleOrderMap[cycle || 'Quarterly'] ?? 3;
+}
+
+const normalizeBudgetText = (v: string | undefined | null): string =>
+    String(v || '')
+        .trim()
+        .replace(/\s+/g, '')
+        .toLowerCase();
+
+function parsePaymentPeriods(periodRaw?: string): string[] {
+    if (!periodRaw) return [];
+    return Array.from(new Set(
+        periodRaw
+            .split(/[,\n;，；\s]+/)
+            .map((s) => s.trim())
+            .filter(Boolean)
+            .filter((s) => /^\d{4}-\d{2}$/.test(s))
+    ));
+}
+
+function paymentAllocatedAmountForPeriod(p: PaymentRecord, periodYYYYMM: string): number {
+    const periods = parsePaymentPeriods(p.period);
+    if (periods.length === 0) {
+        return p.date?.startsWith(periodYYYYMM) ? p.amount : 0;
+    }
+    if (!periods.includes(periodYYYYMM)) return 0;
+    return p.amount / periods.length;
+}
+
+function paymentMatchesTenant(p: PaymentRecord, tenant: Tenant, allTenants: Tenant[]): boolean {
+    if (p.tenantId === tenant.id) return true;
+    const paymentTenant = allTenants.find((t) => t.id === p.tenantId);
+    if (paymentTenant) {
+        const paymentRoot = paymentTenant.rootId || paymentTenant.id;
+        const tenantRoot = tenant.rootId || tenant.id;
+        if (paymentRoot === tenantRoot) return true;
+        if (normalizeBudgetText(paymentTenant.name) === normalizeBudgetText(tenant.name)) return true;
+    }
+    return normalizeBudgetText(p.tenantName) === normalizeBudgetText(tenant.name);
+}
+
+function actualRentCollectionForTenantPeriod(
+    payments: PaymentRecord[],
+    tenant: Tenant,
+    allTenants: Tenant[],
+    periodYYYYMM: string
+): number {
+    return payments
+        .filter((p) => (p.type === 'Rent' || p.type === 'DepositToRent') && paymentMatchesTenant(p, tenant, allTenants))
+        .reduce((sum, p) => sum + paymentAllocatedAmountForPeriod(p, periodYYYYMM), 0);
 }
 
 /** 有人工预算调整记录的单元格：底色 + 小字颜色 */
@@ -85,6 +218,11 @@ interface BudgetManagerProps {
   onActivateScenario: (scenario: BudgetScenario) => void;
   onSaveBudgetToCloud: (name: string, operator: string) => void;
   onRenameScenario: (id: string, newName: string) => void;
+  initializationData?: MonthlyInitData[];
+  /** 用于持久化已导入预算表（`__budget_table_<year>__` 键） */
+  billingPeriodNotes?: Record<string, string>;
+  /** 预算表 Excel 导入后批量更新（至少包含 initializationData） */
+  onBatchUpdate?: (updates: Partial<DashboardData>) => void;
 }
 
 export const BudgetManager: React.FC<BudgetManagerProps> = ({ 
@@ -101,7 +239,10 @@ export const BudgetManager: React.FC<BudgetManagerProps> = ({
     onUpdateScenarios,
     onActivateScenario,
     onSaveBudgetToCloud,
-    onRenameScenario
+    onRenameScenario,
+    initializationData,
+    billingPeriodNotes,
+    onBatchUpdate,
 }) => {
   const currentYear = new Date().getFullYear();
   const nextYear = currentYear + 1;
@@ -125,7 +266,7 @@ export const BudgetManager: React.FC<BudgetManagerProps> = ({
   const [detailYear, setDetailYear] = useState<number>(currentYear);
   const [isFullScreen, setIsFullScreen] = useState(false);
   
-  const [sortMethod, setSortMethod] = useState<'Category' | 'Building'>('Category');
+  const [sortMethod, setSortMethod] = useState<'Category' | 'Building' | 'PaymentCycle'>('Category');
   
   const [showAdjModal, setShowAdjModal] = useState(false);
   const [adjData, setAdjData] = useState<{ tenantId: string, tenantName: string, originalMonth: number, amount: number } | null>(null);
@@ -135,6 +276,85 @@ export const BudgetManager: React.FC<BudgetManagerProps> = ({
 
   const [showAdjHistory, setShowAdjHistory] = useState(false);
   const [adjHistoryTab, setAdjHistoryTab] = useState<'summary' | 'period' | 'amount'>('summary');
+
+  // 预算表 Excel 导入
+  const importInputRef = useRef<HTMLInputElement | null>(null);
+  const [importPreview, setImportPreview] = useState<ParsedBudgetTable | null>(null);
+  const [isImporting, setIsImporting] = useState(false);
+
+  const handlePickBudgetExcel = () => {
+      if (!onBatchUpdate) {
+          alert('当前页面不支持写入预算数据，请联系管理员。');
+          return;
+      }
+      importInputRef.current?.click();
+  };
+
+  const handleBudgetExcelChosen = async (event: React.ChangeEvent<HTMLInputElement>) => {
+      const file = event.target.files?.[0];
+      event.target.value = '';
+      if (!file) return;
+      setIsImporting(true);
+      try {
+          const buffer = await file.arrayBuffer();
+          const parsed = await parseBudgetTableExcel(buffer);
+          setImportPreview(parsed);
+      } catch (err: any) {
+          alert(`解析预算表失败：${err?.message || '未知错误'}`);
+      } finally {
+          setIsImporting(false);
+      }
+  };
+
+  const confirmApplyImportedBudget = () => {
+      if (!importPreview || !onBatchUpdate) return;
+      const merged = mergeBudgetTotalsIntoInitData(
+          initializationData,
+          importPreview.year,
+          importPreview.monthlyTotals
+      );
+      const snapshot: BudgetTableSnapshot = {
+          importedAt: new Date().toISOString(),
+          sourceSheet: importPreview.sheetName,
+          rows: importPreview.rows,
+          monthlyTotals: importPreview.monthlyTotals,
+          annualTotal: importPreview.annualTotal,
+      };
+      const nextNotes = writeImportedBudgetTable(billingPeriodNotes, importPreview.year, snapshot);
+      onBatchUpdate({
+          initializationData: merged,
+          billingPeriodNotes: nextNotes,
+      });
+      const sumWan = (importPreview.annualTotal / 10000).toFixed(2);
+      alert(
+          `✅ 已导入 ${importPreview.year} 年度预算（共 ${importPreview.rows.length} 行明细，合计 ${sumWan} 万元）。\n\n` +
+          `· 月度合计已写入「预算执行」目标列\n` +
+          `· 完整明细已写入存档（pb_billing_period_notes）\n\n` +
+          `请点击右上角「保存」按钮写入后端。`
+      );
+      setImportPreview(null);
+  };
+
+  /** 清除指定年份的导入预算表（同时移除月度目标值） */
+  const handleClearImportedBudget = (year: number) => {
+      if (!onBatchUpdate) return;
+      if (!window.confirm(`确认清除 ${year} 年的导入预算表？\n\n这将同时移除「预算执行」中本年度月度目标的导入值（其他字段如累计实收/在租率不受影响）。`)) {
+          return;
+      }
+      const nextNotes = clearImportedBudgetTable(billingPeriodNotes, year);
+      // 月度目标置零（保留 month/year/其他字段），与导入前对称
+      const merged = mergeBudgetTotalsIntoInitData(initializationData, year, new Array(12).fill(0));
+      onBatchUpdate({
+          initializationData: merged,
+          billingPeriodNotes: nextNotes,
+      });
+      alert(`已清除 ${year} 年导入预算表。请点击右上角「保存」写入后端。`);
+  };
+
+  /** 当前 detailYear 是否存在已导入预算表 */
+  const importedBudgetForDetailYear = useMemo<BudgetTableSnapshot | null>(() => {
+      return readImportedBudgetTable(billingPeriodNotes, detailYear);
+  }, [billingPeriodNotes, detailYear]);
 
   useEffect(() => {
       const active = scenarios.find(s => s.isActive && (s.budgetYear || currentYear) === scenarioYearFilter);
@@ -236,10 +456,45 @@ export const BudgetManager: React.FC<BudgetManagerProps> = ({
   const confirmCloudSave = () => { if (!operatorName) return; const scenarioName = activeScenarioId === 'current' ? '当前生效方案' : scenarios.find(s => s.id === activeScenarioId)?.name || '未命名方案'; onSaveBudgetToCloud(scenarioName, operatorName); setShowCloudModal(false); };
 
   const activeTenants = useMemo(() => tenants.filter(t => t.status === ContractStatus.Active || t.status === ContractStatus.Expiring || t.status === ContractStatus.Pending), [tenants]);
-  const expiringTenants = useMemo(() => tenants.filter(t => { const endYear = new Date(t.leaseEnd).getFullYear(); return endYear === nextYear && t.status !== ContractStatus.Terminated; }), [tenants, nextYear]);
-  
+  const expiringTenants = useMemo(
+      () =>
+          tenants.filter((t) => {
+              const endYear = new Date(t.leaseEnd).getFullYear();
+              return (endYear === currentYear || endYear === nextYear) && t.status !== ContractStatus.Terminated;
+          }),
+      [tenants, currentYear, nextYear]
+  );
+
+  const renewalGroupedByYearQuarter = useMemo(() => {
+      const byYear = new Map<number, Map<number, Tenant[]>>();
+      for (const t of expiringTenants) {
+          const d = new Date(t.leaseEnd);
+          if (Number.isNaN(d.getTime())) continue;
+          const y = d.getFullYear();
+          const q = leaseEndCalendarQuarter(d);
+          if (!byYear.has(y)) byYear.set(y, new Map());
+          const byQ = byYear.get(y)!;
+          if (!byQ.has(q)) byQ.set(q, []);
+          byQ.get(q)!.push(t);
+      }
+      const years = Array.from(byYear.keys()).sort((a, b) => a - b);
+      return years
+          .map((year) => {
+              const quarterMap = byYear.get(year)!;
+              const quarters = ([1, 2, 3, 4] as const)
+                  .map((q) => ({
+                      quarter: q,
+                      label: quarterLabelCn(q),
+                      tenants: (quarterMap.get(q) || []).slice().sort((a, b) => new Date(a.leaseEnd).getTime() - new Date(b.leaseEnd).getTime()),
+                  }))
+                  .filter((block) => block.tenants.length > 0);
+              return { year, quarters };
+          })
+          .filter((yBlock) => yBlock.quarters.length > 0);
+  }, [expiringTenants]);
+
   const vacantUnits = useMemo(() => {
-    const list: { unitId: string; unitName: string; buildingName: string; area: number }[] = [];
+    const list: { unitId: string; unitName: string; buildingName: string; buildingId: string; floor: number; area: number }[] = [];
     buildings.forEach(b => {
       b.units.forEach(u => {
         const isOccupied = tenants.some(t => 
@@ -247,12 +502,100 @@ export const BudgetManager: React.FC<BudgetManagerProps> = ({
             (t.status === ContractStatus.Active || t.status === ContractStatus.Expiring || t.status === ContractStatus.Pending)
         );
         if (!isOccupied && u.status !== UnitStatus.Occupied && !u.isSelfUse) {
-          list.push({ unitId: u.id, unitName: u.name, buildingName: b.name, area: u.area });
+          list.push({ unitId: u.id, unitName: u.name, buildingName: b.name, buildingId: b.id, floor: u.floor, area: u.area });
         }
       });
     });
     return list;
   }, [buildings, tenants]);
+
+  const vacantUnitsGrouped = useMemo(() => {
+      const byBuilding = new Map<string, typeof vacantUnits>();
+      vacantUnits.forEach((u) => {
+          if (!byBuilding.has(u.buildingId)) byBuilding.set(u.buildingId, []);
+          byBuilding.get(u.buildingId)!.push(u);
+      });
+      return [...buildings]
+          .sort((a, b) => a.name.localeCompare(b.name, 'zh-CN'))
+          .map((b) => {
+              const units = (byBuilding.get(b.id) || []).slice();
+              if (!units.length) return null;
+              const byFloor = new Map<number, typeof vacantUnits>();
+              units.forEach((u) => {
+                  if (!byFloor.has(u.floor)) byFloor.set(u.floor, []);
+                  byFloor.get(u.floor)!.push(u);
+              });
+              const floors = Array.from(byFloor.keys()).sort((a, b) => a - b);
+              return {
+                  building: b,
+                  count: units.length,
+                  floors: floors.map((fl) => ({
+                      floor: fl,
+                      units: (byFloor.get(fl) || []).slice().sort((a, b) => compareUnitNameNumeric(a.unitName, b.unitName)),
+                  })),
+              };
+          })
+          .filter((g): g is NonNullable<typeof g> => g != null);
+  }, [vacantUnits, buildings]);
+
+  const existingTenantsGrouped = useMemo(() => {
+      const buildingById = new Map(buildings.map((b) => [b.id, b] as const));
+      const cellMap = new Map<string, Map<number, Tenant[]>>();
+      const orphans: Tenant[] = [];
+
+      for (const t of activeTenants) {
+          const b = buildingById.get(t.buildingId);
+          if (!b) {
+              orphans.push(t);
+              continue;
+          }
+          const floor = tenantGroupFloor(t, b);
+          if (!cellMap.has(t.buildingId)) cellMap.set(t.buildingId, new Map());
+          const fm = cellMap.get(t.buildingId)!;
+          if (!fm.has(floor)) fm.set(floor, []);
+          fm.get(floor)!.push(t);
+      }
+
+      const blocks = [...buildings]
+          .filter((b) => cellMap.has(b.id))
+          .sort((a, b) => a.name.localeCompare(b.name, 'zh-CN'))
+          .map((b) => {
+              const fm = cellMap.get(b.id)!;
+              const floors = Array.from(fm.keys()).sort((a, b) => a - b);
+              const allHere = floors.flatMap((f) => fm.get(f)!);
+              return {
+                  building: b,
+                  tenantCount: allHere.length,
+                  totalArea: allHere.reduce((s, t) => s + t.totalArea, 0),
+                  floors: floors.map((fl) => {
+                      const list = fm.get(fl)!.slice();
+                      list.sort((a, b) => {
+                          const ka = tenantSortRoomKey(a, buildingById.get(a.buildingId));
+                          const kb = tenantSortRoomKey(b, buildingById.get(b.buildingId));
+                          const c = compareUnitNameNumeric(ka, kb);
+                          if (c !== 0) return c;
+                          return a.name.localeCompare(b.name, 'zh-CN');
+                      });
+                      return { floor: fl, tenants: list };
+                  }),
+              };
+          });
+
+      if (orphans.length) {
+          blocks.push({
+              building: { id: '__unknown__', name: '未知楼宇', units: [] } as Building,
+              tenantCount: orphans.length,
+              totalArea: orphans.reduce((s, t) => s + t.totalArea, 0),
+              floors: [
+                  {
+                      floor: 0,
+                      tenants: orphans.slice().sort((a, b) => a.name.localeCompare(b.name, 'zh-CN')),
+                  },
+              ],
+          });
+      }
+      return blocks;
+  }, [activeTenants, buildings]);
   
   const riskTenants = useMemo(() => tenants.filter(t => t.isRisk && t.status === ContractStatus.Active), [tenants]);
 
@@ -306,11 +649,10 @@ export const BudgetManager: React.FC<BudgetManagerProps> = ({
 
           const building = buildings.find(b => b.id === t.buildingId);
           const unitNames = t.unitIds.map(uid => building?.units.find(u => u.id === uid)?.name || uid).join(', ');
-          const floorSummary = formatFloorSummary(
-              t.unitIds
-                  .map(uid => building?.units.find(u => u.id === uid)?.floor)
-                  .filter((f): f is number => typeof f === 'number')
-          );
+          const tenantFloors = t.unitIds
+              .map(uid => building?.units.find(u => u.id === uid)?.floor)
+              .filter((f): f is number => typeof f === 'number');
+          const floorSummary = formatFloorSummary(tenantFloors);
           const tenantBills = generateBudgetedBills(t, budgetAssumptions, budgetAdjustments, billingGenStart, billingGenEnd);
           
           // amount and area tracking
@@ -332,12 +674,11 @@ export const BudgetManager: React.FC<BudgetManagerProps> = ({
           tenantBills.forEach(bill => { if (bill.date.getFullYear() === year) { const m = bill.date.getMonth(); if (m >= 0 && m < 12) { monthlyValues[m].amount += bill.amount; } } });
 
           // ACTUAL DATA CALCULATION FOR TENANT
-          payments.filter(p => p.tenantId === t.id && (p.type === 'Rent' || p.type === 'DepositToRent') && p.date.startsWith(year.toString())).forEach(p => {
-              const m = parseInt(p.date.substring(5, 7), 10) - 1;
-              if (m >= 0 && m < 12) {
-                  monthlyValues[m].actual += p.amount;
-              }
-          });
+          // 与财务报表「收款明细」一致：优先按关联账期 period 归属，未填账期才按入账月份归属。
+          for (let m = 0; m < 12; m++) {
+              const periodYYYYMM = `${year}-${String(m + 1).padStart(2, '0')}`;
+              monthlyValues[m].actual += actualRentCollectionForTenantPeriod(payments, t, propTenants, periodYYYYMM);
+          }
 
           // 2. Assumptions Extension
           const assumption = budgetAssumptions.find(a => a.targetId === t.id && a.targetType === assumptionType);
@@ -377,7 +718,7 @@ export const BudgetManager: React.FC<BudgetManagerProps> = ({
                   if (adj.adjustedYear === year) {
                       const m = adj.adjustedMonth;
                       if (m >= 0 && m < 12) {
-                          const tag = `金额 Δ ${adj.amount >= 0 ? '+' : ''}¥${adj.amount.toLocaleString()}`;
+                          const tag = `金额 Δ ${adj.amount >= 0 ? '+' : ''}${formatCurrency(adj.amount)}`;
                           monthlyValues[m].adjustmentDetail = monthlyValues[m].adjustmentDetail
                               ? `${monthlyValues[m].adjustmentDetail} | ${tag}`
                               : tag;
@@ -411,10 +752,23 @@ export const BudgetManager: React.FC<BudgetManagerProps> = ({
               floorSummary,
               area: t.totalArea,
               category,
+              signingDate: t.signingDate,
+              leaseStart: t.leaseStart,
+              isNewSigningInYear: !!t.signingDate && new Date(t.signingDate).getFullYear() === year,
+              leaseStartMonthInYear: t.leaseStart && new Date(t.leaseStart).getFullYear() === year ? new Date(t.leaseStart).getMonth() : null,
+              terminationDate: t.terminationDate,
+              isTerminatingInYear: !!t.terminationDate && new Date(t.terminationDate).getFullYear() === year,
+              paymentCycle: t.paymentCycle || 'Quarterly',
+              paymentCycleLabel: paymentCycleLabel(t.paymentCycle),
+              paymentCycleOrder: paymentCycleOrder(t.paymentCycle),
+              buildingSort: building?.name || '未知楼宇',
+              floorSort: tenantFloors.length > 0 ? Math.min(...tenantFloors) : 9999,
+              roomSort: tenantSortRoomKey(t, building) || unitNames,
               monthlyValues,
               monthlyLeasedArea,
               unitPrice: t.unitPrice,
               rentFreeYearSummary: formatYearRentFreeSummary(year, t.rentFreePeriods || []),
+              rentFreeMonthFlags: yearRentFreeMonthFlags(year, t.rentFreePeriods || []),
           });
       });
 
@@ -449,24 +803,59 @@ export const BudgetManager: React.FC<BudgetManagerProps> = ({
              vacantUnitPrice = assumption.projectedUnitPrice;
              vacantRentPeriods = virtualTenant.rentFreePeriods || [];
           }
+          const vacantBuilding = buildings.find(b => b.name === u.buildingName);
+          const vacantFloor = vacantBuilding?.units.find(x => x.id === u.unitId)?.floor;
           rows.push({
               id: u.unitId,
               name: '待租单元',
               building: u.buildingName,
               unitNames: u.unitName,
-              floorSummary: formatFloorSummary(
-                  [buildings.find(b => b.name === u.buildingName)?.units.find(x => x.id === u.unitId)?.floor]
-                      .filter((f): f is number => typeof f === 'number')
-              ),
+              floorSummary: formatFloorSummary([vacantFloor].filter((f): f is number => typeof f === 'number')),
               area: u.area,
               category: '空置去化',
+              signingDate: assumption?.projectedSignDate,
+              leaseStart: assumption?.projectedSignDate,
+              isNewSigningInYear: !!assumption?.projectedSignDate && new Date(assumption.projectedSignDate).getFullYear() === year,
+              leaseStartMonthInYear: assumption?.projectedSignDate && new Date(assumption.projectedSignDate).getFullYear() === year ? new Date(assumption.projectedSignDate).getMonth() : null,
+              paymentCycle: 'Quarterly',
+              paymentCycleLabel: paymentCycleLabel('Quarterly'),
+              paymentCycleOrder: paymentCycleOrder('Quarterly'),
+              buildingSort: u.buildingName,
+              floorSort: typeof vacantFloor === 'number' ? vacantFloor : 9999,
+              roomSort: u.unitName,
               monthlyValues,
               monthlyLeasedArea,
               unitPrice: vacantUnitPrice,
               rentFreeYearSummary: formatYearRentFreeSummary(year, vacantRentPeriods),
+              rentFreeMonthFlags: yearRentFreeMonthFlags(year, vacantRentPeriods),
           });
       });
-      return rows;
+
+      // 若该年度存在已导入预算表，则预算金额优先采用导入明细（客户+房号+楼宇精确匹配）。
+      // 这样可避免合同账单口径（账期/免租/调账）与财务预算表口径不一致导致的显示偏差。
+      const imported = readImportedBudgetTable(billingPeriodNotes, year);
+      if (!imported?.rows?.length) return rows;
+
+      const importedKey = (customer: string, unit: string, building: string) =>
+          `${normalizeBudgetText(customer)}|${normalizeBudgetText(unit)}|${normalizeBudgetText(building)}`;
+      const importedByKey = new Map(imported.rows.map((r) => [importedKey(r.customer, r.unit, r.building), r] as const));
+
+      return rows.map((row) => {
+          const key = importedKey(row.name, row.unitNames, row.building);
+          const importedRow = importedByKey.get(key);
+          if (!importedRow) return row;
+          const nextMonthlyValues = row.monthlyValues.map((mv: any, idx: number) => ({
+              ...mv,
+              amount: Math.round(Number(importedRow.months[idx] || 0)),
+          }));
+          return {
+              ...row,
+              monthlyValues: nextMonthlyValues,
+              // 导入明细里的单价/面积更贴近预算模板，存在时用于展示
+              unitPrice: importedRow.unitPrice != null ? importedRow.unitPrice : row.unitPrice,
+              area: importedRow.area != null ? importedRow.area : row.area,
+          };
+      });
   };
 
   const exportToExcel = async () => {
@@ -513,6 +902,41 @@ export const BudgetManager: React.FC<BudgetManagerProps> = ({
         pattern: 'solid',
         fgColor: { argb: 'FFF8FAFC' },
     };
+    const newSigningFill: ExcelJS.Fill = {
+        type: 'pattern',
+        pattern: 'solid',
+        fgColor: { argb: 'FFD1FAE5' },
+    };
+    const leaseStartFill: ExcelJS.Fill = {
+        type: 'pattern',
+        pattern: 'solid',
+        fgColor: { argb: 'FFFFEDD5' },
+    };
+    const rentFreeFill: ExcelJS.Fill = {
+        type: 'pattern',
+        pattern: 'solid',
+        fgColor: { argb: 'FFFEF3C7' },
+    };
+    const terminatingFill: ExcelJS.Fill = {
+        type: 'pattern',
+        pattern: 'solid',
+        fgColor: { argb: 'FFFFE4E6' },
+    };
+    const adjustmentOutFill: ExcelJS.Fill = {
+        type: 'pattern',
+        pattern: 'solid',
+        fgColor: { argb: 'FFFFEDD5' },
+    };
+    const adjustmentInFill: ExcelJS.Fill = {
+        type: 'pattern',
+        pattern: 'solid',
+        fgColor: { argb: 'FFF3E8FF' },
+    };
+    const amountAdjustmentFill: ExcelJS.Fill = {
+        type: 'pattern',
+        pattern: 'solid',
+        fgColor: { argb: 'FFCCFBF1' },
+    };
 
     const workbook = new ExcelJSDefault.Workbook();
     workbook.creator = '上海金蝶软件园招商看板';
@@ -527,6 +951,11 @@ export const BudgetManager: React.FC<BudgetManagerProps> = ({
             row.getCell(c).border = { ...cellBorder };
         }
     };
+    const addCellNote = (cell: ExcelJS.Cell, lines: string[]) => {
+        const text = lines.filter(Boolean).join('\n');
+        if (!text) return;
+        (cell as any).note = text;
+    };
 
     let r = 1;
     ws.mergeCells(r, 1, r, totalCols);
@@ -540,11 +969,11 @@ export const BudgetManager: React.FC<BudgetManagerProps> = ({
 
     ws.mergeCells(r, 1, r, totalCols);
     const mCell = ws.getCell(r, 1);
-    mCell.value = `预算年度：${detailYear}年\n方案：${scenarioLabel}\n导出时间：${new Date().toLocaleString('zh-CN', { hour12: false })}`;
+    mCell.value = `预算年度：${detailYear}年\n方案：${scenarioLabel}\n导出时间：${new Date().toLocaleString('zh-CN', { hour12: false })}\n标注说明：绿色=当年新签客户；橙色=起租月/账期调出；红色=退租客户/最后一期应收；紫色=账期调入；青色=金额调整。单元格批注包含详细说明。`;
     mCell.font = { size: 11, name: 'Calibri', color: { argb: 'FF475569' } };
     mCell.alignment = { vertical: 'top', horizontal: 'left', wrapText: true, indent: 1 };
     setRowBorder(ws.getRow(r), 1, totalCols);
-    ws.getRow(r).height = 56;
+    ws.getRow(r).height = 88;
     r++;
 
     ws.addRow([]);
@@ -646,6 +1075,9 @@ export const BudgetManager: React.FC<BudgetManagerProps> = ({
                 rowData.rentFreeYearSummary && rowData.rentFreeYearSummary !== '—'
                     ? rowData.rentFreeYearSummary
                     : undefined;
+            const lastReceivableMonth = rowData.isTerminatingInYear
+                ? rowData.monthlyValues.reduce((last: number | null, v: any, i: number) => (Number(v.amount || 0) > 0 ? i : last), null)
+                : null;
 
             let rowBudgetTotal = 0;
             let rowActualTotal = 0;
@@ -669,13 +1101,31 @@ export const BudgetManager: React.FC<BudgetManagerProps> = ({
             const excelRow = ws.addRow(rowArr);
             const zebra = dataRowIndex % 2 === 1;
             dataRowIndex++;
+            const rowNotes = [
+                rowData.paymentCycleLabel ? `账期类型：${rowData.paymentCycleLabel}` : '',
+                rowData.isNewSigningInYear ? `当年新签；签约日：${rowData.signingDate || '—'}` : '',
+                rowData.leaseStart ? `起租日：${rowData.leaseStart}` : '',
+                rowData.isTerminatingInYear ? `退租客户；退租日：${rowData.terminationDate || '—'}` : '',
+            ];
             for (let c = 1; c <= totalCols; c++) {
                 const cell = excelRow.getCell(c);
                 cell.border = { ...cellBorder };
                 if (zebra) cell.fill = zebraFill;
                 if (c <= 7) {
+                    if (rowData.isTerminatingInYear) cell.fill = terminatingFill;
+                    else if (rowData.isNewSigningInYear) cell.fill = newSigningFill;
+                }
+                if (c <= 7) {
                     cell.alignment = { vertical: 'middle', horizontal: 'left', wrapText: true };
                     cell.font = { name: 'Calibri', size: 10, color: { argb: 'FF1E293B' } };
+                    if (c === 1) {
+                        addCellNote(cell, rowNotes);
+                        if (rowData.isTerminatingInYear) {
+                            cell.font = { name: 'Calibri', size: 10, color: { argb: 'FF9F1239' }, bold: true };
+                        } else if (rowData.isNewSigningInYear) {
+                            cell.font = { name: 'Calibri', size: 10, color: { argb: 'FF047857' }, bold: true };
+                        }
+                    }
                     if (c === 4 && typeof cell.value === 'number') {
                         cell.numFmt = '#,##0.00';
                         cell.alignment = { horizontal: 'right', vertical: 'middle' };
@@ -692,6 +1142,38 @@ export const BudgetManager: React.FC<BudgetManagerProps> = ({
                     }
                 }
             }
+            rowData.monthlyValues.forEach((v: any, i: number) => {
+                const budgetCol = isExec ? 8 + i * 2 : 8 + i;
+                const cols = isExec ? [budgetCol, budgetCol + 1] : [budgetCol];
+                const noteLines: string[] = [];
+                const isLeaseStartMonth = rowData.leaseStartMonthInYear === i;
+                const isLastReceivableMonth = lastReceivableMonth === i;
+                const isRentFreeMonth = !!rowData.rentFreeMonthFlags?.[i];
+                if (isRentFreeMonth) noteLines.push('合同免租自然月');
+                if (isLeaseStartMonth) noteLines.push(`起租月；起租日：${rowData.leaseStart || '—'}`);
+                if (isLastReceivableMonth) noteLines.push(`最后一期应收；退租日：${rowData.terminationDate || '—'}`);
+                if (v.adjustmentDetail) noteLines.push(`调整说明：${v.adjustmentDetail}`);
+                if (v.isAdjustedOut) noteLines.push('账期调整：本月调出');
+                if (v.isAdjustedIn) noteLines.push('账期调整：本月调入');
+
+                cols.forEach((col) => {
+                    const cell = excelRow.getCell(col);
+                    if (v.isAdjustedOut) cell.fill = adjustmentOutFill;
+                    else if (v.isAdjustedIn) cell.fill = adjustmentInFill;
+                    else if (v.adjustmentDetail) cell.fill = amountAdjustmentFill;
+                    if (isLeaseStartMonth) cell.fill = leaseStartFill;
+                    if (isRentFreeMonth) cell.fill = rentFreeFill;
+                    if (isLastReceivableMonth) cell.fill = terminatingFill;
+                    if (noteLines.length) addCellNote(cell, noteLines);
+                    if (isLastReceivableMonth) {
+                        cell.font = { name: 'Calibri', size: 10, color: { argb: 'FFBE123C' }, bold: true };
+                    } else if (isRentFreeMonth) {
+                        cell.font = { name: 'Calibri', size: 10, color: { argb: 'FF92400E' }, bold: true };
+                    } else if (isLeaseStartMonth) {
+                        cell.font = { name: 'Calibri', size: 10, color: { argb: 'FFC2410C' }, bold: true };
+                    }
+                });
+            });
             excelRow.height = 22;
         });
 
@@ -750,7 +1232,7 @@ export const BudgetManager: React.FC<BudgetManagerProps> = ({
             if (typeof v === 'object' && v !== null && 'richText' in v) {
                 s = String((v as ExcelJS.CellRichTextValue).richText?.map((t) => t.text).join('') ?? '');
             } else if (typeof v === 'number') {
-                s = v.toLocaleString('zh-CN', { maximumFractionDigits: 2 });
+                s = v.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
             } else {
                 s = String(v);
             }
@@ -778,13 +1260,35 @@ export const BudgetManager: React.FC<BudgetManagerProps> = ({
   };
 
   const groupData = (data: any[]) => {
-      const groups: Record<string, any[]> = {};
+      const rowCompare = (a: any, b: any) => {
+          const building = String(a.buildingSort || a.building || '').localeCompare(String(b.buildingSort || b.building || ''), 'zh-CN', { numeric: true });
+          if (building !== 0) return building;
+          const floor = (a.floorSort ?? 9999) - (b.floorSort ?? 9999);
+          if (floor !== 0) return floor;
+          const room = compareUnitNameNumeric(String(a.roomSort || a.unitNames || ''), String(b.roomSort || b.unitNames || ''));
+          if (room !== 0) return room;
+          return String(a.name || '').localeCompare(String(b.name || ''), 'zh-CN');
+      };
+      const groupOrder = (name: string, rows: any[]) => {
+          if (sortMethod === 'PaymentCycle') return rows[0]?.paymentCycleOrder ?? 99;
+          if (sortMethod === 'Building') return String(name);
+          const categoryIndex = ['存量客户', '续签客户', '到期退租招商', '高风险退租', '空置去化'].indexOf(name);
+          return categoryIndex >= 0 ? categoryIndex : 99;
+      };
+      const groups = new Map<string, any[]>();
       data.forEach(r => {
-          const key = sortMethod === 'Category' ? r.category : r.building;
-          if (!groups[key]) groups[key] = [];
-          groups[key].push(r);
+          const key = sortMethod === 'Category' ? r.category : sortMethod === 'Building' ? r.building : r.paymentCycleLabel;
+          if (!groups.has(key)) groups.set(key, []);
+          groups.get(key)!.push(r);
       });
-      return groups;
+      const entries = Array.from(groups.entries()).map(([key, rows]) => [key, rows.sort(rowCompare)] as const);
+      entries.sort((a, b) => {
+          const oa = groupOrder(a[0], a[1]);
+          const ob = groupOrder(b[0], b[1]);
+          if (typeof oa === 'number' && typeof ob === 'number' && oa !== ob) return oa - ob;
+          return String(a[0]).localeCompare(String(b[0]), 'zh-CN', { numeric: true });
+      });
+      return Object.fromEntries(entries);
   };
 
   const saveAdjustment = () => {
@@ -827,7 +1331,7 @@ export const BudgetManager: React.FC<BudgetManagerProps> = ({
           adjustedYear: detailYear,
           adjustedMonth: adjData.originalMonth,
           amount: delta,
-          reason: `手动调整金额: ¥${prev.toLocaleString()} → ¥${next.toLocaleString()}`,
+          reason: `手动调整金额: ${formatCurrency(prev)} → ${formatCurrency(next)}`,
           adjustmentKind: 'amount_delta',
       };
       handleUpdateAdjustments([...budgetAdjustments, newAdj]);
@@ -910,106 +1414,236 @@ export const BudgetManager: React.FC<BudgetManagerProps> = ({
     return Array.from(byTenant.values()).sort((a, b) => a.tenantName.localeCompare(b.tenantName, 'zh-CN'));
   }, [budgetAdjustments, detailYear]);
 
+  const renderRenewalCard = (tenant: Tenant) => {
+      const asm = getAssumption(tenant.id, 'Renewal', tenant.name);
+      return (
+          <div key={tenant.id} className="bg-white border border-slate-200 rounded-lg p-4 shadow-sm">
+              <div className="flex justify-between items-start mb-3">
+                  <div>
+                      <h4 className="font-bold text-slate-700 truncate max-w-[10rem]" title={tenant.name}>
+                          {tenant.name}
+                      </h4>
+                      <p className="text-xs text-rose-500 font-medium">到期日: {tenant.leaseEnd}</p>
+                  </div>
+                  <select
+                      className={`text-xs px-2 py-1 rounded border ${asm.strategy === 'Renewal' ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : 'bg-amber-50 text-amber-700 border-amber-200'}`}
+                      value={asm.strategy}
+                      onChange={(e) => updateAssumption({ ...asm, strategy: e.target.value as 'Renewal' | 'ReLease' })}
+                  >
+                      <option value="Renewal">续签</option>
+                      <option value="ReLease">到期退租招商</option>
+                  </select>
+              </div>
+              {asm.strategy === 'ReLease' ? (
+                  <div className="space-y-3 bg-amber-50/50 p-2 rounded">
+                      <div className="grid grid-cols-2 gap-2">
+                          <div>
+                              <label className="text-xs font-medium text-slate-500 block mb-1">空置期(月)</label>
+                              <input type="number" className="w-full border rounded px-2 py-1 text-sm" value={asm.vacancyGapMonths} onChange={(e) => updateAssumption({ ...asm, vacancyGapMonths: Number(e.target.value) })} />
+                          </div>
+                          <div>
+                              <label className="text-xs font-medium text-slate-500 block mb-1">新租单价</label>
+                              <input type="number" step="0.1" className="w-full border rounded px-2 py-1 text-sm" value={asm.projectedUnitPrice} onChange={(e) => updateAssumption({ ...asm, projectedUnitPrice: Number(e.target.value) })} />
+                          </div>
+                      </div>
+                      <div>
+                          <label className="text-xs font-medium text-slate-500 block mb-1">新租免租期(月)</label>
+                          <input type="number" className="w-full border rounded px-2 py-1 text-sm" value={asm.projectedRentFreeMonths} onChange={(e) => updateAssumption({ ...asm, projectedRentFreeMonths: Number(e.target.value) })} />
+                      </div>
+                  </div>
+              ) : (
+                  <div className="space-y-3 bg-emerald-50/50 p-2 rounded">
+                      <div className="grid grid-cols-2 gap-2">
+                          <div>
+                              <label className="text-xs font-medium text-slate-500 block mb-1">续签单价</label>
+                              <input type="number" step="0.1" className="w-full border rounded px-2 py-1 text-sm" value={asm.projectedUnitPrice} onChange={(e) => updateAssumption({ ...asm, projectedUnitPrice: Number(e.target.value) })} />
+                          </div>
+                          <div>
+                              <label className="text-xs font-medium text-slate-500 block mb-1">免租激励(月)</label>
+                              <input type="number" className="w-full border rounded px-2 py-1 text-sm" value={asm.projectedRentFreeMonths} onChange={(e) => updateAssumption({ ...asm, projectedRentFreeMonths: Number(e.target.value) })} />
+                          </div>
+                      </div>
+                  </div>
+              )}
+          </div>
+      );
+  };
+
   const renderSettingsView = () => {
     return (
-        <div className="space-y-6 p-1">
-            <div className="flex border-b border-slate-200">
+        <div className="grid grid-cols-1 gap-6 p-1">
+            <div className="col-span-full flex flex-wrap border-b border-slate-200">
                 <button onClick={() => setActiveTab('Vacancy')} className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${activeTab === 'Vacancy' ? 'border-blue-600 text-blue-600' : 'border-transparent text-slate-500 hover:text-slate-700'}`}>空置去化 ({vacantUnits.length})</button>
                 <button onClick={() => setActiveTab('Renewal')} className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${activeTab === 'Renewal' ? 'border-blue-600 text-blue-600' : 'border-transparent text-slate-500 hover:text-slate-700'}`}>到期续约 ({expiringTenants.length})</button>
                 <button onClick={() => setActiveTab('Risk')} className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${activeTab === 'Risk' ? 'border-blue-600 text-blue-600' : 'border-transparent text-slate-500 hover:text-slate-700'}`}>风险应对 ({riskTenants.length})</button>
                 <button onClick={() => setActiveTab('Existing')} className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${activeTab === 'Existing' ? 'border-blue-600 text-blue-600' : 'border-transparent text-slate-500 hover:text-slate-700'}`}>存量调优 ({activeTenants.length})</button>
             </div>
-            
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 animate-in fade-in slide-in-from-bottom-2">
-                {activeTab === 'Vacancy' && vacantUnits.map(unit => {
-                    const asm = getAssumption(unit.unitId, 'Vacancy', `${unit.unitName} (Vacancy)`);
-                    return (
-                        <div key={unit.unitId} className="bg-white border border-slate-200 rounded-lg p-4 shadow-sm">
-                            <div className="flex justify-between items-start mb-3">
-                                <div><h4 className="font-bold text-slate-700">{unit.buildingName} - {unit.unitName}</h4><p className="text-xs text-slate-500">{unit.area} ㎡</p></div>
-                                <span className="bg-slate-100 text-slate-500 text-xs px-2 py-1 rounded">空置</span>
-                            </div>
-                            <div className="space-y-3">
-                                <div><label className="text-xs font-medium text-slate-500 block mb-1">预计签约日</label><input type="date" className="w-full border rounded px-2 py-1 text-sm" value={asm.projectedSignDate} onChange={e => updateAssumption({...asm, projectedSignDate: e.target.value})} /></div>
-                                <div className="grid grid-cols-2 gap-2">
-                                    <div><label className="text-xs font-medium text-slate-500 block mb-1">预估单价</label><input type="number" step="0.1" className="w-full border rounded px-2 py-1 text-sm" value={asm.projectedUnitPrice} onChange={e => updateAssumption({...asm, projectedUnitPrice: Number(e.target.value)})} /></div>
-                                    <div><label className="text-xs font-medium text-slate-500 block mb-1">免租月数</label><input type="number" className="w-full border rounded px-2 py-1 text-sm" value={asm.projectedRentFreeMonths} onChange={e => updateAssumption({...asm, projectedRentFreeMonths: Number(e.target.value)})} /></div>
-                                </div>
-                            </div>
-                        </div>
-                    );
-                })}
-                {activeTab === 'Renewal' && expiringTenants.map(tenant => {
-                    const asm = getAssumption(tenant.id, 'Renewal', tenant.name);
-                    return (
-                        <div key={tenant.id} className="bg-white border border-slate-200 rounded-lg p-4 shadow-sm">
-                            <div className="flex justify-between items-start mb-3">
-                                <div><h4 className="font-bold text-slate-700 truncate w-40" title={tenant.name}>{tenant.name}</h4><p className="text-xs text-rose-500 font-medium">到期日: {tenant.leaseEnd}</p></div>
-                                <select className={`text-xs px-2 py-1 rounded border ${asm.strategy === 'Renewal' ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : 'bg-amber-50 text-amber-700 border-amber-200'}`} value={asm.strategy} onChange={e => updateAssumption({...asm, strategy: e.target.value as any})}>
-                                    <option value="Renewal">续签</option>
-                                    <option value="ReLease">到期退租招商</option>
-                                </select>
-                            </div>
-                            {asm.strategy === 'ReLease' ? (
-                                <div className="space-y-3 bg-amber-50/50 p-2 rounded">
-                                    <div className="grid grid-cols-2 gap-2">
-                                        <div><label className="text-xs font-medium text-slate-500 block mb-1">空置期(月)</label><input type="number" className="w-full border rounded px-2 py-1 text-sm" value={asm.vacancyGapMonths} onChange={e => updateAssumption({...asm, vacancyGapMonths: Number(e.target.value)})} /></div>
-                                        <div><label className="text-xs font-medium text-slate-500 block mb-1">新租单价</label><input type="number" step="0.1" className="w-full border rounded px-2 py-1 text-sm" value={asm.projectedUnitPrice} onChange={e => updateAssumption({...asm, projectedUnitPrice: Number(e.target.value)})} /></div>
+
+            <div className="col-span-full min-w-0 animate-in fade-in slide-in-from-bottom-2">
+                {activeTab === 'Vacancy' && (
+                    <div className="space-y-8">
+                        {vacantUnitsGrouped.map(({ building, count, floors }) => (
+                            <section key={building.id} className="space-y-4">
+                                <h3 className="text-sm font-bold text-slate-800 border-l-4 border-blue-500 pl-2">
+                                    {building.name}
+                                    <span className="font-normal text-slate-500 text-xs ml-2">本楼待去化 {count} 间</span>
+                                </h3>
+                                {floors.map(({ floor, units }) => (
+                                    <div key={`${building.id}-${floor}`} className="space-y-2">
+                                        <h4 className="text-xs font-semibold text-slate-500 uppercase tracking-wide">
+                                            {building.id === '__unknown__' && floor === 0 ? '未关联资产' : `第 ${floor} 层`}
+                                        </h4>
+                                        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+                                            {units.map((unit) => {
+                                                const asm = getAssumption(unit.unitId, 'Vacancy', `${unit.unitName} (Vacancy)`);
+                                                return (
+                                                    <div key={unit.unitId} className="bg-white border border-slate-200 rounded-lg p-4 shadow-sm">
+                                                        <div className="flex justify-between items-start mb-3">
+                                                            <div>
+                                                                <h4 className="font-bold text-slate-700">{unit.unitName}</h4>
+                                                                <p className="text-xs text-slate-500">{formatArea(unit.area)}</p>
+                                                            </div>
+                                                            <span className="bg-slate-100 text-slate-500 text-xs px-2 py-1 rounded">空置</span>
+                                                        </div>
+                                                        <div className="space-y-3">
+                                                            <div>
+                                                                <label className="text-xs font-medium text-slate-500 block mb-1">预计签约日</label>
+                                                                <input type="date" className="w-full border rounded px-2 py-1 text-sm" value={asm.projectedSignDate} onChange={(e) => updateAssumption({ ...asm, projectedSignDate: e.target.value })} />
+                                                            </div>
+                                                            <div className="grid grid-cols-2 gap-2">
+                                                                <div>
+                                                                    <label className="text-xs font-medium text-slate-500 block mb-1">预估单价</label>
+                                                                    <input type="number" step="0.1" className="w-full border rounded px-2 py-1 text-sm" value={asm.projectedUnitPrice} onChange={(e) => updateAssumption({ ...asm, projectedUnitPrice: Number(e.target.value) })} />
+                                                                </div>
+                                                                <div>
+                                                                    <label className="text-xs font-medium text-slate-500 block mb-1">免租月数</label>
+                                                                    <input type="number" className="w-full border rounded px-2 py-1 text-sm" value={asm.projectedRentFreeMonths} onChange={(e) => updateAssumption({ ...asm, projectedRentFreeMonths: Number(e.target.value) })} />
+                                                                </div>
+                                                            </div>
+                                                        </div>
+                                                    </div>
+                                                );
+                                            })}
+                                        </div>
                                     </div>
-                                    <div><label className="text-xs font-medium text-slate-500 block mb-1">新租免租期(月)</label><input type="number" className="w-full border rounded px-2 py-1 text-sm" value={asm.projectedRentFreeMonths} onChange={e => updateAssumption({...asm, projectedRentFreeMonths: Number(e.target.value)})} /></div>
+                                ))}
+                            </section>
+                        ))}
+                    </div>
+                )}
+
+                {activeTab === 'Renewal' && (
+                    <div className="space-y-10">
+                        {renewalGroupedByYearQuarter.map(({ year, quarters }) => (
+                            <section key={year} className="space-y-5">
+                                <h3 className="text-base font-bold text-slate-800 border-l-4 border-rose-400 pl-2">{year} 年到期</h3>
+                                {quarters.map(({ quarter, label, tenants: qTenants }) => (
+                                    <div key={`${year}-Q${quarter}`} className="space-y-3">
+                                        <h4 className="text-xs font-semibold text-slate-600">{label}</h4>
+                                        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">{qTenants.map((tenant) => renderRenewalCard(tenant))}</div>
+                                    </div>
+                                ))}
+                            </section>
+                        ))}
+                    </div>
+                )}
+
+                {activeTab === 'Risk' && (
+                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+                        {riskTenants.map((tenant) => {
+                            const asm = getAssumption(tenant.id, 'RiskTermination', tenant.name);
+                            return (
+                                <div key={tenant.id} className="bg-white border border-red-100 rounded-lg p-4 shadow-sm relative overflow-hidden">
+                                    <div className="absolute top-0 left-0 w-1 h-full bg-red-400"></div>
+                                    <div className="flex justify-between items-start mb-3">
+                                        <div>
+                                            <h4 className="font-bold text-slate-700 truncate max-w-[10rem]" title={tenant.name}>
+                                                {tenant.name}
+                                            </h4>
+                                            <p className="text-xs text-slate-400">原到期: {tenant.leaseEnd}</p>
+                                        </div>
+                                        <ShieldAlert size={16} className="text-red-500" />
+                                    </div>
+                                    <div className="space-y-3">
+                                        <div>
+                                            <label className="text-xs font-medium text-red-600 block mb-1">预计提前退租日</label>
+                                            <input type="date" className="w-full border border-red-200 rounded px-2 py-1 text-sm bg-red-50" value={asm.projectedTerminationDate || ''} onChange={(e) => updateAssumption({ ...asm, projectedTerminationDate: e.target.value })} />
+                                        </div>
+                                        <div className="grid grid-cols-2 gap-2">
+                                            <div>
+                                                <label className="text-xs font-medium text-slate-500 block mb-1">空置期(月)</label>
+                                                <input type="number" className="w-full border rounded px-2 py-1 text-sm" value={asm.vacancyGapMonths} onChange={(e) => updateAssumption({ ...asm, vacancyGapMonths: Number(e.target.value) })} />
+                                            </div>
+                                            <div>
+                                                <label className="text-xs font-medium text-slate-500 block mb-1">新租单价</label>
+                                                <input type="number" step="0.1" className="w-full border rounded px-2 py-1 text-sm" value={asm.projectedUnitPrice} onChange={(e) => updateAssumption({ ...asm, projectedUnitPrice: Number(e.target.value) })} />
+                                            </div>
+                                        </div>
+                                    </div>
                                 </div>
-                            ) : (
-                                <div className="space-y-3 bg-emerald-50/50 p-2 rounded">
-                                     <div className="grid grid-cols-2 gap-2">
-                                        <div><label className="text-xs font-medium text-slate-500 block mb-1">续签单价</label><input type="number" step="0.1" className="w-full border rounded px-2 py-1 text-sm" value={asm.projectedUnitPrice} onChange={e => updateAssumption({...asm, projectedUnitPrice: Number(e.target.value)})} /></div>
-                                        <div><label className="text-xs font-medium text-slate-500 block mb-1">免租激励(月)</label><input type="number" className="w-full border rounded px-2 py-1 text-sm" value={asm.projectedRentFreeMonths} onChange={e => updateAssumption({...asm, projectedRentFreeMonths: Number(e.target.value)})} /></div>
-                                     </div>
-                                </div>
-                            )}
-                        </div>
-                    );
-                })}
-                {activeTab === 'Risk' && riskTenants.map(tenant => {
-                    const asm = getAssumption(tenant.id, 'RiskTermination', tenant.name);
-                    return (
-                         <div key={tenant.id} className="bg-white border border-red-100 rounded-lg p-4 shadow-sm relative overflow-hidden">
-                             <div className="absolute top-0 left-0 w-1 h-full bg-red-400"></div>
-                             <div className="flex justify-between items-start mb-3">
-                                <div><h4 className="font-bold text-slate-700 truncate w-40" title={tenant.name}>{tenant.name}</h4><p className="text-xs text-slate-400">原到期: {tenant.leaseEnd}</p></div>
-                                <ShieldAlert size={16} className="text-red-500"/>
-                            </div>
-                            <div className="space-y-3">
-                                <div><label className="text-xs font-medium text-red-600 block mb-1">预计提前退租日</label><input type="date" className="w-full border border-red-200 rounded px-2 py-1 text-sm bg-red-50" value={asm.projectedTerminationDate || ''} onChange={e => updateAssumption({...asm, projectedTerminationDate: e.target.value})} /></div>
-                                <div className="grid grid-cols-2 gap-2">
-                                    <div><label className="text-xs font-medium text-slate-500 block mb-1">空置期(月)</label><input type="number" className="w-full border rounded px-2 py-1 text-sm" value={asm.vacancyGapMonths} onChange={e => updateAssumption({...asm, vacancyGapMonths: Number(e.target.value)})} /></div>
-                                    <div><label className="text-xs font-medium text-slate-500 block mb-1">新租单价</label><input type="number" step="0.1" className="w-full border rounded px-2 py-1 text-sm" value={asm.projectedUnitPrice} onChange={e => updateAssumption({...asm, projectedUnitPrice: Number(e.target.value)})} /></div>
-                                </div>
-                            </div>
-                         </div>
-                    );
-                })}
-                {activeTab === 'Existing' && activeTenants.map(tenant => {
-                    const asm = getAssumption(tenant.id, 'Existing', tenant.name);
-                    const shift = asm.billingCycleShiftMonths || 0;
-                    return (
-                        <div key={tenant.id} className="bg-white border border-slate-200 rounded-lg p-4 shadow-sm">
-                            <div className="flex justify-between items-start mb-2">
-                                <h4 className="font-bold text-slate-700 text-sm truncate w-40">{tenant.name}</h4>
-                                <span className="text-xs bg-slate-100 text-slate-500 px-2 py-0.5 rounded">正常</span>
-                            </div>
-                            <div className="space-y-3">
-                                <div className="bg-slate-50 p-2 rounded">
-                                    <label className="text-xs font-medium text-slate-600 block mb-1 flex justify-between">
-                                        <span>账期整体平移</span>
-                                        <span className={shift > 0 ? 'text-blue-600' : shift < 0 ? 'text-orange-600' : 'text-slate-400'}>{shift > 0 ? `延后${shift}个月` : shift < 0 ? `提前${Math.abs(shift)}个月` : '无偏移'}</span>
-                                    </label>
-                                    <input type="range" min="-3" max="3" step="1" className="w-full h-1 bg-slate-200 rounded-lg appearance-none cursor-pointer" value={shift} onChange={e => updateAssumption({...asm, billingCycleShiftMonths: Number(e.target.value)})} />
-                                    <div className="flex justify-between text-[10px] text-slate-400 mt-1"><span>-3月</span><span>0</span><span>+3月</span></div>
-                                </div>
-                            </div>
-                        </div>
-                    );
-                })}
+                            );
+                        })}
+                    </div>
+                )}
+
+                {activeTab === 'Existing' && (
+                    <div className="space-y-8">
+                        {existingTenantsGrouped.map(({ building, tenantCount, totalArea, floors }) => (
+                            <section key={building.id} className="space-y-4">
+                                <h3 className="text-sm font-bold text-slate-800 border-l-4 border-emerald-500 pl-2">
+                                    {building.name}
+                                    <span className="font-normal text-slate-500 text-xs ml-2">
+                                        {tenantCount} 户 · 合计租赁 {formatArea(totalArea)}
+                                    </span>
+                                </h3>
+                                {floors.map(({ floor, tenants: floorTenants }) => (
+                                    <div key={`${building.id}-f${floor}`} className="space-y-2">
+                                        <h4 className="text-xs font-semibold text-slate-500 uppercase tracking-wide">
+                                            {building.id === '__unknown__' && floor === 0 ? '未关联资产' : `第 ${floor} 层`}
+                                        </h4>
+                                        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+                                            {floorTenants.map((tenant) => {
+                                                const asm = getAssumption(tenant.id, 'Existing', tenant.name);
+                                                const shift = asm.billingCycleShiftMonths || 0;
+                                                const b = buildings.find((x) => x.id === tenant.buildingId);
+                                                const roomLabel = tenantMergedRoomLabels(tenant, b);
+                                                return (
+                                                    <div key={tenant.id} className="bg-white border border-slate-200 rounded-lg p-4 shadow-sm">
+                                                        <div className="flex justify-between items-start mb-2">
+                                                            <div className="min-w-0 flex-1">
+                                                                <h4 className="font-bold text-slate-700 text-sm truncate" title={tenant.name}>
+                                                                    {tenant.name}
+                                                                </h4>
+                                                                {roomLabel ? <p className="text-[11px] text-slate-500 mt-0.5 truncate" title={roomLabel}>房号 {roomLabel}</p> : null}
+                                                            </div>
+                                                            <span className="text-xs bg-slate-100 text-slate-500 px-2 py-0.5 rounded shrink-0">正常</span>
+                                                        </div>
+                                                        <div className="space-y-3">
+                                                            <div className="bg-slate-50 p-2 rounded">
+                                                                <label className="text-xs font-medium text-slate-600 block mb-1 flex justify-between">
+                                                                    <span>账期整体平移</span>
+                                                                    <span className={shift > 0 ? 'text-blue-600' : shift < 0 ? 'text-orange-600' : 'text-slate-400'}>
+                                                                        {shift > 0 ? `延后${shift}个月` : shift < 0 ? `提前${Math.abs(shift)}个月` : '无偏移'}
+                                                                    </span>
+                                                                </label>
+                                                                <input type="range" min="-3" max="3" step="1" className="w-full h-1 bg-slate-200 rounded-lg appearance-none cursor-pointer" value={shift} onChange={(e) => updateAssumption({ ...asm, billingCycleShiftMonths: Number(e.target.value) })} />
+                                                                <div className="flex justify-between text-[10px] text-slate-400 mt-1">
+                                                                    <span>-3月</span>
+                                                                    <span>0</span>
+                                                                    <span>+3月</span>
+                                                                </div>
+                                                            </div>
+                                                        </div>
+                                                    </div>
+                                                );
+                                            })}
+                                        </div>
+                                    </div>
+                                ))}
+                            </section>
+                        ))}
+                    </div>
+                )}
             </div>
         </div>
     );
@@ -1055,26 +1689,65 @@ export const BudgetManager: React.FC<BudgetManagerProps> = ({
                         <div className="flex bg-slate-200 rounded p-0.5">
                             <button onClick={() => setSortMethod('Category')} className={`px-3 py-1 text-xs font-medium rounded ${sortMethod === 'Category' ? 'bg-white shadow-sm text-blue-600' : 'text-slate-500'}`}>按类别</button>
                             <button onClick={() => setSortMethod('Building')} className={`px-3 py-1 text-xs font-medium rounded ${sortMethod === 'Building' ? 'bg-white shadow-sm text-blue-600' : 'text-slate-500'}`}>按楼宇</button>
+                            <button onClick={() => setSortMethod('PaymentCycle')} className={`px-3 py-1 text-xs font-medium rounded ${sortMethod === 'PaymentCycle' ? 'bg-white shadow-sm text-blue-600' : 'text-slate-500'}`}>按账期</button>
                         </div>
                         <button onClick={() => setShowAdjHistory(true)} className="flex items-center gap-1 text-xs text-blue-600 hover:bg-blue-50 px-2 py-1 rounded transition-colors" title="查看人工调整记录"><History size={14} /> 调整记录</button>
                     </div>
                     <div className="flex items-center gap-4">
                         <div className="text-right hidden md:block border-r pr-4 border-slate-200">
                             <span className="text-xs text-slate-500 block">全年预算总额</span>
-                            <span className="text-lg font-bold text-slate-800">¥{grandBudgetTotal.toLocaleString()}</span>
+                            <span className="text-lg font-bold text-slate-800">{formatCurrency(grandBudgetTotal)}</span>
                         </div>
                         {isExec && (
                              <div className="text-right hidden md:block">
                                 <span className="text-xs text-emerald-600 block">累计实收总额</span>
-                                <span className="text-lg font-bold text-emerald-600">¥{grandActualTotal.toLocaleString()}</span>
+                                <span className="text-lg font-bold text-emerald-600">{formatCurrency(grandActualTotal)}</span>
                              </div>
                         )}
                         <div className="flex gap-2">
+                             <button
+                                 onClick={handlePickBudgetExcel}
+                                 className="p-2 hover:bg-blue-100 rounded text-blue-600 disabled:opacity-50"
+                                 title="从 Excel 导入预算表（按月汇总写入「预算执行」目标列）"
+                                 disabled={isImporting || !onBatchUpdate}
+                             >
+                                 {isImporting ? <RotateCcw size={16} className="animate-spin"/> : <Upload size={16}/>}
+                             </button>
+                             <input
+                                 ref={importInputRef}
+                                 type="file"
+                                 accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                                 className="hidden"
+                                 onChange={handleBudgetExcelChosen}
+                             />
                              <button onClick={exportToExcel} className="p-2 hover:bg-slate-200 rounded text-slate-500" title="导出Excel"><Download size={16}/></button>
                              <button onClick={() => setIsFullScreen(!isFullScreen)} className="p-2 hover:bg-slate-200 rounded text-slate-500" title={isFullScreen ? "退出全屏" : "全屏模式"}>{isFullScreen ? <Minimize2 size={16}/> : <Maximize2 size={16}/>}</button>
                         </div>
                     </div>
                </div>
+               {importedBudgetForDetailYear && (
+                   <div className="px-3 py-2 bg-emerald-50 border-b border-emerald-200 flex items-center justify-between text-xs">
+                       <div className="flex items-center gap-2 text-emerald-800">
+                           <CheckCircle2 size={14} />
+                           <span>
+                               已导入 <strong>{detailYear}</strong> 年预算表
+                               （{importedBudgetForDetailYear.rows.length} 行明细，全年合计 <strong>{formatCurrency(importedBudgetForDetailYear.annualTotal)}</strong>，
+                               导入时间：{new Date(importedBudgetForDetailYear.importedAt).toLocaleString('zh-CN', { hour12: false })}
+                               {importedBudgetForDetailYear.sourceSheet ? `，来源表：${importedBudgetForDetailYear.sourceSheet}` : ''}）
+                           </span>
+                           <span className="text-emerald-600">·</span>
+                           <span className="text-emerald-700">数据已写入存档，点击右上角「保存」即可同步至云端。</span>
+                       </div>
+                       <button
+                           onClick={() => handleClearImportedBudget(detailYear)}
+                           className="text-emerald-700 hover:text-rose-600 underline"
+                           title="清除本年度的导入预算表（同时清空月度目标值）"
+                           disabled={!onBatchUpdate}
+                       >
+                           清除导入
+                       </button>
+                   </div>
+               )}
 
                <div className="flex-1 overflow-auto">
                     <table className="w-full text-sm text-left border-collapse">
@@ -1110,11 +1783,32 @@ export const BudgetManager: React.FC<BudgetManagerProps> = ({
                                                 groupBudgetSum[i] += v.amount;
                                                 groupActualSum[i] += (v.actual || 0);
                                             });
+                                            const lastReceivableMonth = row.isTerminatingInYear
+                                                ? row.monthlyValues.reduce((last: number | null, v: any, i: number) => (v.amount > 0 ? i : last), null)
+                                                : null;
 
                                             return (
-                                                <tr key={row.id} className="hover:bg-slate-50 group">
-                                                    <td className="px-4 py-3 sticky left-0 bg-white group-hover:bg-slate-50 z-10 shadow-[2px_0_5px_-2px_rgba(0,0,0,0.05)] border-r border-slate-100">
-                                                        <div className="font-medium text-slate-700 truncate w-[200px]" title={row.name}>{row.name}</div>
+                                                <tr key={row.id} className={`hover:bg-slate-50 group ${row.isTerminatingInYear ? 'bg-rose-50/20' : row.isNewSigningInYear ? 'bg-emerald-50/25' : ''}`}>
+                                                    <td className={`px-4 py-3 sticky left-0 z-10 shadow-[2px_0_5px_-2px_rgba(0,0,0,0.05)] border-r border-slate-100 ${
+                                                        row.isTerminatingInYear
+                                                            ? 'bg-rose-50 group-hover:bg-rose-50/80 border-l-4 border-l-rose-400'
+                                                            : row.isNewSigningInYear
+                                                                ? 'bg-emerald-50 group-hover:bg-emerald-50/80 border-l-4 border-l-emerald-400'
+                                                                : 'bg-white group-hover:bg-slate-50'
+                                                    }`}>
+                                                        <div className="flex items-center gap-1.5 min-w-0">
+                                                            <div className="font-medium text-slate-700 truncate w-[200px]" title={row.name}>{row.name}</div>
+                                                            {row.isTerminatingInYear && (
+                                                                <span className="shrink-0 rounded-full bg-rose-100 px-1.5 py-0.5 text-[10px] font-bold text-rose-700" title={`退租/到期日：${row.terminationDate || '—'}`}>
+                                                                    退租
+                                                                </span>
+                                                            )}
+                                                            {row.isNewSigningInYear && (
+                                                                <span className="shrink-0 rounded-full bg-emerald-100 px-1.5 py-0.5 text-[10px] font-bold text-emerald-700" title={`签约日：${row.signingDate || '—'}`}>
+                                                                    新签
+                                                                </span>
+                                                            )}
+                                                        </div>
                                                         <div className="text-[10px] text-slate-500 flex flex-wrap items-center gap-1 mt-0.5">
                                                             <span className="inline-flex items-center rounded bg-slate-100 px-1 py-[1px] font-medium text-slate-700">
                                                                 {row.building}
@@ -1128,7 +1822,20 @@ export const BudgetManager: React.FC<BudgetManagerProps> = ({
                                                             >
                                                                 {row.unitNames?.trim() ? row.unitNames : '—'}
                                                             </span>
-                                                            <span className="text-[10px] text-slate-400">{row.area}㎡</span>
+                                                            <span className="inline-flex items-center rounded bg-purple-50 px-1 py-[1px] font-medium text-purple-700">
+                                                                {row.paymentCycleLabel || '季付'}
+                                                            </span>
+                                                            {row.leaseStartMonthInYear != null && (
+                                                                <span className="inline-flex items-center rounded bg-orange-50 px-1 py-[1px] font-medium text-orange-700" title={`起租日：${row.leaseStart || '—'}`}>
+                                                                    起租 {row.leaseStartMonthInYear + 1}月
+                                                                </span>
+                                                            )}
+                                                            {row.isTerminatingInYear && (
+                                                                <span className="inline-flex items-center rounded bg-rose-50 px-1 py-[1px] font-medium text-rose-700" title={`退租/到期日：${row.terminationDate || '—'}`}>
+                                                                    退租 {new Date(row.terminationDate).getMonth() + 1}月
+                                                                </span>
+                                                            )}
+                                                            <span className="text-[10px] text-slate-400">{formatArea(row.area)}</span>
                                                         </div>
                                                     </td>
                                                     <td className="px-2 py-3 text-center font-medium text-slate-700 bg-white group-hover:bg-slate-50 whitespace-nowrap align-top">
@@ -1145,16 +1852,26 @@ export const BudgetManager: React.FC<BudgetManagerProps> = ({
                                                         const hasAdj = !!adjSt.shell;
                                                         const adjNote = (val.adjustmentDetail || '').trim();
                                                         const displayBudgetAmount = val.isAdjustedOut ? 0 : val.amount;
+                                                        const isLeaseStartMonth = row.leaseStartMonthInYear === idx;
+                                                        const isLastReceivableMonth = lastReceivableMonth === idx;
+                                                        const isRentFreeMonth = !!row.rentFreeMonthFlags?.[idx];
+                                                        const cellTitleParts = [
+                                                            isRentFreeMonth ? '合同免租自然月' : '',
+                                                            adjNote ? `调整说明：${adjNote}` : '',
+                                                            isLastReceivableMonth ? `最后一期应收，退租/到期日：${row.terminationDate || '—'}` : '',
+                                                            isLeaseStartMonth ? `起租日：${row.leaseStart || '—'}` : '',
+                                                            !isExec && val.amount > 0 ? '点击编辑预算（账期或金额）' : '',
+                                                        ].filter(Boolean);
 
                                                         return (
                                                             <td 
                                                                 key={idx} 
-                                                                title={adjNote || (!isExec && val.amount > 0 ? '点击编辑预算（账期或金额）' : undefined)}
+                                                                title={cellTitleParts.length ? cellTitleParts.join('；') : undefined}
                                                                 className={`px-2 py-2 text-right relative transition-colors group/cell align-top ${
                                                                     !isExec && val.amount > 0 ? 'cursor-pointer' : ''
                                                                 } ${!hasAdj && !isExec && val.amount > 0 ? 'hover:bg-emerald-50/50' : ''} ${
                                                                     isExec && isOverdue && !hasAdj ? 'bg-rose-50' : ''
-                                                                } ${adjSt.shell} ${val.amount > 0 ? 'text-slate-700' : 'text-slate-300'}`}
+                                                                } ${!hasAdj && isLeaseStartMonth ? 'bg-orange-50/80 ring-1 ring-inset ring-orange-200' : ''} ${!hasAdj && isRentFreeMonth ? 'bg-amber-100/95 ring-1 ring-inset ring-amber-300 shadow-[inset_0_0_0_1px_rgba(245,158,11,0.18)]' : ''} ${!hasAdj && isLastReceivableMonth ? 'bg-rose-50/90 ring-1 ring-inset ring-rose-200' : ''} ${adjSt.shell} ${val.amount > 0 ? 'text-slate-700' : 'text-slate-300'}`}
                                                                 onClick={() => { 
                                                                     if(!isExec && val.amount > 0) { 
                                                                         setAdjData({ tenantId: row.id, tenantName: row.name, originalMonth: idx, amount: val.amount }); 
@@ -1169,7 +1886,7 @@ export const BudgetManager: React.FC<BudgetManagerProps> = ({
                                                                     <div className="flex flex-col items-end gap-0.5">
                                                                         <div className="flex items-center justify-end gap-1">
                                                                             <span className={displayBudgetAmount > 0 ? 'font-medium' : ''}>
-                                                                                {displayBudgetAmount > 0 ? displayBudgetAmount.toLocaleString() : (val.isAdjustedOut ? '0' : '-')}
+                                                                                {displayBudgetAmount > 0 ? formatNumber(displayBudgetAmount) : (val.isAdjustedOut ? '0.00' : '-')}
                                                                             </span>
                                                                             {displayBudgetAmount > 0 && (
                                                                                 <Edit3 size={12} className="text-emerald-600 opacity-0 group-hover/cell:opacity-100 transition-opacity flex-shrink-0" aria-hidden />
@@ -1180,22 +1897,40 @@ export const BudgetManager: React.FC<BudgetManagerProps> = ({
                                                                                 {adjNote}
                                                                             </div>
                                                                         ) : null}
+                                                                        {isRentFreeMonth && (
+                                                                            <div className="text-[9px] leading-snug text-amber-800 font-bold">免租月</div>
+                                                                        )}
+                                                                        {isLeaseStartMonth && (
+                                                                            <div className="text-[9px] leading-snug text-orange-700 font-bold">起租月</div>
+                                                                        )}
+                                                                        {isLastReceivableMonth && (
+                                                                            <div className="text-[9px] leading-snug text-rose-700 font-bold">最后一期</div>
+                                                                        )}
                                                                     </div>
                                                                 ) : (
                                                                     <div className="flex flex-col items-end gap-0.5">
                                                                         <div className="flex items-center gap-1">
                                                                             <span className={`text-[11px] font-bold ${isPaid ? 'text-emerald-600' : isOverdue ? 'text-rose-600 animate-pulse' : 'text-slate-400'}`}>
-                                                                                ¥{(val.actual || 0).toLocaleString()}
+                                                                                {formatCurrency(val.actual || 0)}
                                                                             </span>
                                                                             {isPaid && <CheckCircle size={10} className="text-emerald-500" />}
                                                                             {isExec && isOverdue && <AlertCircle size={10} className="text-rose-500" />}
                                                                         </div>
-                                                                        <span className="text-[9px] text-slate-400 font-mono opacity-60">预 ¥{val.amount.toLocaleString()}</span>
+                                                                        <span className="text-[9px] text-slate-400 font-mono opacity-60">预 {formatCurrency(val.amount)}</span>
                                                                         {adjNote ? (
                                                                             <div className={`text-[9px] leading-snug max-w-[min(140px,22vw)] text-right font-medium ${adjSt.noteClass || 'text-slate-600'}`}>
                                                                                 {adjNote}
                                                                             </div>
                                                                         ) : null}
+                                                                        {isRentFreeMonth && (
+                                                                            <div className="text-[9px] leading-snug text-amber-800 font-bold">免租月</div>
+                                                                        )}
+                                                                        {isLeaseStartMonth && (
+                                                                            <div className="text-[9px] leading-snug text-orange-700 font-bold">起租月</div>
+                                                                        )}
+                                                                        {isLastReceivableMonth && (
+                                                                            <div className="text-[9px] leading-snug text-rose-700 font-bold">最后一期</div>
+                                                                        )}
                                                                     </div>
                                                                 )}
                                                             </td>
@@ -1204,11 +1939,11 @@ export const BudgetManager: React.FC<BudgetManagerProps> = ({
                                                     <td className={`px-4 py-3 text-right font-bold sticky right-0 shadow-[-2px_0_5px_-2px_rgba(0,0,0,0.05)] border-l border-slate-100 ${isExec ? 'bg-emerald-50 text-emerald-800' : 'bg-slate-50 text-slate-800 group-hover:bg-slate-100'}`}>
                                                         {isExec ? (
                                                             <div className="flex flex-col items-end">
-                                                                <span>¥{rowTotalActual.toLocaleString()}</span>
-                                                                <span className="text-[10px] text-slate-400 font-normal">预: ¥{rowTotalBudget.toLocaleString()}</span>
+                                                                <span>{formatCurrency(rowTotalActual)}</span>
+                                                                <span className="text-[10px] text-slate-400 font-normal">预: {formatCurrency(rowTotalBudget)}</span>
                                                             </div>
                                                         ) : (
-                                                            `¥${rowTotalBudget.toLocaleString()}`
+                                                            formatCurrency(rowTotalBudget)
                                                         )}
                                                     </td>
                                                 </tr>
@@ -1223,22 +1958,22 @@ export const BudgetManager: React.FC<BudgetManagerProps> = ({
                                                 <td key={i} className="px-2 py-2 text-right text-blue-600/70 text-xs">
                                                     {isExec ? (
                                                         <div className="flex flex-col items-end">
-                                                            <span className="text-emerald-600">¥{groupActualSum[i].toLocaleString()}</span>
-                                                            <span className="text-[9px] font-normal text-slate-400">预 ¥{val.toLocaleString()}</span>
+                                                            <span className="text-emerald-600">{formatCurrency(groupActualSum[i])}</span>
+                                                            <span className="text-[9px] font-normal text-slate-400">预 {formatCurrency(val)}</span>
                                                         </div>
                                                     ) : (
-                                                        `¥${val.toLocaleString()}`
+                                                        formatCurrency(val)
                                                     )}
                                                 </td>
                                             ))}
                                             <td className={`px-4 py-2 text-right sticky right-0 ${isExec ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-50 text-blue-600'}`}>
                                                 {isExec ? (
                                                     <div className="flex flex-col items-end">
-                                                        <span>¥{groupActualSum.reduce((a,b)=>a+b, 0).toLocaleString()}</span>
-                                                        <span className="text-[10px] font-normal opacity-60">预 ¥{groupBudgetSum.reduce((a,b)=>a+b, 0).toLocaleString()}</span>
+                                                        <span>{formatCurrency(groupActualSum.reduce((a,b)=>a+b, 0))}</span>
+                                                        <span className="text-[10px] font-normal opacity-60">预 {formatCurrency(groupBudgetSum.reduce((a,b)=>a+b, 0))}</span>
                                                     </div>
                                                 ) : (
-                                                    `¥${groupBudgetSum.reduce((a,b)=>a+b, 0).toLocaleString()}`
+                                                    formatCurrency(groupBudgetSum.reduce((a,b)=>a+b, 0))
                                                 )}
                                             </td>
                                         </tr>
@@ -1255,22 +1990,22 @@ export const BudgetManager: React.FC<BudgetManagerProps> = ({
                                     <td key={i} className="px-2 py-3 text-right">
                                         {isExec ? (
                                             <div className="flex flex-col items-end">
-                                                <span className="text-emerald-400">¥{monthlyActualTotals[i].toLocaleString()}</span>
-                                                <span className="text-[10px] font-normal text-slate-300 opacity-60">预 ¥{t.toLocaleString()}</span>
+                                                <span className="text-emerald-400">{formatCurrency(monthlyActualTotals[i])}</span>
+                                                <span className="text-[10px] font-normal text-slate-300 opacity-60">预 {formatCurrency(t)}</span>
                                             </div>
                                         ) : (
-                                            `¥${t.toLocaleString()}`
+                                            formatCurrency(t)
                                         )}
                                     </td>
                                 ))}
                                 <td className="px-4 py-3 text-right bg-slate-900 sticky right-0 shadow-[-2px_0_5px_-2px_rgba(0,0,0,0.1)]">
                                     {isExec ? (
                                         <div className="flex flex-col items-end">
-                                            <span className="text-emerald-400 font-black text-base">¥{grandActualTotal.toLocaleString()}</span>
-                                            <span className="text-[10px] font-normal text-slate-300">预 ¥{grandBudgetTotal.toLocaleString()}</span>
+                                            <span className="text-emerald-400 font-black text-base">{formatCurrency(grandActualTotal)}</span>
+                                            <span className="text-[10px] font-normal text-slate-300">预 {formatCurrency(grandBudgetTotal)}</span>
                                         </div>
                                     ) : (
-                                        `¥${grandBudgetTotal.toLocaleString()}`
+                                        formatCurrency(grandBudgetTotal)
                                     )}
                                 </td>
                             </tr>
@@ -1286,11 +2021,11 @@ export const BudgetManager: React.FC<BudgetManagerProps> = ({
                                 <td className="px-2 py-3 text-center bg-blue-50 text-slate-400 text-xs font-normal">—</td>
                                 <td className="px-2 py-3 text-center bg-blue-50 text-slate-400 text-xs font-normal">—</td>
                                 {monthlyOccupiedArea.map((occupied, i) => {
-                                    const rate = totalLeasableArea > 0 ? (occupied / totalLeasableArea * 100).toFixed(1) : '0.0';
+                                    const rate = totalLeasableArea > 0 ? (occupied / totalLeasableArea * 100) : 0;
                                     return (
                                         <td key={i} className="px-2 py-3 text-right">
-                                            {rate}%
-                                            <div className="text-[10px] font-normal opacity-60">({occupied.toLocaleString()}㎡)</div>
+                                            {formatPercent(rate)}
+                                            <div className="text-[10px] font-normal opacity-60">({formatArea(occupied)})</div>
                                         </td>
                                     );
                                 })}
@@ -1385,7 +2120,7 @@ export const BudgetManager: React.FC<BudgetManagerProps> = ({
                        <div className="bg-slate-50 p-4 rounded-xl text-sm text-slate-700 space-y-1 border border-slate-100">
                            <p><span className="text-slate-500">客户</span> <span className="font-semibold">{adjData.tenantName}</span></p>
                            <p><span className="text-slate-500">账期</span> {detailYear}年{adjData.originalMonth + 1}月</p>
-                           <p><span className="text-slate-500">当前预算额</span> <span className="font-mono font-bold text-slate-900">¥{adjData.amount.toLocaleString()}</span></p>
+                           <p><span className="text-slate-500">当前预算额</span> <span className="font-mono font-bold text-slate-900">{formatCurrency(adjData.amount)}</span></p>
                        </div>
                        {adjEditTab === 'period' ? (
                            <div className="space-y-4">
@@ -1430,11 +2165,11 @@ export const BudgetManager: React.FC<BudgetManagerProps> = ({
                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 px-6 py-4 border-b border-slate-100 bg-slate-50/50 flex-shrink-0">
                        <div className="bg-white border border-blue-100 rounded-xl p-4 shadow-sm">
                            <div className="text-xs font-bold text-blue-600 uppercase tracking-wide mb-1">本年度 ({detailYear}) 预算影响</div>
-                           <div className={`text-2xl font-bold ${impactStats.currentYearNet >= 0 ? 'text-blue-700' : 'text-red-600'}`}>{impactStats.currentYearNet >= 0 ? '+' : ''}¥{impactStats.currentYearNet.toLocaleString()}</div>
+                           <div className={`text-2xl font-bold ${impactStats.currentYearNet >= 0 ? 'text-blue-700' : 'text-red-600'}`}>{impactStats.currentYearNet >= 0 ? '+' : ''}{formatCurrency(impactStats.currentYearNet)}</div>
                        </div>
                        <div className="bg-white border border-purple-100 rounded-xl p-4 shadow-sm">
                            <div className="text-xs font-bold text-purple-600 uppercase tracking-wide mb-1">次年度 ({detailYear + 1}) 预算影响</div>
-                           <div className={`text-2xl font-bold ${impactStats.nextYearNet >= 0 ? 'text-purple-700' : 'text-red-600'}`}>{impactStats.nextYearNet >= 0 ? '+' : ''}¥{impactStats.nextYearNet.toLocaleString()}</div>
+                           <div className={`text-2xl font-bold ${impactStats.nextYearNet >= 0 ? 'text-purple-700' : 'text-red-600'}`}>{impactStats.nextYearNet >= 0 ? '+' : ''}{formatCurrency(impactStats.nextYearNet)}</div>
                        </div>
                    </div>
                    <div className="px-6 pt-3 flex flex-wrap gap-2 border-b border-slate-100 flex-shrink-0">
@@ -1473,11 +2208,11 @@ export const BudgetManager: React.FC<BudgetManagerProps> = ({
                                                                            <span className={`font-semibold shrink-0 ${isAmt ? 'text-indigo-700' : 'text-emerald-700'}`}>{isAmt ? '金额' : '账期'}</span>
                                                                            {isAmt ? (
                                                                                <span className="font-mono">
-                                                                                   {adj.adjustedYear}年{adj.adjustedMonth + 1}月 {adj.amount >= 0 ? '+' : ''}¥{adj.amount.toLocaleString()}
+                                                                                   {adj.adjustedYear}年{adj.adjustedMonth + 1}月 {adj.amount >= 0 ? '+' : ''}{formatCurrency(adj.amount)}
                                                                                </span>
                                                                            ) : (
                                                                                <span className="font-mono">
-                                                                                   {adj.originalYear}/{String(adj.originalMonth + 1).padStart(2, '0')} → {adj.adjustedYear}/{String(adj.adjustedMonth + 1).padStart(2, '0')} ¥{adj.amount.toLocaleString()}
+                                                                                   {adj.originalYear}/{String(adj.originalMonth + 1).padStart(2, '0')} → {adj.adjustedYear}/{String(adj.adjustedMonth + 1).padStart(2, '0')} {formatCurrency(adj.amount)}
                                                                                </span>
                                                                            )}
                                                                            <button type="button" onClick={() => deleteAdjustment(adj.id)} className="p-0.5 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded shrink-0" title="撤销"><Trash2 size={13} /></button>
@@ -1487,10 +2222,10 @@ export const BudgetManager: React.FC<BudgetManagerProps> = ({
                                                            </div>
                                                        </td>
                                                        <td className={`px-4 py-3 text-right font-mono font-bold whitespace-nowrap ${row.currentYearNet >= 0 ? 'text-blue-700' : 'text-red-600'}`}>
-                                                           {row.currentYearNet >= 0 ? '+' : ''}¥{row.currentYearNet.toLocaleString()}
+                                                           {row.currentYearNet >= 0 ? '+' : ''}{formatCurrency(row.currentYearNet)}
                                                        </td>
                                                        <td className={`px-4 py-3 text-right font-mono font-bold whitespace-nowrap ${row.nextYearNet >= 0 ? 'text-purple-700' : 'text-red-600'}`}>
-                                                           {row.nextYearNet >= 0 ? '+' : ''}¥{row.nextYearNet.toLocaleString()}
+                                                           {row.nextYearNet >= 0 ? '+' : ''}{formatCurrency(row.nextYearNet)}
                                                        </td>
                                                    </tr>
                                                ))}
@@ -1509,9 +2244,9 @@ export const BudgetManager: React.FC<BudgetManagerProps> = ({
                                                                <span key={adj.id} className={`inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs ${isAmt ? 'border-indigo-200 bg-indigo-50/80' : 'border-emerald-200 bg-emerald-50/80'}`} title={adj.reason}>
                                                                    <span className={`font-semibold ${isAmt ? 'text-indigo-700' : 'text-emerald-700'}`}>{isAmt ? '金额' : '账期'}</span>
                                                                    {isAmt ? (
-                                                                       <span className="font-mono text-indigo-900">{adj.adjustedYear}年{adj.adjustedMonth + 1}月 {adj.amount >= 0 ? '+' : ''}¥{adj.amount.toLocaleString()}</span>
+                                                                       <span className="font-mono text-indigo-900">{adj.adjustedYear}年{adj.adjustedMonth + 1}月 {adj.amount >= 0 ? '+' : ''}{formatCurrency(adj.amount)}</span>
                                                                    ) : (
-                                                                       <span className="font-mono text-emerald-900">{adj.originalYear}/{String(adj.originalMonth + 1).padStart(2, '0')} → {adj.adjustedYear}/{String(adj.adjustedMonth + 1).padStart(2, '0')} ¥{adj.amount.toLocaleString()}</span>
+                                                                       <span className="font-mono text-emerald-900">{adj.originalYear}/{String(adj.originalMonth + 1).padStart(2, '0')} → {adj.adjustedYear}/{String(adj.adjustedMonth + 1).padStart(2, '0')} {formatCurrency(adj.amount)}</span>
                                                                    )}
                                                                    <button type="button" onClick={() => deleteAdjustment(adj.id)} className="p-0.5 text-slate-400 hover:text-red-600"><Trash2 size={13} /></button>
                                                                </span>
@@ -1521,11 +2256,11 @@ export const BudgetManager: React.FC<BudgetManagerProps> = ({
                                                    <div className="grid grid-cols-2 gap-3 pt-1 border-t border-slate-100">
                                                        <div>
                                                            <div className="text-[10px] font-bold text-blue-600 uppercase mb-0.5">本年度影响</div>
-                                                           <div className={`font-mono font-bold ${row.currentYearNet >= 0 ? 'text-blue-700' : 'text-red-600'}`}>{row.currentYearNet >= 0 ? '+' : ''}¥{row.currentYearNet.toLocaleString()}</div>
+                                                           <div className={`font-mono font-bold ${row.currentYearNet >= 0 ? 'text-blue-700' : 'text-red-600'}`}>{row.currentYearNet >= 0 ? '+' : ''}{formatCurrency(row.currentYearNet)}</div>
                                                        </div>
                                                        <div>
                                                            <div className="text-[10px] font-bold text-purple-600 uppercase mb-0.5">次年度影响</div>
-                                                           <div className={`font-mono font-bold ${row.nextYearNet >= 0 ? 'text-purple-700' : 'text-red-600'}`}>{row.nextYearNet >= 0 ? '+' : ''}¥{row.nextYearNet.toLocaleString()}</div>
+                                                           <div className={`font-mono font-bold ${row.nextYearNet >= 0 ? 'text-purple-700' : 'text-red-600'}`}>{row.nextYearNet >= 0 ? '+' : ''}{formatCurrency(row.nextYearNet)}</div>
                                                        </div>
                                                    </div>
                                                </div>
@@ -1557,7 +2292,7 @@ export const BudgetManager: React.FC<BudgetManagerProps> = ({
                                                                    <span className="text-slate-400 line-through">{adj.originalYear}/{String(adj.originalMonth + 1).padStart(2, '0')}</span>
                                                                    <ArrowRight size={14} className="text-slate-300 flex-shrink-0" />
                                                                    <span className="text-emerald-700 font-semibold">{adj.adjustedYear}/{String(adj.adjustedMonth + 1).padStart(2, '0')}</span>
-                                                                   <span className="font-bold text-slate-800 ml-1">¥{adj.amount.toLocaleString()}</span>
+                                                                   <span className="font-bold text-slate-800 ml-1">{formatCurrency(adj.amount)}</span>
                                                                </div>
                                                                <div className="text-xs text-slate-500 flex items-center gap-1"><Info size={12} /> {adj.reason}</div>
                                                            </div>
@@ -1590,7 +2325,7 @@ export const BudgetManager: React.FC<BudgetManagerProps> = ({
                                                        <div className="min-w-0 flex-1">
                                                            <div className="flex flex-wrap items-center gap-2 text-sm mb-1">
                                                                <span className="text-slate-600 font-medium">{adj.adjustedYear}年{adj.adjustedMonth + 1}月</span>
-                                                               <span className={`font-bold ${adj.amount >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>{adj.amount >= 0 ? '+' : ''}¥{adj.amount.toLocaleString()}</span>
+                                                               <span className={`font-bold ${adj.amount >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>{adj.amount >= 0 ? '+' : ''}{formatCurrency(adj.amount)}</span>
                                                            </div>
                                                            <div className="text-xs text-slate-500 flex items-center gap-1"><Info size={12} /> {adj.reason}</div>
                                                        </div>
@@ -1637,6 +2372,123 @@ export const BudgetManager: React.FC<BudgetManagerProps> = ({
                        <div className="bg-blue-50 p-3 rounded text-sm text-blue-800">即将保存: <strong>{activeScenarioId === 'current' ? '当前生效方案 (Live)' : scenarios.find(s=>s.id===activeScenarioId)?.name}</strong></div>
                        <div><label className="block text-sm font-medium text-slate-700 mb-1">操作人员姓名 <span className="text-red-500">*</span></label><input type="text" className="w-full border rounded p-2" value={operatorName} onChange={e => setOperatorName(e.target.value)} placeholder="请输入您的姓名" /></div>
                        <div className="flex justify-end gap-2 pt-2"><button onClick={() => setShowCloudModal(false)} className="px-4 py-2 border rounded text-slate-600 hover:bg-slate-50">取消</button><button onClick={confirmCloudSave} disabled={!operatorName.trim()} className="px-4 py-2 bg-emerald-600 text-white rounded hover:bg-emerald-700 disabled:opacity-50">确认上传</button></div>
+                   </div>
+               </div>
+           </div>
+       )}
+
+       {importPreview && (
+           <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/40 backdrop-blur-sm p-4">
+               <div className="bg-white rounded-xl shadow-xl w-full max-w-3xl max-h-[90vh] flex flex-col animate-in zoom-in-50 duration-200">
+                   <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100">
+                       <div className="flex items-center gap-2">
+                           <Upload size={20} className="text-blue-600" />
+                           <h3 className="text-lg font-bold text-slate-800">预算表导入预览</h3>
+                       </div>
+                       <button
+                           onClick={() => setImportPreview(null)}
+                           className="text-slate-400 hover:text-slate-600 p-2 rounded-lg hover:bg-slate-100"
+                           aria-label="关闭"
+                       >
+                           <X size={20} />
+                       </button>
+                   </div>
+                   <div className="flex-1 overflow-y-auto px-6 py-4 space-y-4">
+                       <div className="bg-blue-50 border border-blue-100 rounded-lg p-3 text-sm text-blue-800">
+                           <div>预算年度：<strong>{importPreview.year} 年</strong></div>
+                           <div>工作表：<span className="font-mono">{importPreview.sheetName}</span></div>
+                           <div>明细行：{importPreview.rows.length} 条</div>
+                           <div>全年合计：<strong>{formatCurrency(importPreview.annualTotal)}</strong></div>
+                       </div>
+
+                       <div className="border border-slate-200 rounded-lg overflow-hidden">
+                           <div className="bg-slate-50 px-4 py-2 text-xs text-slate-500 font-medium">
+                               月度合计（将写入「预算执行」表的目标列）
+                           </div>
+                           <table className="w-full text-sm">
+                               <thead className="bg-white text-slate-500 text-xs">
+                                   <tr>
+                                       {Array.from({ length: 12 }).map((_, i) => (
+                                           <th key={i} className="text-right px-2 py-1.5">{i + 1}月</th>
+                                       ))}
+                                   </tr>
+                               </thead>
+                               <tbody>
+                                   <tr className="border-t border-slate-100">
+                                       {importPreview.monthlyTotals.map((v, i) => (
+                                           <td key={i} className="text-right px-2 py-1.5 font-mono text-slate-700">
+                                               {(v / 10000).toFixed(2)}万
+                                           </td>
+                                       ))}
+                                   </tr>
+                               </tbody>
+                           </table>
+                       </div>
+
+                       {importPreview.warnings.length > 0 && (
+                           <div className="border border-amber-200 bg-amber-50 rounded-lg p-3 text-xs text-amber-800 space-y-1">
+                               <div className="font-bold flex items-center gap-1">
+                                   <AlertCircle size={14} /> 解析提示（{importPreview.warnings.length} 条）
+                               </div>
+                               <ul className="list-disc list-inside space-y-0.5 max-h-32 overflow-auto">
+                                   {importPreview.warnings.slice(0, 50).map((w, i) => (
+                                       <li key={i}>{w}</li>
+                                   ))}
+                               </ul>
+                           </div>
+                       )}
+
+                       <div className="border border-slate-200 rounded-lg overflow-hidden">
+                           <div className="bg-slate-50 px-4 py-2 text-xs text-slate-500 font-medium flex items-center justify-between">
+                               <span>明细预览（前 8 行）</span>
+                               <span className="text-slate-400">仅显示，不影响导入结果</span>
+                           </div>
+                           <div className="overflow-x-auto">
+                               <table className="w-full text-xs">
+                                   <thead className="bg-white text-slate-500">
+                                       <tr>
+                                           <th className="text-left px-2 py-1.5">客户</th>
+                                           <th className="text-left px-2 py-1.5">房号</th>
+                                           <th className="text-left px-2 py-1.5">楼宇</th>
+                                           <th className="text-left px-2 py-1.5">类别</th>
+                                           <th className="text-right px-2 py-1.5">合计(元)</th>
+                                       </tr>
+                                   </thead>
+                                   <tbody>
+                                       {importPreview.rows.slice(0, 8).map((r, i) => (
+                                           <tr key={i} className="border-t border-slate-100">
+                                               <td className="px-2 py-1.5">{r.customer}</td>
+                                               <td className="px-2 py-1.5 text-slate-500">{r.unit}</td>
+                                               <td className="px-2 py-1.5 text-slate-500">{r.building}</td>
+                                               <td className="px-2 py-1.5 text-slate-500">{r.category}</td>
+                                               <td className="px-2 py-1.5 text-right font-mono">{formatCurrency(r.total)}</td>
+                                           </tr>
+                                       ))}
+                                   </tbody>
+                               </table>
+                           </div>
+                       </div>
+
+                       <div className="border border-slate-200 bg-slate-50 rounded-lg p-3 text-xs text-slate-600 leading-relaxed">
+                           <div className="font-bold text-slate-700 mb-1">导入说明</div>
+                           确认导入后，<strong>{importPreview.year} 年</strong>每月的预算目标将被覆盖为以上「月度合计」值；
+                           其它字段（实收金额、出租率、累计欠款）保留原值。
+                           导入只在本地生效，请检查无误后再点击右上角「保存」写入后端。
+                       </div>
+                   </div>
+                   <div className="px-6 py-4 border-t border-slate-100 flex justify-end gap-3 bg-slate-50">
+                       <button
+                           onClick={() => setImportPreview(null)}
+                           className="px-5 py-2 border border-slate-300 rounded-lg text-slate-700 hover:bg-white"
+                       >
+                           取消
+                       </button>
+                       <button
+                           onClick={confirmApplyImportedBudget}
+                           className="px-5 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-bold shadow"
+                       >
+                           确认导入预算表
+                       </button>
                    </div>
                </div>
            </div>

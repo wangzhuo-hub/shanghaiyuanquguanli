@@ -3,7 +3,7 @@
 本项目已整理为“拿到代码即可部署”的标准形态，推荐使用 `compose.yaml` 一键启动：
 
 - **Web 前端**：Nginx 托管静态资源，对外端口 **1001**
-- **PocketBase 后端**：对外端口 **8001**（容器内 8090）
+- **PocketBase 后端**：对外端口 **1002**（容器内 8090）
 - **AI 代理（千问/DashScope）**：对外端口 **3010**
 
 ### 架构与访问路径
@@ -68,14 +68,14 @@ docker compose up -d --build
 ### 1.3 访问
 
 - 前端：`http://localhost:1001`
-- PocketBase Admin：`http://localhost:8001/_/`
+- PocketBase Admin：`http://localhost:1002/_/`
 
 首次打开 PocketBase Admin 会引导创建管理员账号（空库初始化）。
 
 ### 1.4 健康检查
 
 ```bash
-curl http://127.0.0.1:8001/api/health
+curl http://127.0.0.1:1002/api/health
 ```
 
 应返回 `API is healthy`。
@@ -131,13 +131,13 @@ PocketBase 支持在 Admin UI 中备份；也可以直接备份卷（按你们�
 默认端口：
 
 - `1001/tcp`：前端
-- `8001/tcp`：PocketBase（管理后台也在该端口）
+- `1002/tcp`：PocketBase（管理后台也在该端口）
 - `3010/tcp`：AI 代理（仅服务端使用，建议限制访问）
 
 建议：
 
 - 只对用户开放 `1001`
-- `8001` 只对内网/运维开放（或通过网关鉴权）
+- `1002` 只对内网/运维开放（或通过网关鉴权）
 - `3010` 建议只允许 `web` 容器/内网访问
 
 ---
@@ -151,7 +151,7 @@ PocketBase 支持在 Admin UI 中备份；也可以直接备份卷（按你们�
 
 ### 5.2 PocketBase 无法访问 / 不是空库
 
-- 健康检查：`curl http://127.0.0.1:8001/api/health`
+- 健康检查：`curl http://127.0.0.1:1002/api/health`
 - 若不是空库：删除并重建 `pb_data` 卷（见 3.2）
 
 ### 5.3 AI 代理启动失败
@@ -173,5 +173,5 @@ cp .env.example .env.local
 访问：
 
 - 前端：`http://<本机IP>:1001`
-- PocketBase Admin：`http://<本机IP>:8001/_/`
+- PocketBase Admin：`http://<本机IP>:1002/_/`
 

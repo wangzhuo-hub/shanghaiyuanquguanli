@@ -1,7 +1,26 @@
 import PocketBase from 'pocketbase';
-import { DashboardData, CloudBackupMetadata } from '../types';
+import { AuthUser, DashboardData, CloudBackupMetadata, MonthlyTrend, ParkInfo, UserRole } from '../types';
 import type { IntegrationFullSnapshotV1 } from './integrationSnapshot';
 import { INTEGRATION_FULL_SNAPSHOT_KIND } from './integrationSnapshot';
+import type { DirtyPayload } from './dirtyTracker';
+
+/**
+ * RecordMeta —— 增量保存的「行级乐观锁基准表」
+ *
+ * 结构：{ [collection]: { [originalId]: pocketbaseUpdatedTimestamp } }
+ *
+ * - 在 fetchPocketBaseBackup 时随业务数据一同返回。
+ * - 业务组件改某条记录时，把 recordMeta[collection][originalId] 作为 baseUpdated
+ *   传给 dirtyTracker.markUpdate / markDelete。
+ * - saveIncrementalToPocketBase 提交前，会和服务端最新 updated 比对；
+ *   若不一致则记入 conflicts，不写入。
+ *
+ * 注意：对于无 `original_id` 字段的集合（pb_yearly_targets / pb_monthly_init_data），
+ * 我们用合成 key：
+ *   - pb_yearly_targets: `${year}`
+ *   - pb_monthly_init_data: `${year}_${month}`
+ */
+export type RecordMeta = Record<string, Record<string, string>>;
 
 let pb: PocketBase | null = null;
 
@@ -33,6 +52,680 @@ export const getPocketBaseInfo = () => {
         isValid: pb?.authStore?.isValid || false,
         model: pb?.authStore?.model || null
     };
+};
+
+const normalizeProjectIds = (value: unknown, fallback?: string): string[] => {
+    const ids = Array.isArray(value)
+        ? value
+        : typeof value === 'string' && value.trim()
+          ? [value.trim()]
+          : [];
+    const normalized = ids
+        .map((id) => String(id || '').trim())
+        .filter(Boolean);
+    if (fallback && !normalized.includes(fallback)) normalized.unshift(fallback);
+    return Array.from(new Set(normalized));
+};
+
+/** PocketBase auth 集合要求合法邮箱；申请集合为 text，需在提交与审批前校验。 */
+const AUTH_EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const isValidAuthEmail = (email: string) => AUTH_EMAIL_REGEX.test(String(email || '').trim());
+const PB_AUTH_PASSWORD_MIN_LEN = 8;
+
+/** 将 PocketBase ClientResponseError 的字段级校验合并为可读文案 */
+const formatPocketBaseClientError = (err: unknown): string => {
+    const e = err as any;
+    const payload = e?.data ?? e?.response ?? {};
+    const top = String(payload?.message || e?.message || '').trim();
+    const fieldBag = payload?.data;
+    if (fieldBag && typeof fieldBag === 'object' && !Array.isArray(fieldBag)) {
+        const parts: string[] = [];
+        for (const [key, val] of Object.entries(fieldBag)) {
+            if (val && typeof val === 'object' && (val as { message?: string }).message) {
+                parts.push(`${key}: ${String((val as { message?: string }).message)}`);
+            }
+        }
+        if (parts.length) return [top, ...parts].filter(Boolean).join('；');
+    }
+    return top || '请求失败';
+};
+
+/** PocketBase filter：`email="..."`（转义引号与反斜杠） */
+const emailEqFilter = (email: string): string => {
+    const e = String(email || '').trim().replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+    return `email="${e}"`;
+};
+
+const isElevatedAuthRole = (role: unknown): boolean => {
+    const r = String(role || '').trim();
+    return r === 'platform_admin' || r === 'group_admin';
+};
+
+/**
+ * 注册审批时邮箱已占用：合并申请的园区到 `allowed_project_ids`、启用账号；
+ * 对普通 `park_user` 尝试按申请重置密码（失败则跳过，避免 Rules 禁止改密时整单失败）。
+ * @param existingRow 若已按邮箱查过 `users` 记录可传入，避免重复请求。
+ */
+const mergeSignupIntoExistingUser = async (
+    request: SignupRequestRecord,
+    existingRow?: any
+): Promise<{ success: boolean; user?: ManagedUserAccount; message: string }> => {
+    if (!pb) return { success: false, message: 'PocketBase 未初始化' };
+    const email = String(request.email || '').trim();
+    const primaryProjectId = request.requestedProjectIds[0];
+    if (!email || !primaryProjectId) {
+        return { success: false, message: '申请缺少邮箱或园区信息' };
+    }
+    try {
+        const row =
+            existingRow?.id != null
+                ? existingRow
+                : await pb.collection('users').getFirstListItem(emailEqFilter(email));
+        const existingProjectId = String(row.project_id || '').trim();
+        const baseProject = existingProjectId || primaryProjectId;
+        const mergedAllowed = normalizeProjectIds(
+            [...normalizeProjectIds(row.allowed_project_ids, baseProject), ...request.requestedProjectIds],
+            baseProject
+        );
+        const patch: Record<string, unknown> = {
+            allowed_project_ids: mergedAllowed,
+            enabled: true,
+        };
+        if (!existingProjectId) {
+            patch.project_id = primaryProjectId;
+        }
+        const applicantName = String(request.applicantName || '').trim();
+        const currentName = String(row.name || row.username || '').trim();
+        if (applicantName && !currentName) {
+            patch.name = applicantName;
+        }
+        const pwd = String(request.password || '').trim();
+        const canTryPassword = !isElevatedAuthRole(row.role) && pwd.length >= PB_AUTH_PASSWORD_MIN_LEN;
+        if (canTryPassword) {
+            patch.password = pwd;
+            patch.passwordConfirm = pwd;
+        }
+        try {
+            const updated = await pb.collection('users').update(row.id, patch);
+            return {
+                success: true,
+                user: mapManagedUser(updated),
+                message: canTryPassword
+                    ? '该邮箱已有账号：已合并园区授权、启用，并已更新密码。'
+                    : isElevatedAuthRole(row.role)
+                      ? '该邮箱已有账号：已合并园区授权并启用（平台/集团管理员密码未通过注册单修改）。'
+                      : '该邮箱已有账号：已合并园区授权并启用（申请密码过短或未提供，未改密）。',
+            };
+        } catch (first: any) {
+            if (!canTryPassword) {
+                return { success: false, message: formatPocketBaseClientError(first) || '合并已有账号失败' };
+            }
+            const { password: _p, passwordConfirm: _c, ...withoutPwd } = patch;
+            try {
+                const updated = await pb.collection('users').update(row.id, withoutPwd);
+                return {
+                    success: true,
+                    user: mapManagedUser(updated),
+                    message:
+                        '该邮箱已有账号：已合并园区授权并启用；密码因权限策略未自动更新，请管理员在后台重置或通知用户使用原密码登录。',
+                };
+            } catch (second: any) {
+                return { success: false, message: formatPocketBaseClientError(second) || '合并已有账号失败' };
+            }
+        }
+    } catch (e: any) {
+        const status = e?.status ?? e?.response?.status;
+        if (status === 404) {
+            return { success: false, message: '未找到同名邮箱账号' };
+        }
+        return { success: false, message: formatPocketBaseClientError(e) || '查询已有账号失败' };
+    }
+};
+
+const mapAuthUser = (record: any): AuthUser | null => {
+    if (!record?.id) return null;
+    const projectId = String(record.project_id || '').trim();
+    const allowedProjectIds = normalizeProjectIds(record.allowed_project_ids, projectId);
+    return {
+        id: record.id,
+        email: record.email || '',
+        name: record.name || record.username || '',
+        projectId: projectId || allowedProjectIds[0] || '',
+        role: (record.role || 'park_user') as UserRole,
+        allowedProjectIds,
+        enabled: record.enabled !== false,
+    };
+};
+
+export const getCurrentAuthUser = (): AuthUser | null => {
+    return mapAuthUser(pb?.authStore?.model);
+};
+
+export const isAuthenticated = (): boolean => {
+    const user = getCurrentAuthUser();
+    return !!pb?.authStore?.isValid && !!user?.enabled && !!user.projectId;
+};
+
+export const authenticatePocketBaseUser = async (
+    email: string,
+    password: string
+): Promise<{ success: boolean; user?: AuthUser; message: string }> => {
+    if (!pb) return { success: false, message: 'PocketBase 未初始化' };
+    const safeEmail = (email || '').trim();
+    const safePassword = (password || '').trim();
+    if (!safeEmail || !safePassword) return { success: false, message: '请输入邮箱和密码' };
+
+    try {
+        const authData = await pb.collection('users').authWithPassword(safeEmail, safePassword);
+        const user = mapAuthUser(authData.record);
+        if (!user?.enabled) {
+            pb.authStore.clear();
+            return { success: false, message: '账号已停用，请联系管理员' };
+        }
+        if (!user.projectId) {
+            pb.authStore.clear();
+            return { success: false, message: '账号未绑定园区，请联系管理员' };
+        }
+        return { success: true, user, message: '登录成功' };
+    } catch (e: any) {
+        return { success: false, message: e?.data?.message || e?.message || '登录失败，请检查账号密码' };
+    }
+};
+
+export const logoutPocketBase = () => {
+    pb?.authStore?.clear();
+};
+
+export const fetchAuthorizedParks = async (): Promise<{ success: boolean; parks: ParkInfo[]; message: string }> => {
+    if (!pb) return { success: false, parks: [], message: 'PocketBase 未初始化' };
+    if (!pb.authStore?.isValid) return { success: false, parks: [], message: '尚未登录' };
+    try {
+        const rows = await pb.collection('pb_parks').getFullList({
+            filter: 'enabled = true',
+            sort: 'sort_order,name',
+        });
+        const parks = rows.map((row: any) => ({
+            id: row.id,
+            projectId: row.project_id,
+            name: row.name || row.project_id,
+            city: row.city || '',
+            enabled: row.enabled !== false,
+            sortOrder: row.sort_order ?? 0,
+        }));
+        return { success: true, parks, message: '加载成功' };
+    } catch (e: any) {
+        return { success: false, parks: [], message: e?.data?.message || e?.message || '加载园区失败' };
+    }
+};
+
+export interface ManagedUserAccount {
+    id: string;
+    email: string;
+    name: string;
+    role: UserRole;
+    projectId: string;
+    allowedProjectIds: string[];
+    enabled: boolean;
+    created?: string;
+    updated?: string;
+}
+
+export interface CreateManagedUserInput {
+    email: string;
+    password: string;
+    name?: string;
+    role?: UserRole;
+    projectId: string;
+    allowedProjectIds?: string[];
+    enabled?: boolean;
+}
+
+/** 更新已创建的 `users` 记录；`password` 留空表示不改密 */
+export interface UpdateManagedUserInput {
+    userId: string;
+    name?: string;
+    role?: UserRole;
+    projectId?: string;
+    allowedProjectIds?: string[];
+    enabled?: boolean;
+    password?: string;
+}
+
+export interface SignupRequestRecord {
+    id: string;
+    /** 申请人姓名（pb_user_signup_requests.applicant_name） */
+    applicantName: string;
+    email: string;
+    password: string;
+    requestedProjectIds: string[];
+    status: 'pending' | 'approved' | 'rejected';
+    reviewNote?: string;
+    approvedUserId?: string;
+    approvedAt?: string;
+    created?: string;
+    updated?: string;
+}
+
+const mapManagedUser = (row: any): ManagedUserAccount => {
+    const projectId = String(row?.project_id || '').trim();
+    return {
+        id: String(row?.id || ''),
+        email: String(row?.email || ''),
+        name: String(row?.name || row?.username || ''),
+        role: (row?.role || 'park_user') as UserRole,
+        projectId,
+        allowedProjectIds: normalizeProjectIds(row?.allowed_project_ids, projectId),
+        enabled: row?.enabled !== false,
+        created: row?.created || '',
+        updated: row?.updated || '',
+    };
+};
+
+export const fetchManagedUsers = async (): Promise<{ success: boolean; users: ManagedUserAccount[]; message: string }> => {
+    if (!pb) return { success: false, users: [], message: 'PocketBase 未初始化' };
+    if (!pb.authStore?.isValid) return { success: false, users: [], message: '尚未登录' };
+    try {
+        const rows = await pb.collection('users').getFullList({
+            sort: '-created',
+        });
+        return { success: true, users: rows.map(mapManagedUser), message: '加载成功' };
+    } catch (e: any) {
+        return { success: false, users: [], message: e?.data?.message || e?.message || '加载登录人员失败' };
+    }
+};
+
+const mapSignupRequest = (row: any): SignupRequestRecord => ({
+    id: String(row?.id || ''),
+    applicantName: String(row?.applicant_name || '').trim(),
+    email: String(row?.email || ''),
+    password: String(row?.password_plain || ''),
+    requestedProjectIds: normalizeProjectIds(row?.requested_project_ids),
+    status: (row?.status || 'pending') as SignupRequestRecord['status'],
+    reviewNote: String(row?.review_note || ''),
+    approvedUserId: String(row?.approved_user_id || ''),
+    approvedAt: String(row?.approved_at || ''),
+    created: String(row?.created || ''),
+    updated: String(row?.updated || ''),
+});
+
+export const fetchPublicParks = async (): Promise<{ success: boolean; parks: ParkInfo[]; message: string }> => {
+    if (!pb) return { success: false, parks: [], message: 'PocketBase 未初始化' };
+    try {
+        const rows = await pb.collection('pb_parks').getFullList({
+            filter: 'enabled = true',
+            sort: 'sort_order,name',
+        });
+        const parks = rows.map((row: any) => ({
+            id: row.id,
+            projectId: row.project_id,
+            name: row.name || row.project_id,
+            city: row.city || '',
+            enabled: row.enabled !== false,
+            sortOrder: row.sort_order ?? 0,
+        }));
+        return { success: true, parks, message: '加载成功' };
+    } catch (e: any) {
+        return { success: false, parks: [], message: e?.data?.message || e?.message || '加载园区失败' };
+    }
+};
+
+export const submitSignupRequest = async (
+    email: string,
+    password: string,
+    requestedProjectIds: string[],
+    applicantName: string
+): Promise<{ success: boolean; message: string }> => {
+    if (!pb) return { success: false, message: 'PocketBase 未初始化' };
+    const safeEmail = String(email || '').trim();
+    const safePassword = String(password || '').trim();
+    const safeName = String(applicantName || '').trim();
+    const safeProjectIds = normalizeProjectIds(requestedProjectIds);
+    if (!safeEmail || !safePassword || !safeName || safeProjectIds.length === 0) {
+        return { success: false, message: '请填写姓名、账号、密码并至少选择一个园区' };
+    }
+    if (!isValidAuthEmail(safeEmail)) {
+        return { success: false, message: '请填写有效的电子邮箱（将用于登录账号）' };
+    }
+    if (safePassword.length < PB_AUTH_PASSWORD_MIN_LEN) {
+        return {
+            success: false,
+            message: `密码长度至少 ${PB_AUTH_PASSWORD_MIN_LEN} 位（与后台账号策略一致）`,
+        };
+    }
+    try {
+        await pb.collection('pb_user_signup_requests').create({
+            email: safeEmail,
+            applicant_name: safeName,
+            password_plain: safePassword,
+            requested_project_ids: safeProjectIds,
+            status: 'pending',
+        });
+        return { success: true, message: '申请已提交，请等待管理员审批' };
+    } catch (e: any) {
+        return { success: false, message: e?.data?.message || e?.message || '提交申请失败' };
+    }
+};
+
+export const fetchSignupRequests = async (): Promise<{ success: boolean; requests: SignupRequestRecord[]; message: string }> => {
+    if (!pb) return { success: false, requests: [], message: 'PocketBase 未初始化' };
+    if (!pb.authStore?.isValid) return { success: false, requests: [], message: '尚未登录' };
+    try {
+        const rows = await pb.collection('pb_user_signup_requests').getFullList();
+        return { success: true, requests: rows.map(mapSignupRequest), message: '加载成功' };
+    } catch (e: any) {
+        return { success: false, requests: [], message: e?.data?.message || e?.message || '加载注册申请失败' };
+    }
+};
+
+export const createManagedUser = async (
+    input: CreateManagedUserInput
+): Promise<{ success: boolean; user?: ManagedUserAccount; message: string }> => {
+    if (!pb) return { success: false, message: 'PocketBase 未初始化' };
+    if (!pb.authStore?.isValid) return { success: false, message: '尚未登录' };
+    const email = String(input.email || '').trim();
+    const password = String(input.password || '').trim();
+    const projectId = String(input.projectId || '').trim();
+    if (!email || !password || !projectId) {
+        return { success: false, message: '邮箱、密码、默认园区不能为空' };
+    }
+    const allowedProjectIds = normalizeProjectIds(input.allowedProjectIds, projectId);
+    if (!isValidAuthEmail(email)) {
+        return { success: false, message: '邮箱格式无效，无法创建 PocketBase 登录账号' };
+    }
+    if (password.length < PB_AUTH_PASSWORD_MIN_LEN) {
+        return {
+            success: false,
+            message: `密码长度至少 ${PB_AUTH_PASSWORD_MIN_LEN} 位，请修改后重试`,
+        };
+    }
+    const displayName = String(input.name || '').trim() || email.split('@')[0] || email;
+
+    /**
+     * PocketBase 的 `users` 集合中，`verified` / `emailVisibility` 属于受保护字段，
+     * 只允许 superusers (admin token) 在创建时直接赋值；普通登录账号（即便 role=platform_admin）
+     * 通过 collection API 提交会触发 `Values don't match`。所以此处不传，使用集合默认值。
+     * 若后续需要邮箱验证，可在 PocketBase Admin UI 手动勾选或走 `requestVerification` 流程。
+     */
+    const payload: Record<string, unknown> = {
+        email,
+        password,
+        passwordConfirm: password,
+        name: displayName,
+        role: input.role || 'park_user',
+        project_id: projectId,
+        allowed_project_ids: allowedProjectIds,
+        enabled: input.enabled !== false,
+    };
+
+    try {
+        const created = await pb.collection('users').create(payload);
+        return { success: true, user: mapManagedUser(created), message: '创建成功' };
+    } catch (e: any) {
+        return { success: false, message: formatPocketBaseClientError(e) || '创建登录人员失败' };
+    }
+};
+
+export const updateManagedUserEnabled = async (
+    userId: string,
+    enabled: boolean
+): Promise<{ success: boolean; message: string }> => {
+    if (!pb) return { success: false, message: 'PocketBase 未初始化' };
+    if (!pb.authStore?.isValid) return { success: false, message: '尚未登录' };
+    const id = String(userId || '').trim();
+    if (!id) return { success: false, message: '缺少用户ID' };
+    try {
+        await pb.collection('users').update(id, { enabled });
+        return { success: true, message: enabled ? '已审批通过并启用' : '已禁用账号' };
+    } catch (e: any) {
+        return { success: false, message: e?.data?.message || e?.message || '更新账号状态失败' };
+    }
+};
+
+export const updateManagedUser = async (
+    input: UpdateManagedUserInput
+): Promise<{ success: boolean; user?: ManagedUserAccount; message: string }> => {
+    if (!pb) return { success: false, message: 'PocketBase 未初始化' };
+    if (!pb.authStore?.isValid) return { success: false, message: '尚未登录' };
+    const userId = String(input.userId || '').trim();
+    if (!userId) return { success: false, message: '缺少用户ID' };
+    let current: any;
+    try {
+        current = await pb.collection('users').getOne(userId);
+    } catch (e: any) {
+        return { success: false, message: formatPocketBaseClientError(e) || '用户不存在' };
+    }
+    const patch: Record<string, unknown> = {};
+    if (input.name !== undefined) {
+        patch.name = String(input.name || '').trim() || String(current.name || current.username || '').trim() || '用户';
+    }
+    if (input.role !== undefined) patch.role = input.role;
+    if (input.enabled !== undefined) patch.enabled = input.enabled;
+
+    const effectiveProjectId =
+        input.projectId !== undefined
+            ? String(input.projectId || '').trim()
+            : String(current.project_id || '').trim();
+    if (input.projectId !== undefined) {
+        patch.project_id = effectiveProjectId || current.project_id;
+    }
+    if (input.allowedProjectIds !== undefined) {
+        const base = (effectiveProjectId || String(current.project_id || '').trim()) as string;
+        patch.allowed_project_ids = normalizeProjectIds(input.allowedProjectIds, base);
+    }
+
+    const pwd = String(input.password || '').trim();
+    if (pwd.length > 0) {
+        if (pwd.length < PB_AUTH_PASSWORD_MIN_LEN) {
+            return {
+                success: false,
+                message: `密码长度至少 ${PB_AUTH_PASSWORD_MIN_LEN} 位，留空表示不修改密码`,
+            };
+        }
+        patch.password = pwd;
+        patch.passwordConfirm = pwd;
+    }
+
+    if (Object.keys(patch).length === 0) {
+        return { success: true, user: mapManagedUser(current), message: '没有变更' };
+    }
+    try {
+        const updated = await pb.collection('users').update(userId, patch);
+        return { success: true, user: mapManagedUser(updated), message: '已保存' };
+    } catch (e: any) {
+        return { success: false, message: formatPocketBaseClientError(e) || '更新账号失败' };
+    }
+};
+
+/** 删除指定 `pb_user_signup_requests` 申请记录，找不到记录视为成功（已不存在）。 */
+export const deleteSignupRequest = async (
+    requestId: string
+): Promise<{ success: boolean; message: string }> => {
+    if (!pb) return { success: false, message: 'PocketBase 未初始化' };
+    if (!pb.authStore?.isValid) return { success: false, message: '尚未登录' };
+    const id = String(requestId || '').trim();
+    if (!id) return { success: false, message: '缺少申请记录ID' };
+    try {
+        await pb.collection('pb_user_signup_requests').delete(id);
+        return { success: true, message: '已清理审批记录' };
+    } catch (e: any) {
+        const status = e?.status ?? e?.response?.status;
+        if (status === 404) {
+            return { success: true, message: '审批记录已不存在' };
+        }
+        return { success: false, message: formatPocketBaseClientError(e) || '清理审批记录失败' };
+    }
+};
+
+/**
+ * 清理与某 `users` 记录关联的「已审批通过」注册申请：
+ * - 通过 `approved_user_id` 反查；找不到时按邮箱兜底匹配；
+ * - 仅清理 `status = "approved"` 的记录，不动 `pending` / `rejected`；
+ * - 单条删失败不会让整体失败，最终返回累计成功数。
+ */
+export const cleanupSignupRequestsForUser = async (
+    userId: string,
+    fallbackEmail?: string
+): Promise<{ success: boolean; cleaned: number; message: string }> => {
+    if (!pb) return { success: false, cleaned: 0, message: 'PocketBase 未初始化' };
+    if (!pb.authStore?.isValid) return { success: false, cleaned: 0, message: '尚未登录' };
+    const id = String(userId || '').trim();
+    const email = String(fallbackEmail || '').trim();
+    try {
+        const all = await pb.collection('pb_user_signup_requests').getFullList();
+        const matched = all.filter((row: any) => {
+            if (String(row?.status || '').trim() !== 'approved') return false;
+            const linked = String(row?.approved_user_id || '').trim();
+            if (id && linked === id) return true;
+            if (!linked && email) return String(row?.email || '').trim().toLowerCase() === email.toLowerCase();
+            return false;
+        });
+        if (matched.length === 0) {
+            return { success: true, cleaned: 0, message: '无需清理' };
+        }
+        let ok = 0;
+        for (const row of matched) {
+            try {
+                await pb.collection('pb_user_signup_requests').delete(row.id);
+                ok += 1;
+            } catch {
+                /* 单条失败忽略，最终返回成功数 */
+            }
+        }
+        return { success: true, cleaned: ok, message: ok > 0 ? `已清理 ${ok} 条审批记录` : '清理失败' };
+    } catch (e: any) {
+        return {
+            success: false,
+            cleaned: 0,
+            message: formatPocketBaseClientError(e) || '查询审批记录失败',
+        };
+    }
+};
+
+export const deleteManagedUser = async (
+    userId: string,
+    currentAuthUserId?: string
+): Promise<{ success: boolean; message: string; cleanedSignupCount?: number }> => {
+    if (!pb) return { success: false, message: 'PocketBase 未初始化' };
+    if (!pb.authStore?.isValid) return { success: false, message: '尚未登录' };
+    const id = String(userId || '').trim();
+    if (!id) return { success: false, message: '缺少用户ID' };
+    if (currentAuthUserId && id === String(currentAuthUserId).trim()) {
+        return { success: false, message: '不能删除当前正在使用的登录账号' };
+    }
+    let userEmail = '';
+    try {
+        const row = await pb.collection('users').getOne(id);
+        userEmail = String(row?.email || '').trim();
+        if (String(row.role) === 'platform_admin') {
+            const all = await pb.collection('users').getFullList();
+            const platformAdmins = all.filter((r: any) => String(r.role) === 'platform_admin');
+            if (platformAdmins.length <= 1) {
+                return { success: false, message: '不能删除最后一个平台管理员账号' };
+            }
+        }
+    } catch {
+        /* 删除前校验失败时仍尝试 delete，由服务端返回错误 */
+    }
+    try {
+        await pb.collection('users').delete(id);
+    } catch (e: any) {
+        return { success: false, message: formatPocketBaseClientError(e) || '删除账号失败' };
+    }
+    let cleanedSignupCount = 0;
+    try {
+        const cleanup = await cleanupSignupRequestsForUser(id, userEmail);
+        if (cleanup.success) cleanedSignupCount = cleanup.cleaned;
+    } catch {
+        /* 清理失败不影响账号已删的事实 */
+    }
+    const tail = cleanedSignupCount > 0 ? `，并清理 ${cleanedSignupCount} 条审批记录` : '';
+    return { success: true, message: `已删除账号${tail}`, cleanedSignupCount };
+};
+
+export const approveSignupRequest = async (
+    requestId: string,
+    reviewerNote: string = ''
+): Promise<{ success: boolean; message: string }> => {
+    if (!pb) return { success: false, message: 'PocketBase 未初始化' };
+    if (!pb.authStore?.isValid) return { success: false, message: '尚未登录' };
+    const id = String(requestId || '').trim();
+    if (!id) return { success: false, message: '缺少申请ID' };
+    try {
+        const req = await pb.collection('pb_user_signup_requests').getOne(id);
+        const request = mapSignupRequest(req);
+        if (request.status !== 'pending') {
+            return { success: false, message: '该申请已处理，请刷新列表' };
+        }
+        const primaryProjectId = request.requestedProjectIds[0];
+        if (!primaryProjectId) return { success: false, message: '申请缺少园区信息' };
+        if (!String(request.password || '').trim()) {
+            return {
+                success: false,
+                message:
+                    '该申请未带回密码字段（可能被接口隐藏或数据异常）。请申请人重新注册，或由管理员使用「新增登录人员」手动创建账号。',
+            };
+        }
+        if (!isValidAuthEmail(request.email)) {
+            return {
+                success: false,
+                message: `该申请邮箱「${request.email}」不是有效电子邮箱，无法写入认证库。请驳回并让申请人使用真实邮箱重新申请。`,
+            };
+        }
+        let existingUser: any = null;
+        try {
+            existingUser = await pb.collection('users').getFirstListItem(emailEqFilter(String(request.email || '').trim()));
+        } catch {
+            existingUser = null;
+        }
+        const createRes = existingUser
+            ? await mergeSignupIntoExistingUser(request, existingUser)
+            : await createManagedUser({
+                  email: request.email,
+                  password: request.password,
+                  name: request.applicantName || undefined,
+                  projectId: primaryProjectId,
+                  allowedProjectIds: request.requestedProjectIds,
+                  role: 'park_user',
+                  enabled: true,
+              });
+        if (!createRes.success || !createRes.user) {
+            const msg = createRes.message || '审批失败：创建账号失败';
+            const dup =
+                /email:\s*value must be unique/i.test(msg) ||
+                (/unique/i.test(msg) && /email/i.test(msg));
+            if (dup && !existingUser) {
+                const merged = await mergeSignupIntoExistingUser(request);
+                if (!merged.success || !merged.user) {
+                    return {
+                        success: false,
+                        message:
+                            merged.message ||
+                            '该邮箱已被占用：若账号已存在请在 PocketBase 中检查 users 表，或让申请人更换邮箱后重新提交申请。',
+                    };
+                }
+                await pb.collection('pb_user_signup_requests').update(id, {
+                    status: 'approved',
+                    review_note: reviewerNote || '管理员审批通过（合并已有账号）',
+                    approved_user_id: merged.user.id,
+                    approved_at: new Date().toISOString(),
+                });
+                return { success: true, message: merged.message || '审批完成，申请人账号已可登录' };
+            }
+            return { success: false, message: msg };
+        }
+        await pb.collection('pb_user_signup_requests').update(id, {
+            status: 'approved',
+            review_note: reviewerNote || (existingUser ? '管理员审批通过（合并已有账号）' : '管理员审批通过'),
+            approved_user_id: createRes.user.id,
+            approved_at: new Date().toISOString(),
+        });
+        return {
+            success: true,
+            message: existingUser ? createRes.message || '审批完成，申请人账号已可登录' : '审批完成，申请人账号已可登录',
+        };
+    } catch (e: any) {
+        return { success: false, message: formatPocketBaseClientError(e) || '审批申请失败' };
+    }
 };
 
 export const authenticatePocketBase = async (email: string, password: string) => {
@@ -156,6 +849,13 @@ export type SaveToPocketBaseResult = {
     newVersion?: number;
 };
 
+/**
+ * @deprecated 旧的「整包覆写」保存。会先删除该 project_id 下所有行再批量重建，
+ * 多人并发保存时后保存者会覆盖先保存者的改动。
+ *
+ * 新代码请使用 `saveIncrementalToPocketBase`（增量合并 + 行级乐观锁）。
+ * 仅当用户在 UI 上显式选择「全量覆盖」、或处理完冲突后强制覆盖时再调用此函数。
+ */
 export const saveToPocketBase = async (
     data: DashboardData,
     projectId: string,
@@ -251,10 +951,13 @@ export const saveToPocketBase = async (
             monthly_rent: t.monthlyRent || 0,
             rent_free_periods: t.rentFreePeriods || [],
             payment_cycle: t.paymentCycle || 'Monthly',
-            payment_terms: Array.isArray(t.paymentTerms) ? t.paymentTerms : [],
+            payment_terms: Array.isArray(t.unitTerms) ? t.unitTerms : (Array.isArray(t.paymentTerms) ? t.paymentTerms : []),
             payment_cycle_months: t.paymentCycleMonths ?? null,
             first_payment_date: t.firstPaymentDate || '',
             first_payment_months: t.firstPaymentMonths ?? null,
+            first_receivable_amount: t.firstReceivableAmount ?? null,
+            first_receivable_start_date: t.firstReceivableStartDate || '',
+            first_receivable_end_date: t.firstReceivableEndDate || '',
             free_rent_handling: t.freeRentHandling || null,
             deposit_amount: t.depositAmount || 0,
             deposit_status: t.depositStatus || 'Unpaid',
@@ -262,6 +965,9 @@ export const saveToPocketBase = async (
             termination_date: t.terminationDate || '',
             termination_type: t.terminationType || null,
             termination_reason: t.terminationReason || '',
+            early_termination_fr_clawback_override: t.earlyTerminationFreeRentClawbackOverride ?? null,
+            early_termination_deposit_deduction: t.earlyTerminationDepositDeduction ?? null,
+            early_termination_other_adjustment: t.earlyTerminationOtherAdjustment ?? null,
             special_requirements: t.specialRequirements || '',
             is_risk: !!t.isRisk,
             contract_parking_spaces: t.contractParkingSpaces ?? t.parkingSpaces ?? 0,
@@ -415,13 +1121,19 @@ export const getPocketBaseHistory = async (
 
 export const fetchPocketBaseBackup = async (
     projectId: string
-): Promise<{success: boolean, data?: DashboardData, message: string}> => {
+): Promise<{success: boolean, data?: DashboardData, message: string, recordMeta?: RecordMeta}> => {
     if (!pb) return { success: false, message: 'PocketBase 未初始化' };
     const client = pb;
 
-    const mapList = async (collection: string) => client.collection(collection).getFullList({
-        filter: `project_id = "${projectId}"`,
-    });
+    // 禁用 SDK 对「同路径重复请求」的自动取消，避免保存后刷新、冲突处理等多处并发拉全量时较早请求被误判取消。
+    // https://github.com/pocketbase/js-sdk#auto-cancellation
+    const noAutoCancel = { requestKey: null };
+
+    const mapList = async (collection: string) =>
+        client.collection(collection).getFullList({
+            filter: `project_id = "${projectId}"`,
+            ...noAutoCancel,
+        });
 
     try {
         const buildingsRows = await mapList('pb_buildings');
@@ -436,10 +1148,12 @@ export const fetchPocketBaseBackup = async (
         const scenarioRows = await mapList('pb_budget_scenarios');
         const notesRows = await client.collection('pb_billing_period_notes').getList(1, 1, {
             filter: `project_id = "${projectId}" && original_id = "billing_period_notes"`,
+            ...noAutoCancel,
         });
         const versionRows = await client.collection('pb_billing_period_notes').getList(1, 1, {
             filter: `project_id = "${projectId}" && original_id = "${DASHBOARD_DATA_VERSION_OID}"`,
             fields: 'notes_json',
+            ...noAutoCancel,
         });
         const cloudSaveVersionRaw = (versionRows.items[0]?.notes_json as { version?: unknown } | undefined)?.version;
         const cloudSaveVersion =
@@ -490,10 +1204,14 @@ export const fetchPocketBaseBackup = async (
                 monthlyRent: t.monthly_rent || 0,
                 rentFreePeriods: Array.isArray(t.rent_free_periods) ? t.rent_free_periods : [],
                 paymentCycle: t.payment_cycle || 'Monthly',
+                unitTerms: Array.isArray(t.payment_terms) ? t.payment_terms : [],
                 paymentTerms: Array.isArray(t.payment_terms) ? t.payment_terms : [],
                 paymentCycleMonths: t.payment_cycle_months ?? undefined,
                 firstPaymentDate: t.first_payment_date || '',
                 firstPaymentMonths: t.first_payment_months ?? undefined,
+                firstReceivableAmount: t.first_receivable_amount != null ? Number(t.first_receivable_amount) : undefined,
+                firstReceivableStartDate: t.first_receivable_start_date || undefined,
+                firstReceivableEndDate: t.first_receivable_end_date || undefined,
                 freeRentHandling: t.free_rent_handling || undefined,
                 depositAmount: t.deposit_amount || 0,
                 depositStatus: t.deposit_status || 'Unpaid',
@@ -501,6 +1219,18 @@ export const fetchPocketBaseBackup = async (
                 terminationDate: t.termination_date || undefined,
                 terminationType: t.termination_type || undefined,
                 terminationReason: t.termination_reason || '',
+                earlyTerminationFreeRentClawbackOverride:
+                    t.early_termination_fr_clawback_override != null
+                        ? Number(t.early_termination_fr_clawback_override)
+                        : undefined,
+                earlyTerminationDepositDeduction:
+                    t.early_termination_deposit_deduction != null
+                        ? Number(t.early_termination_deposit_deduction)
+                        : undefined,
+                earlyTerminationOtherAdjustment:
+                    t.early_termination_other_adjustment != null
+                        ? Number(t.early_termination_other_adjustment)
+                        : undefined,
                 specialRequirements: t.special_requirements || '',
                 isRisk: !!t.is_risk,
                 contractParkingSpaces: t.contract_parking_spaces ?? 0,
@@ -587,9 +1317,486 @@ export const fetchPocketBaseBackup = async (
             cloudSaveVersion,
         };
 
-        return { success: true, data: rebuilt as DashboardData, message: '获取成功' };
+        // 构建 recordMeta：用于增量保存的行级乐观锁基准
+        const recordMeta: RecordMeta = {};
+        const fillMeta = (collection: string, rows: any[], keyOf: (row: any) => string) => {
+            const bucket: Record<string, string> = {};
+            for (const row of rows) {
+                const key = keyOf(row);
+                if (key && typeof row?.updated === 'string' && row.updated) {
+                    bucket[key] = row.updated;
+                }
+            }
+            if (Object.keys(bucket).length > 0) recordMeta[collection] = bucket;
+        };
+        fillMeta('pb_buildings', buildingsRows, (r) => r.original_id);
+        fillMeta('pb_units', unitsRows, (r) => r.original_id);
+        fillMeta('pb_tenants', tenantsRows, (r) => r.original_id);
+        fillMeta('pb_payments', paymentsRows, (r) => r.original_id);
+        fillMeta('pb_invoices', invoicesRows, (r) => r.original_id);
+        fillMeta('pb_yearly_targets', yearlyRows, (r) => String(r.year));
+        fillMeta('pb_monthly_init_data', monthlyInitRows, (r) => `${r.year}_${r.month}`);
+        fillMeta('pb_budget_assumptions', assumptionRows, (r) => r.original_id);
+        fillMeta('pb_budget_adjustments', adjustmentRows, (r) => r.original_id);
+        fillMeta('pb_budget_scenarios', scenarioRows, (r) => r.original_id);
+        // notes 集合本身是单条 upsert，meta 也保留以便冲突检测
+        if (notesRows.items[0]?.updated) {
+            recordMeta['pb_billing_period_notes'] = {
+                billing_period_notes: notesRows.items[0].updated,
+            };
+        }
+
+        return { success: true, data: rebuilt as DashboardData, message: '获取成功', recordMeta };
     } catch (e: any) {
         return { success: false, message: 'PocketBase 数据获取失败: ' + e.message };
+    }
+};
+
+// =====================================================================
+// 增量保存（incremental save with row-level optimistic lock）
+// =====================================================================
+
+/**
+ * 把 originalId（业务主键 / 合成 key）转换为 PocketBase 的过滤器表达式。
+ * 不同集合的业务主键不同，集中在此处维护。
+ */
+const buildOriginalIdFilter = (
+    collection: string,
+    originalId: string,
+    projectId: string
+): string => {
+    const pid = projectId.replace(/"/g, '\\"');
+    if (collection === 'pb_yearly_targets') {
+        const year = Number(originalId);
+        return `project_id = "${pid}" && year = ${Number.isFinite(year) ? year : 0}`;
+    }
+    if (collection === 'pb_monthly_init_data') {
+        const [yStr, mStr] = String(originalId).split('_');
+        const year = Number(yStr);
+        const month = Number(mStr);
+        return `project_id = "${pid}" && year = ${Number.isFinite(year) ? year : 0} && month = ${Number.isFinite(month) ? month : 0}`;
+    }
+    const oid = String(originalId).replace(/"/g, '\\"');
+    return `project_id = "${pid}" && original_id = "${oid}"`;
+};
+
+const isBillingPeriodNotesRow = (collection: string, originalId: string): boolean =>
+    collection === 'pb_billing_period_notes' && originalId === 'billing_period_notes';
+
+export interface IncrementalConflict {
+    collection: string;
+    originalId: string;
+    /** 服务端最新整条记录 */
+    serverRecord: Record<string, any>;
+    /** 本地试图写入的字段（updates）或本地标记为删除（deletes 时为 null） */
+    localChanges: Record<string, any> | null;
+    /** 本地基准 */
+    baseUpdated: string;
+    /** 服务端最新 updated */
+    serverUpdated: string;
+    /** 'update' | 'delete' */
+    op: 'update' | 'delete';
+}
+
+export interface IncrementalApplied {
+    collection: string;
+    originalId: string;
+    op: 'create' | 'update' | 'delete';
+    /** 写入后服务端返回的最新 updated（create / update 时存在；delete 时为 null） */
+    newUpdated: string | null;
+}
+
+export interface IncrementalError {
+    collection: string;
+    originalId: string;
+    op: 'create' | 'update' | 'delete';
+    message: string;
+}
+
+export interface SaveIncrementalResult {
+    success: boolean;
+    applied: IncrementalApplied[];
+    conflicts: IncrementalConflict[];
+    errors: IncrementalError[];
+    /** 仅当 conflicts.length === 0 && errors.length === 0 时为 true */
+    message: string;
+}
+
+/**
+ * 增量保存到 PocketBase。
+ *
+ * 行为约定：
+ *   - creates  → POST，不做存在性预检（让数据库唯一索引兜底）。
+ *   - updates  → 先按 originalId 找记录 → 比对服务端 `updated` 与 baseUpdated：
+ *       一致 → PATCH 仅本次改动字段；不一致 → 记入 conflicts，不写入。
+ *   - deletes  → 同样先比对 updated；一致才 DELETE。
+ *
+ * 设计要点：
+ *   - 单条失败不影响其他条（best-effort，非事务）。
+ *   - 不再做全局 dashboard_data_version 前置校验。
+ *   - 调用方拿到 conflicts 后，可让用户在 ConflictDialog 里选择「用我的值强制覆盖」
+ *     或「用服务端值放弃本地」，再视情况二次提交。
+ */
+export const saveIncrementalToPocketBase = async (
+    payload: DirtyPayload,
+    projectId: string,
+    recordMeta?: RecordMeta
+): Promise<SaveIncrementalResult> => {
+    if (!pb) {
+        return {
+            success: false,
+            applied: [],
+            conflicts: [],
+            errors: [],
+            message: 'PocketBase 未初始化',
+        };
+    }
+    const client = pb;
+    const applied: IncrementalApplied[] = [];
+    const conflicts: IncrementalConflict[] = [];
+    const errors: IncrementalError[] = [];
+
+    const findOne = async (collection: string, originalId: string) => {
+        const list = await client.collection(collection).getList(1, 1, {
+            filter: buildOriginalIdFilter(collection, originalId, projectId),
+        });
+        return list.items[0] || null;
+    };
+
+    const fallbackBaseUpdated = (
+        collection: string,
+        originalId: string,
+        provided: string
+    ): string => {
+        if (provided) return provided;
+        return recordMeta?.[collection]?.[originalId] || '';
+    };
+
+    for (const [collection, bucket] of Object.entries(payload)) {
+        // -------- creates --------
+        for (const c of bucket.creates) {
+            try {
+                // create 数据中确保挂上 project_id；调用方一般已经填好，这里兜底
+                const data: Record<string, any> = { project_id: projectId, ...c.data };
+                // 业务主键命名差异：data 里可能用 `id`（业务主键），需映射为 `original_id`
+                if (data.id !== undefined && data.original_id === undefined) {
+                    data.original_id = data.id;
+                }
+                // PocketBase 的 `id` 字段是它自己的内部主键，不能由我们指定（除非 schema 允许）。
+                // 删除 data.id 避免冲突；保留 original_id。
+                delete data.id;
+
+                // 对没有 original_id 字段的集合（yearly_targets / monthly_init_data）
+                // 反过来要清掉 original_id，避免 schema 校验报错
+                if (
+                    collection === 'pb_yearly_targets' ||
+                    collection === 'pb_monthly_init_data'
+                ) {
+                    delete data.original_id;
+                }
+
+                const created = await client.collection(collection).create(data);
+                applied.push({
+                    collection,
+                    originalId: c.originalId,
+                    op: 'create',
+                    newUpdated: typeof created?.updated === 'string' ? created.updated : null,
+                });
+            } catch (e: any) {
+                errors.push({
+                    collection,
+                    originalId: c.originalId,
+                    op: 'create',
+                    message: e?.data?.message || e?.message || String(e),
+                });
+            }
+        }
+
+        // -------- updates --------
+        for (const u of bucket.updates) {
+            try {
+                const baseUpdated = fallbackBaseUpdated(collection, u.originalId, u.baseUpdated);
+                const server = await findOne(collection, u.originalId);
+                if (!server) {
+                    // billing_period_notes 是单条 JSON 容器，若服务端缺失则按 upsert 语义直接补建。
+                    if (isBillingPeriodNotesRow(collection, u.originalId)) {
+                        const created = await client.collection(collection).create({
+                            original_id: u.originalId,
+                            notes_json: (u.changedFields as any)?.notes_json || {},
+                            project_id: projectId,
+                        });
+                        applied.push({
+                            collection,
+                            originalId: u.originalId,
+                            op: 'create',
+                            newUpdated:
+                                typeof created?.updated === 'string' ? created.updated : null,
+                        });
+                        continue;
+                    }
+                    // 服务端已不存在 → 视为冲突（被别人删了）
+                    conflicts.push({
+                        collection,
+                        originalId: u.originalId,
+                        serverRecord: {},
+                        localChanges: u.changedFields,
+                        baseUpdated,
+                        serverUpdated: '',
+                        op: 'update',
+                    });
+                    continue;
+                }
+                const serverUpdated = typeof server.updated === 'string' ? server.updated : '';
+                if (baseUpdated && serverUpdated && serverUpdated !== baseUpdated) {
+                    conflicts.push({
+                        collection,
+                        originalId: u.originalId,
+                        serverRecord: server,
+                        localChanges: u.changedFields,
+                        baseUpdated,
+                        serverUpdated,
+                        op: 'update',
+                    });
+                    continue;
+                }
+                const updated = await client
+                    .collection(collection)
+                    .update(server.id, u.changedFields);
+                applied.push({
+                    collection,
+                    originalId: u.originalId,
+                    op: 'update',
+                    newUpdated:
+                        typeof updated?.updated === 'string' ? updated.updated : null,
+                });
+            } catch (e: any) {
+                errors.push({
+                    collection,
+                    originalId: u.originalId,
+                    op: 'update',
+                    message: e?.data?.message || e?.message || String(e),
+                });
+            }
+        }
+
+        // -------- deletes --------
+        for (const d of bucket.deletes) {
+            try {
+                const baseUpdated = fallbackBaseUpdated(collection, d.originalId, d.baseUpdated);
+                const server = await findOne(collection, d.originalId);
+                if (!server) {
+                    // 已不存在 → 视为已完成（幂等）
+                    applied.push({
+                        collection,
+                        originalId: d.originalId,
+                        op: 'delete',
+                        newUpdated: null,
+                    });
+                    continue;
+                }
+                const serverUpdated = typeof server.updated === 'string' ? server.updated : '';
+                if (baseUpdated && serverUpdated && serverUpdated !== baseUpdated) {
+                    conflicts.push({
+                        collection,
+                        originalId: d.originalId,
+                        serverRecord: server,
+                        localChanges: null,
+                        baseUpdated,
+                        serverUpdated,
+                        op: 'delete',
+                    });
+                    continue;
+                }
+                await client.collection(collection).delete(server.id);
+                applied.push({
+                    collection,
+                    originalId: d.originalId,
+                    op: 'delete',
+                    newUpdated: null,
+                });
+            } catch (e: any) {
+                errors.push({
+                    collection,
+                    originalId: d.originalId,
+                    op: 'delete',
+                    message: e?.data?.message || e?.message || String(e),
+                });
+            }
+        }
+    }
+
+    const ok = conflicts.length === 0 && errors.length === 0;
+    let message = '';
+    if (ok) {
+        message = `增量保存成功（共 ${applied.length} 条）`;
+    } else {
+        const parts: string[] = [];
+        if (applied.length) parts.push(`成功 ${applied.length} 条`);
+        if (conflicts.length) parts.push(`冲突 ${conflicts.length} 条`);
+        if (errors.length) parts.push(`失败 ${errors.length} 条`);
+        message = `增量保存部分完成：${parts.join('，')}`;
+    }
+
+    return { success: ok, applied, conflicts, errors, message };
+};
+
+/**
+ * 强制按本地值覆盖某条记录（用户在 ConflictDialog 选择「用我的值」时调用）。
+ * 流程：再次拉服务端最新 record，取它的 updated 作为新的 baseUpdated 直接 PATCH。
+ * 用户已经确认要覆盖，所以这里不再二次比对。
+ */
+export const forceOverwriteRecord = async (
+    collection: string,
+    originalId: string,
+    changedFields: Record<string, any>,
+    projectId: string
+): Promise<{ success: boolean; message: string; newUpdated?: string }> => {
+    if (!pb) return { success: false, message: 'PocketBase 未初始化' };
+    try {
+        const list = await pb.collection(collection).getList(1, 1, {
+            filter: buildOriginalIdFilter(collection, originalId, projectId),
+        });
+        const server = list.items[0];
+        if (!server) {
+            if (isBillingPeriodNotesRow(collection, originalId)) {
+                const created = await pb.collection(collection).create({
+                    original_id: originalId,
+                    notes_json: changedFields?.notes_json || {},
+                    project_id: projectId,
+                });
+                return {
+                    success: true,
+                    message: '服务端缺失，已按本地值补建',
+                    newUpdated:
+                        typeof created?.updated === 'string' ? created.updated : undefined,
+                };
+            }
+            return { success: false, message: '服务端记录已不存在，无法覆盖' };
+        }
+        const updated = await pb.collection(collection).update(server.id, changedFields);
+        return {
+            success: true,
+            message: '已强制覆盖',
+            newUpdated: typeof updated?.updated === 'string' ? updated.updated : undefined,
+        };
+    } catch (e: any) {
+        return { success: false, message: e?.data?.message || e?.message || String(e) };
+    }
+};
+
+/**
+ * 增量保存成功后可选地把 dashboard_data_version 递增 1。
+ * 该字段不再作为前置校验依据，仅用于「最近一次成功保存」的轻量审计。
+ */
+export const bumpCloudSaveVersion = async (projectId: string): Promise<number | null> => {
+    if (!pb) return null;
+    try {
+        const current = await readCloudSaveVersion(projectId);
+        const next = current + 1;
+        const existing = await pb.collection('pb_billing_period_notes').getList(1, 1, {
+            filter: `project_id = "${projectId}" && original_id = "${DASHBOARD_DATA_VERSION_OID}"`,
+            fields: 'id',
+        });
+        const row = {
+            original_id: DASHBOARD_DATA_VERSION_OID,
+            notes_json: { version: next },
+            project_id: projectId,
+        };
+        if (existing.items.length > 0) {
+            await pb.collection('pb_billing_period_notes').update(existing.items[0].id, row);
+        } else {
+            await pb.collection('pb_billing_period_notes').create(row);
+        }
+        return next;
+    } catch (e) {
+        console.warn('[bumpCloudSaveVersion] 递增失败（可忽略）', e);
+        return null;
+    }
+};
+
+export type KpiSnapshotSummary = {
+    annualRevenueTarget: number;
+    annualRevenueCollected: number;
+    annualBudgetTarget: number;
+    annualGoalCompletion: number;
+    annualBudgetCompletion: number;
+    occupancyRate: number;
+    annualOccupancyTarget: number;
+    tenantCount: number;
+    totalArea: number;
+};
+
+export type KpiSnapshot = {
+    projectId: string;
+    year: number;
+    summary: KpiSnapshotSummary;
+    monthlyTrends: MonthlyTrend[];
+    dataVersion: number;
+    calculatedAt: string;
+};
+
+const kpiSnapshotCollection = 'pb_kpi_snapshots';
+
+export const fetchKpiSnapshot = async (
+    projectId: string,
+    year: number
+): Promise<{ success: boolean; snapshot?: KpiSnapshot; message: string }> => {
+    if (!pb) return { success: false, message: 'PocketBase 未初始化' };
+    const pid = (projectId || '').trim();
+    if (!pid) return { success: false, message: '缺少 project_id' };
+
+    try {
+        const res = await pb.collection(kpiSnapshotCollection).getList(1, 1, {
+            filter: `project_id = "${pid}" && year = ${Math.floor(year)}`,
+        });
+        const row = res.items[0];
+        if (!row) return { success: false, message: '暂无 KPI 快照' };
+        return {
+            success: true,
+            snapshot: {
+                projectId: row.project_id,
+                year: row.year,
+                summary: (row.summary_json || {}) as KpiSnapshotSummary,
+                monthlyTrends: Array.isArray(row.monthly_trends_json) ? row.monthly_trends_json as MonthlyTrend[] : [],
+                dataVersion: Number(row.data_version || 0),
+                calculatedAt: row.calculated_at || row.updated || '',
+            },
+            message: '加载成功',
+        };
+    } catch (e: any) {
+        return { success: false, message: 'KPI 快照加载失败: ' + (e?.message || '未知错误') };
+    }
+};
+
+export const upsertKpiSnapshot = async (
+    snapshot: KpiSnapshot
+): Promise<{ success: boolean; message: string }> => {
+    if (!pb) return { success: false, message: 'PocketBase 未初始化' };
+    const pid = (snapshot.projectId || '').trim();
+    if (!pid) return { success: false, message: '缺少 project_id' };
+
+    try {
+        const filter = `project_id = "${pid}" && year = ${Math.floor(snapshot.year)}`;
+        const existing = await pb.collection(kpiSnapshotCollection).getList(1, 1, {
+            filter,
+            fields: 'id',
+        });
+        const row = {
+            project_id: pid,
+            year: Math.floor(snapshot.year),
+            summary_json: snapshot.summary as unknown as Record<string, unknown>,
+            monthly_trends_json: snapshot.monthlyTrends as unknown as Record<string, unknown>[],
+            data_version: Math.max(0, Math.floor(snapshot.dataVersion || 0)),
+            calculated_at: snapshot.calculatedAt || new Date().toISOString(),
+        };
+        if (existing.items.length > 0) {
+            await pb.collection(kpiSnapshotCollection).update(existing.items[0].id, row);
+        } else {
+            await pb.collection(kpiSnapshotCollection).create(row);
+        }
+        return { success: true, message: 'KPI 快照已更新' };
+    } catch (e: any) {
+        return { success: false, message: 'KPI 快照更新失败: ' + (e?.message || '未知错误') };
     }
 };
 

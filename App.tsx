@@ -1,8 +1,8 @@
 
 import React, { useState, useEffect, useMemo } from 'react';
-import { LayoutDashboard, Building2, Users, PieChart, Settings, Bell, Search, Menu, Sparkles, UserCircle, Download, Upload, X, Check, Filter, Save, RotateCcw, Trash2, Calculator, Database, Lightbulb, Cloud, CloudCog, RefreshCw, AlertCircle, ExternalLink, Link, Info, Loader2, CheckCircle2, XCircle, History, FileClock, ChevronRight, ChevronDown, CloudUpload, LogOut, User, Calendar, ChevronLeft, FileInput, Table as TableIcon, FileText } from 'lucide-react';
+import { LayoutDashboard, Building2, Users, PieChart, Settings, Bell, Search, Menu, Sparkles, UserCircle, Download, Upload, X, Check, Filter, Save, RotateCcw, Trash2, Calculator, Database, Lightbulb, Cloud, CloudCog, RefreshCw, AlertCircle, ExternalLink, Link, Info, Loader2, CheckCircle2, XCircle, History, FileClock, ChevronRight, ChevronDown, CloudUpload, LogOut, User, Calendar, ChevronLeft, FileInput, Table as TableIcon, FileText, Pencil, UserCog } from 'lucide-react';
 import { generateInitialData } from './services/mockData';
-import { DashboardData, Building, Tenant, PaymentRecord, UnitStatus, MonthlyTrend, PaymentCycle, RentFreePeriod, BillingDetail, ParkingStatDetail, BudgetAssumption, BudgetAdjustment, BudgetAnalysisData, CloudConfig, AIConfig, CloudBackupMetadata, BudgetScenario, MonthlyInitData, ContractStatus, DepositStatus, InvoiceRecord } from './types';
+import { DashboardData, Building, Tenant, PaymentRecord, UnitStatus, MonthlyTrend, PaymentCycle, RentFreePeriod, BillingDetail, ParkingStatDetail, BudgetAssumption, BudgetAdjustment, BudgetAnalysisData, CloudConfig, AIConfig, CloudBackupMetadata, BudgetScenario, MonthlyInitData, ContractStatus, DepositStatus, InvoiceRecord, AuthUser, ParkInfo, UserRole } from './types';
 import { StatsCards } from './components/StatsCards';
 import { RecentActivityTable, AnnualMetricComparisonTable, AnnualComparisonData } from './components/Tables';
 import { BillingTable } from './components/BillingTable';
@@ -14,15 +14,114 @@ import { FinanceManager } from './components/FinanceManager';
 import { BudgetManager } from './components/BudgetManager';
 import { TenantInsights } from './components/TenantInsights';
 import { DashboardAlerts } from './components/DashboardAlerts';
-import { checkConnection, saveToCloud, getCloudHistory, fetchCloudBackup, initCloud, SaveToCloudResult, scheduleUpsertIntegrationFullSnapshot } from './services/cloudService';
+import { ConflictDialog } from './components/ConflictDialog';
+import {
+    checkConnection,
+    getCloudHistory,
+    fetchCloudBackup,
+    initCloud,
+    SaveToCloudResult,
+    scheduleUpsertIntegrationFullSnapshot,
+    saveIncrementalToCloud,
+    bumpCloudSaveVersion,
+    forceOverwriteCloudRecord,
+    loginCloudUser,
+    logoutCloudUser,
+    getCurrentCloudUser,
+    fetchAuthorizedParks,
+    fetchManagedCloudUsers,
+    createManagedCloudUser,
+    updateManagedCloudUserEnabled,
+    updateManagedCloudUser,
+    deleteManagedCloudUser,
+    deleteCloudSignupRequest,
+    fetchPublicCloudParks,
+    submitCloudSignupRequest,
+    fetchCloudSignupRequests,
+    approveCloudSignupRequest,
+    fetchCloudKpiSnapshot,
+    upsertCloudKpiSnapshot,
+} from './services/cloudService';
+import type { KpiSnapshotSummary, RecordMeta, IncrementalConflict } from './services/cloudService';
+import type { ManagedUserAccount } from './services/cloudService';
+import type { SignupRequestRecord } from './services/cloudService';
 import { buildIntegrationFullSnapshotV1 } from './services/integrationSnapshot';
 import { generateBudgetedBills, getVirtualTenants } from './services/billingService';
 import { rentCollectionRemarkKey } from './services/receivableListHelpers';
+import {
+    buildBillingDetailsForPeriod as buildBillingDetailsForPeriodService,
+    calculateDashboardMetrics as calculateDashboardMetricsService,
+    normalizeScenarioForReceivable as normalizeScenarioForReceivableService,
+    buildKpiSummaryFromProcessedData,
+    normalizeKpiSummaryWithMonthlyTrends,
+    type DashboardQuarter,
+} from './services/dashboardMetrics';
+import { formatArea, formatCurrency, formatPercent, formatWan } from './services/numberFormat';
 import { DEFAULT_CLOUD_CONFIG, mergeStoredCloudConfig } from './config/deploymentDefaults';
+import { DirtyTrackerProvider } from './services/dirtyTrackerContext';
+import { DirtyTracker } from './services/dirtyTracker';
+import {
+    dashboardDataToPbRecords,
+    diffPbRecords,
+    payloadCount,
+    type PbRecordMap,
+} from './services/dataDiff';
+import {
+    createDashboardBackupEnvelope,
+    formatBackupSummary,
+    parseDashboardBackup,
+    sanitizeImportedDashboardData,
+    validateBackupTarget,
+} from './services/backupArchive';
+import {
+    mergeBudgetTotalsIntoInitData,
+    normalizeEffectiveBudgetTableFromBackup,
+    readImportedBudgetTable,
+    writeImportedBudgetTable,
+} from './services/budgetTableImport';
 
 const STORAGE_KEY = 'kingdee_park_data_v1';
 // 标准化交付：升级存储 key，避免历史环境把旧的内网 URL 自动带入新部署
 const CLOUD_CONFIG_KEY = 'kingdee_park_cloud_config_v2';
+const getParkStorageKey = (projectId: string) => `${STORAGE_KEY}:${projectId || 'unknown'}`;
+const hasMeaningfulDashboardPayload = (d: DashboardData): boolean =>
+    (d.buildings?.length ?? 0) > 0 ||
+    (d.tenants?.length ?? 0) > 0 ||
+    (d.payments?.length ?? 0) > 0 ||
+    (d.budgetScenarios?.length ?? 0) > 0 ||
+    (d.invoices?.length ?? 0) > 0 ||
+    (d.initializationData?.length ?? 0) > 0 ||
+    (d.budgetAssumptions?.length ?? 0) > 0;
+
+type AdminParkMetric = {
+    projectId: string;
+    name: string;
+    annualRevenueTarget: number;
+    annualRevenueCollected: number;
+    annualGoalCompletion: number;
+    annualBudgetTarget: number;
+    annualBudgetCompletion: number;
+    occupancyRate: number;
+    annualOccupancyTarget: number;
+    tenantCount: number;
+    totalArea: number;
+};
+
+type NewManagedUserForm = {
+    email: string;
+    name: string;
+    password: string;
+    projectId: string;
+    role: 'park_user' | 'park_admin' | 'group_admin';
+    enabled: boolean;
+};
+
+type SignupForm = {
+    applicantName: string;
+    email: string;
+    password: string;
+    requestedProjectIds: string[];
+};
 
 // 核心计算逻辑：确保这里使用的逻辑与预算表(BudgetManager)完全一致
 const calculateBudgetedReceivableInPeriod = (
@@ -67,14 +166,44 @@ type DeferBillingNote = {
     amount: number;
 };
 
+const parsePeriodLabel = (value: unknown): { year: number; month: number } | null => {
+    if (typeof value !== 'string') return null;
+    const m = value.trim().match(/^(\d{4})-(\d{2})$/);
+    if (!m) return null;
+    const year = Number(m[1]);
+    const month1 = Number(m[2]);
+    if (!Number.isFinite(year) || !Number.isFinite(month1) || month1 < 1 || month1 > 12) return null;
+    return { year, month: month1 - 1 };
+};
+
 const parseDeferBillingNotes = (notes: Record<string, string> | undefined): DeferBillingNote[] => {
     if (!notes) return [];
     const out: DeferBillingNote[] = [];
     for (const [k, v] of Object.entries(notes)) {
         if (!k.startsWith(DEFER_NOTE_PREFIX)) continue;
         try {
-            const j = JSON.parse(v) as DeferBillingNote;
-            if (j && j.tenantId && typeof j.amount === 'number' && j.amount > 0) out.push(j);
+            const j = JSON.parse(v) as DeferBillingNote & { fromPeriod?: string; toPeriod?: string };
+            if (!j?.tenantId || typeof j.amount !== 'number' || j.amount <= 0) continue;
+            if (
+                Number.isFinite(j.fromYear) &&
+                Number.isFinite(j.fromMonth) &&
+                Number.isFinite(j.toYear) &&
+                Number.isFinite(j.toMonth)
+            ) {
+                out.push(j);
+                continue;
+            }
+            const from = parsePeriodLabel(j.fromPeriod);
+            const to = parsePeriodLabel(j.toPeriod);
+            if (!from || !to) continue;
+            out.push({
+                tenantId: j.tenantId,
+                fromYear: from.year,
+                fromMonth: from.month,
+                toYear: to.year,
+                toMonth: to.month,
+                amount: j.amount,
+            });
         } catch {
             /* ignore */
         }
@@ -353,6 +482,27 @@ const App: React.FC = () => {
   const [isSyncing, setIsSyncing] = useState(false);
   const [isTestingCloud, setIsTestingCloud] = useState(false);
   const [cloudConnectionMsg, setCloudConnectionMsg] = useState<{type: 'success' | 'error', text: string} | null>(null);
+  const [authUser, setAuthUser] = useState<AuthUser | null>(null);
+  const [authorizedParks, setAuthorizedParks] = useState<ParkInfo[]>([]);
+  const [loginForm, setLoginForm] = useState({
+      email: '',
+      password: '',
+  });
+  const [loginError, setLoginError] = useState<string | null>(null);
+  const [isLoggingIn, setIsLoggingIn] = useState(false);
+  const [authMode, setAuthMode] = useState<'login' | 'register'>('login');
+  const [publicParks, setPublicParks] = useState<ParkInfo[]>([]);
+  const [isLoadingPublicParks, setIsLoadingPublicParks] = useState(false);
+  const [signupForm, setSignupForm] = useState<SignupForm>({
+      applicantName: '',
+      email: '',
+      password: '',
+      requestedProjectIds: [],
+  });
+  const [isSubmittingSignup, setIsSubmittingSignup] = useState(false);
+  const [signupMsg, setSignupMsg] = useState<string | null>(null);
+  const [adminParkMetrics, setAdminParkMetrics] = useState<AdminParkMetric[]>([]);
+  const [isLoadingAdminSummary, setIsLoadingAdminSummary] = useState(false);
   
   const [cloudHistory, setCloudHistory] = useState<CloudBackupMetadata[]>([]);
   const [isLoadingHistory, setIsLoadingHistory] = useState(false);
@@ -365,7 +515,7 @@ const App: React.FC = () => {
   const [isAIDialogOpen, setAIDialogOpen] = useState(false);
   const [isTargetModalOpen, setIsTargetModalOpen] = useState(false);
   const [targetModalType, setTargetModalType] = useState<'revenue' | 'occupancy'>('revenue');
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'buildings' | 'contracts' | 'finance' | 'budget' | 'settings'>('dashboard');
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'buildings' | 'contracts' | 'finance' | 'budget' | 'initData' | 'settings'>('dashboard');
   const [lastSaved, setLastSaved] = useState<string>('');
   const currentYear = new Date().getFullYear();
   const [selectedYear, setSelectedYear] = useState(currentYear);
@@ -376,10 +526,58 @@ const App: React.FC = () => {
   const [isInitDataModalOpen, setIsInitDataModalOpen] = useState(false);
   const [initDataYear, setInitDataYear] = useState<number>(2024);
   const [tempInitData, setTempInitData] = useState<MonthlyInitData[]>([]);
+  const [managedUsers, setManagedUsers] = useState<ManagedUserAccount[]>([]);
+  const [isLoadingManagedUsers, setIsLoadingManagedUsers] = useState(false);
+  const [managedUsersError, setManagedUsersError] = useState<string | null>(null);
+  const [userManageTarget, setUserManageTarget] = useState<ManagedUserAccount | null>(null);
+  const [userManageSaving, setUserManageSaving] = useState(false);
+  const [userManageForm, setUserManageForm] = useState<{
+      name: string;
+      role: UserRole;
+      projectId: string;
+      allowedParkIds: string[];
+      password: string;
+      enabled: boolean;
+  }>({
+      name: '',
+      role: 'park_user',
+      projectId: '',
+      allowedParkIds: [],
+      password: '',
+      enabled: true,
+  });
+  const [isCreatingUser, setIsCreatingUser] = useState(false);
+  const [signupRequests, setSignupRequests] = useState<SignupRequestRecord[]>([]);
+  const [isLoadingSignupRequests, setIsLoadingSignupRequests] = useState(false);
+  const [signupRequestsError, setSignupRequestsError] = useState<string | null>(null);
+  const [newUserForm, setNewUserForm] = useState<NewManagedUserForm>({
+      email: '',
+      name: '',
+      password: '',
+      projectId: '',
+      role: 'park_user',
+      enabled: false,
+  });
 
   // New state for auto-restore prompt
   const [showRestorePrompt, setShowRestorePrompt] = useState(false);
   const [latestBackup, setLatestBackup] = useState<CloudBackupMetadata | null>(null);
+
+  // ---- 增量保存相关 state ----
+  // recordMeta：行级乐观锁基准，由 fetchCloudBackup 返回。每次保存成功后需重新拉取刷新。
+  const [recordMeta, setRecordMeta] = useState<RecordMeta>({});
+  // 单例 DirtyTracker：业务组件可以通过 Context 拿到它登记 create/update/delete
+  // （目前业务组件还没主动登记；保存时通过 baselineSnapshotRef 自动 diff 兜底）
+  const dirtyTrackerRef = React.useRef<DirtyTracker>(new DirtyTracker());
+  /**
+   * 保存基线快照：上次「从云端加载」时的 PocketBase 行级 record map。
+   * 保存时与当前 data 做 diff，自动产生 creates/updates/deletes 的 DirtyPayload，
+   * 实现「不需要业务组件主动登记 dirty」就能聚合增量保存。
+   */
+  const baselineSnapshotRef = React.useRef<PbRecordMap | null>(null);
+  const isKpiPreviewRef = React.useRef(false);
+  // 保存时收到的冲突清单；交给 ConflictDialog 处理
+  const [pendingConflicts, setPendingConflicts] = useState<IncrementalConflict[]>([]);
 
   useEffect(() => {
     if (window.innerWidth >= 1024) {
@@ -391,8 +589,7 @@ const App: React.FC = () => {
     const bootstrapYear = new Date().getFullYear();
     const loadData = async () => {
       try {
-        const configToUse = mergeStoredCloudConfig(localStorage.getItem(CLOUD_CONFIG_KEY));
-        setCloudConfig(configToUse);
+        let configToUse = mergeStoredCloudConfig(localStorage.getItem(CLOUD_CONFIG_KEY));
         
         const savedAIConfig = localStorage.getItem('ai_config');
         if (savedAIConfig) {
@@ -405,30 +602,52 @@ const App: React.FC = () => {
         }
         // 启动时自动连接后端；连通时始终从 PocketBase 拉取一次结构化数据（后端优先），保证局域网各端一致
         await initCloud(configToUse);
+        const currentUser = getCurrentCloudUser();
+        if (currentUser?.enabled && currentUser.projectId) {
+            setAuthUser(currentUser);
+            let parks: ParkInfo[] = [];
+            try {
+                const parksRes = await fetchAuthorizedParks();
+                if (parksRes.success) {
+                    parks = parksRes.parks;
+                    setAuthorizedParks(parksRes.parks);
+                }
+            } catch {
+                /* 园区列表失败不阻塞登录态恢复 */
+            }
+            const selectedProjectId = resolveInitialProjectId(currentUser, parks, configToUse.projectId);
+            configToUse = { ...configToUse, projectId: selectedProjectId };
+        }
+        setCloudConfig(configToUse);
+
         const connected = await checkConnection(configToUse);
         setIsCloudConnected(connected);
 
-        const savedData = localStorage.getItem(STORAGE_KEY);
+        const savedData = localStorage.getItem(getParkStorageKey(configToUse.projectId));
         let parsedData: DashboardData | null = null;
         if (savedData) parsedData = JSON.parse(savedData);
 
-        const hasMeaningfulCloudPayload = (d: DashboardData): boolean =>
-            (d.buildings?.length ?? 0) > 0 ||
-            (d.tenants?.length ?? 0) > 0 ||
-            (d.payments?.length ?? 0) > 0 ||
-            (d.budgetScenarios?.length ?? 0) > 0 ||
-            (d.invoices?.length ?? 0) > 0 ||
-            (d.initializationData?.length ?? 0) > 0 ||
-            (d.budgetAssumptions?.length ?? 0) > 0;
+        let cloudBaselineData: DashboardData | null = null;
+        let cloudBaselineMeta: RecordMeta | undefined;
+        let hasKpiPreview = false;
 
         if (connected) {
           try {
+            const snapshotRes = await fetchCloudKpiSnapshot(configToUse, bootstrapYear);
+            if (snapshotRes.success && snapshotRes.snapshot && !parsedData) {
+              isKpiPreviewRef.current = true;
+              hasKpiPreview = true;
+              setData(buildDashboardDataFromKpiSnapshot(snapshotRes.snapshot));
+            }
             const latestRes = await fetchCloudBackup(configToUse, configToUse.projectId || '');
             if (latestRes.success && latestRes.data) {
               const safeCloudData = { ...generateInitialData(), ...latestRes.data };
-              if (hasMeaningfulCloudPayload(safeCloudData)) {
+              cloudBaselineData = safeCloudData;
+              cloudBaselineMeta = latestRes.recordMeta;
+              if (hasMeaningfulDashboardPayload(safeCloudData)) {
                 recalculateMetrics(safeCloudData, bootstrapYear, 'All');
-                localStorage.setItem(STORAGE_KEY, JSON.stringify(safeCloudData));
+                captureBaselineFromCloud(safeCloudData, latestRes.recordMeta, configToUse.projectId);
+                localStorage.setItem(getParkStorageKey(configToUse.projectId), JSON.stringify(safeCloudData));
                 setLastSaved(new Date().toLocaleTimeString());
                 try {
                   const historyRes = await getCloudHistory(configToUse);
@@ -449,9 +668,10 @@ const App: React.FC = () => {
 
         if (parsedData) {
           const safeData = { ...generateInitialData(), ...parsedData };
+          if (cloudBaselineData) captureBaselineFromCloud(cloudBaselineData, cloudBaselineMeta, configToUse.projectId);
           recalculateMetrics(safeData, bootstrapYear, 'All');
           setLastSaved(new Date().toLocaleTimeString());
-        } else {
+        } else if (!hasKpiPreview) {
           const initialData = generateInitialData();
           recalculateMetrics(initialData, bootstrapYear, 'All');
         }
@@ -469,7 +689,8 @@ const App: React.FC = () => {
     if (data) {
       const timer = setTimeout(() => {
         try {
-            localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+            if (isKpiPreviewRef.current) return;
+            localStorage.setItem(getParkStorageKey(cloudConfig.projectId), JSON.stringify(data));
             setLastSaved(new Date().toLocaleTimeString());
         } catch (e) {
             console.error("Local save failed", e);
@@ -477,7 +698,7 @@ const App: React.FC = () => {
       }, 2000); 
       return () => clearTimeout(timer);
     }
-  }, [data]);
+  }, [data, cloudConfig.projectId]);
 
   useEffect(() => {
       if (data) {
@@ -504,6 +725,224 @@ const App: React.FC = () => {
       } else {
           setCloudConnectionMsg({type: 'error', text: "连接失败，请检查网络。"});
       }
+  };
+
+  const loadAuthorizedParks = async () => {
+      const parksRes = await fetchAuthorizedParks();
+      if (parksRes.success) setAuthorizedParks(parksRes.parks);
+      return parksRes;
+  };
+
+  const isGlobalAdmin = (user: AuthUser | null = authUser) =>
+      user?.role === 'platform_admin' || user?.role === 'group_admin';
+  const isPlatformAdmin = (user: AuthUser | null = authUser) =>
+      user?.role === 'platform_admin';
+  const canAccessSystemSettings = isGlobalAdmin();
+
+  const resolveInitialProjectId = (user: AuthUser, parks: ParkInfo[], storedProjectId?: string) => {
+      const activeParkIds = parks.filter(park => park.enabled).map(park => park.projectId);
+      const allowed = user.role === 'platform_admin'
+          ? activeParkIds
+          : user.allowedProjectIds.length
+            ? user.allowedProjectIds
+            : [user.projectId];
+      if (storedProjectId && allowed.includes(storedProjectId)) return storedProjectId;
+      return user.projectId || allowed[0] || storedProjectId || DEFAULT_CLOUD_CONFIG.projectId;
+  };
+
+  const switchProject = async (projectId: string) => {
+      const targetProjectId = projectId.trim();
+      if (!targetProjectId || targetProjectId === cloudConfig.projectId) return;
+      if (authUser && !isGlobalAdmin(authUser) && !authUser.allowedProjectIds.includes(targetProjectId)) {
+          alert('当前账号未被授权访问该园区。');
+          return;
+      }
+
+      const nextConfig = { ...cloudConfig, projectId: targetProjectId };
+      setIsSyncing(true);
+      setCloudConfig(nextConfig);
+      localStorage.setItem(CLOUD_CONFIG_KEY, JSON.stringify(nextConfig));
+      setRecordMeta({});
+      baselineSnapshotRef.current = null;
+      dirtyTrackerRef.current.reset();
+      setPendingConflicts([]);
+      try {
+          const cached = localStorage.getItem(getParkStorageKey(targetProjectId));
+          const res = await fetchCloudBackup(nextConfig, targetProjectId);
+          if (res.success && res.data) {
+              const safeData = { ...generateInitialData(), ...res.data };
+              captureBaselineFromCloud(safeData, res.recordMeta, targetProjectId);
+              if (hasMeaningfulDashboardPayload(safeData)) {
+                  recalculateMetrics(safeData, selectedYear, selectedQuarter);
+                  localStorage.setItem(getParkStorageKey(targetProjectId), JSON.stringify(safeData));
+              } else if (cached) {
+                  recalculateMetrics({ ...generateInitialData(), ...JSON.parse(cached) }, selectedYear, selectedQuarter);
+              } else {
+                  recalculateMetrics(safeData, selectedYear, selectedQuarter);
+              }
+          } else if (cached) {
+              const safeData = { ...generateInitialData(), ...JSON.parse(cached) };
+              recalculateMetrics(safeData, selectedYear, selectedQuarter);
+          } else {
+              recalculateMetrics(generateInitialData(), selectedYear, selectedQuarter);
+          }
+          await fetchCloudHistory(nextConfig);
+      } catch (e) {
+          console.error('[App] 切换园区失败:', e);
+          alert('切换园区失败，请检查网络或权限。');
+      } finally {
+          setIsSyncing(false);
+      }
+  };
+
+  const loadManagedUsers = async () => {
+      if (!isPlatformAdmin()) return;
+      setIsLoadingManagedUsers(true);
+      setManagedUsersError(null);
+      const res = await fetchManagedCloudUsers();
+      if (res.success) {
+          setManagedUsers(res.users);
+          if (!newUserForm.projectId) {
+              setNewUserForm(prev => ({ ...prev, projectId: cloudConfig.projectId || authUser?.projectId || '' }));
+          }
+      } else {
+          setManagedUsersError(res.message || '登录人员列表加载失败');
+      }
+      setIsLoadingManagedUsers(false);
+  };
+
+  const loadSignupRequests = async () => {
+      if (!isPlatformAdmin()) return;
+      setIsLoadingSignupRequests(true);
+      setSignupRequestsError(null);
+      const res = await fetchCloudSignupRequests();
+      if (res.success) {
+          setSignupRequests(res.requests);
+      } else {
+          setSignupRequestsError(res.message || '注册申请加载失败');
+      }
+      setIsLoadingSignupRequests(false);
+  };
+
+  const loadPublicParkOptions = async () => {
+      setIsLoadingPublicParks(true);
+      const res = await fetchPublicCloudParks();
+      if (res.success) {
+          setPublicParks(res.parks);
+      } else {
+          setPublicParks([]);
+      }
+      setIsLoadingPublicParks(false);
+  };
+
+  const handleLogin = async (event?: React.FormEvent) => {
+      event?.preventDefault();
+      setIsLoggingIn(true);
+      setLoginError(null);
+      const nextConfig = {
+          ...cloudConfig,
+          pocketbaseUrl: cloudConfig.pocketbaseUrl || DEFAULT_CLOUD_CONFIG.pocketbaseUrl || '/api/pb',
+          pocketbaseEmail: '',
+          pocketbasePassword: '',
+      };
+      const res = await loginCloudUser(nextConfig, loginForm.email, loginForm.password);
+      if (!res.success || !res.user) {
+          setLoginError(res.message);
+          setIsLoggingIn(false);
+          return;
+      }
+      const parksRes = await fetchAuthorizedParks();
+      if (parksRes.success) setAuthorizedParks(parksRes.parks);
+      const projectId = resolveInitialProjectId(res.user, parksRes.success ? parksRes.parks : [], cloudConfig.projectId);
+      const authedConfig = { ...nextConfig, projectId };
+      setAuthUser(res.user);
+      setCloudConfig(authedConfig);
+      localStorage.setItem(CLOUD_CONFIG_KEY, JSON.stringify(authedConfig));
+      const connected = await checkConnection(authedConfig);
+      setIsCloudConnected(connected);
+      setIsLoggingIn(false);
+      setIsSyncing(true);
+      try {
+          const res = await fetchCloudBackup(authedConfig, projectId);
+          if (res.success && res.data) {
+              const safeData = { ...generateInitialData(), ...res.data };
+              captureBaselineFromCloud(safeData, res.recordMeta, projectId);
+              if (hasMeaningfulDashboardPayload(safeData)) {
+                  recalculateMetrics(safeData, selectedYear, selectedQuarter);
+                  localStorage.setItem(getParkStorageKey(projectId), JSON.stringify(safeData));
+              } else {
+                  const cached = localStorage.getItem(getParkStorageKey(projectId));
+                  if (cached) {
+                      recalculateMetrics({ ...generateInitialData(), ...JSON.parse(cached) }, selectedYear, selectedQuarter);
+                  } else {
+                      recalculateMetrics(safeData, selectedYear, selectedQuarter);
+                  }
+              }
+              await fetchCloudHistory(authedConfig);
+          } else {
+              const cached = localStorage.getItem(getParkStorageKey(projectId));
+              if (cached) {
+                  recalculateMetrics({ ...generateInitialData(), ...JSON.parse(cached) }, selectedYear, selectedQuarter);
+              } else {
+                  recalculateMetrics(generateInitialData(), selectedYear, selectedQuarter);
+              }
+          }
+      } finally {
+          setIsSyncing(false);
+      }
+  };
+
+  const handleSignupSubmit = async (event?: React.FormEvent) => {
+      event?.preventDefault();
+      setSignupMsg(null);
+      const applicantName = signupForm.applicantName.trim();
+      const email = signupForm.email.trim();
+      const password = signupForm.password.trim();
+      if (!applicantName || !email || !password || signupForm.requestedProjectIds.length === 0) {
+          setSignupMsg('请填写姓名、账号、密码并至少选择一个园区。');
+          return;
+      }
+      setIsSubmittingSignup(true);
+      const res = await submitCloudSignupRequest(email, password, signupForm.requestedProjectIds, applicantName);
+      setIsSubmittingSignup(false);
+      setSignupMsg(res.message);
+      if (res.success) {
+          setSignupForm({ applicantName: '', email: '', password: '', requestedProjectIds: [] });
+          setAuthMode('login');
+      }
+  };
+
+  /** 已通过注册审批的申请，按申请园区归类（一人多园区则在多个园区下各显示一条） */
+  const approvedSignupByPark = useMemo(() => {
+      const approved = signupRequests.filter((r) => r.status === 'approved');
+      const byPark = new Map<string, SignupRequestRecord[]>();
+      for (const req of approved) {
+          for (const pid of req.requestedProjectIds) {
+              if (!byPark.has(pid)) byPark.set(pid, []);
+              byPark.get(pid)!.push(req);
+          }
+      }
+      for (const list of byPark.values()) {
+          list.sort((a, b) => String(b.approvedAt || '').localeCompare(String(a.approvedAt || '')));
+      }
+      const parkOrder: string[] = [];
+      for (const p of authorizedParks) {
+          if (byPark.has(p.projectId)) parkOrder.push(p.projectId);
+      }
+      for (const pid of Array.from(byPark.keys()).sort()) {
+          if (!parkOrder.includes(pid)) parkOrder.push(pid);
+      }
+      return { byPark, parkOrder };
+  }, [signupRequests, authorizedParks]);
+
+  const handleLogout = () => {
+      logoutCloudUser();
+      setAuthUser(null);
+      setAuthorizedParks([]);
+      setRecordMeta({});
+      baselineSnapshotRef.current = null;
+      dirtyTrackerRef.current.reset();
+      setPendingConflicts([]);
   };
 
   const fetchCloudHistory = async (config = cloudConfig) => {
@@ -536,6 +975,7 @@ const App: React.FC = () => {
       if (res.success && res.data) {
           const safeData = { ...generateInitialData(), ...res.data };
           recalculateMetrics(safeData, selectedYear, selectedQuarter);
+          captureBaselineFromCloud(safeData, res.recordMeta);
           alert('已加载服务器上的最新数据，版本号已更新。您可在此基础上继续编辑。');
           return true;
       }
@@ -548,6 +988,165 @@ const App: React.FC = () => {
       setIsSnapshotModalOpen(true);
   };
 
+  /**
+   * 「云端加载完成」后的统一收尾：
+   *   - 更新 recordMeta（行级乐观锁基准）
+   *   - 用刚加载的 data 生成 baseline 快照（用于下次保存的自动 diff）
+   *   - 清空 dirtyTracker（避免上一轮残留登记）
+   *
+   * 调用方：fetchCloudBackup 成功后；以及保存成功后再次 fetch 后。
+   */
+  const captureBaselineFromCloud = (cloudData: DashboardData, meta?: RecordMeta, projectId = cloudConfig.projectId) => {
+      if (meta) setRecordMeta(meta);
+      try {
+          baselineSnapshotRef.current = dashboardDataToPbRecords(
+              cloudData,
+              projectId || ''
+          );
+      } catch (e) {
+          console.warn('[captureBaselineFromCloud] 生成 baseline 失败，后续保存将要求先刷新云端数据', e);
+          baselineSnapshotRef.current = null;
+      }
+      dirtyTrackerRef.current.reset();
+  };
+
+  /**
+   * 保存成功后：拉取最新云端数据 → 刷新 baseline 快照 + recordMeta；触发集成快照同步。
+   * 重新拉取的目的是拿到「服务端权威」的最新值（包括他人在我们保存期间又写入的字段），
+   * 这样下一次 diff 不会把别人的改动当成我们的 dirty。
+   */
+  const refreshAfterSave = async (currentData: DashboardData | null) => {
+      let processedAfterSave: DashboardData | null = null;
+      try {
+          const res = await fetchCloudBackup(cloudConfig, cloudConfig.projectId || '');
+          if (res.success && res.data) {
+              const safeData = { ...generateInitialData(), ...res.data };
+              // 重新走 recalculateMetrics 把界面 data 更新为服务端权威值，
+              // 这是合并增量保存的关键：用户在 A 改的 field、其他人在 B 改的 field 都会出现
+              processedAfterSave = recalculateMetrics(safeData, selectedYear, selectedQuarter);
+              captureBaselineFromCloud(safeData, res.recordMeta);
+          } else if (res.recordMeta) {
+              // 拉到了 meta 但没有 data（罕见）：至少更新 meta 与 reset
+              setRecordMeta(res.recordMeta);
+              dirtyTrackerRef.current.reset();
+          }
+      } catch (e) {
+          console.warn('[refreshAfterSave] 拉取最新数据失败（可忽略）', e);
+      }
+      // 在保存成功后触发集成快照同步（OpenClaw 等外部系统读取）
+      const snapshotProjectId = (cloudConfig.projectId || '').trim();
+      if (snapshotProjectId && (processedAfterSave || currentData)) {
+          try {
+              const snapshotData = processedAfterSave || currentData!;
+              const monthlyTrends = snapshotData.monthlyTrends || [];
+              const fullSnapshot = buildIntegrationFullSnapshotV1(snapshotData, monthlyTrends, {
+                  statsYear: selectedYear,
+                  projectId: snapshotProjectId,
+              });
+              scheduleUpsertIntegrationFullSnapshot(snapshotProjectId, fullSnapshot);
+              await upsertCloudKpiSnapshot(cloudConfig, {
+                  year: selectedYear,
+                  summary: buildKpiSummaryFromProcessedData(snapshotData),
+                  monthlyTrends,
+                  dataVersion: snapshotData.cloudSaveVersion || 0,
+                  calculatedAt: new Date().toISOString(),
+              });
+          } catch (e) {
+              console.warn('[refreshAfterSave] 快照构建失败（可忽略）', e);
+          }
+      }
+  };
+
+  /**
+   * 统一的「保存到云端」入口。
+   *
+   * 保存策略：
+   *   - 正常业务保存只允许自动 diff(baseline, current) 生成 DirtyPayload → 增量保存。
+   *   - baseline 缺失时先即时读取当前园区云端快照建立基线；读取失败才拒绝保存。
+   *
+   * baseline 在每次 fetchCloudBackup / 保存成功后由 captureBaselineFromCloud 刷新。
+   *
+   * 返回值：
+   *   - { ok: true } 表示已成功（或部分成功），调用方可弹出"保存成功"提示
+   *   - { ok: false, conflict: true } 表示有冲突等待用户决策；本函数已 setPendingConflicts
+   *   - { ok: false, message } 表示彻底失败
+   */
+  const runCloudSave = async (
+      currentData: DashboardData,
+      note: string
+  ): Promise<{ ok: boolean; conflict?: boolean; conflictCount?: number; message?: string; newVersion?: number }> => {
+      let baseline = baselineSnapshotRef.current;
+      let baseRecordMeta = recordMeta;
+
+      if (!baseline) {
+          try {
+              const baselineRes = await fetchCloudBackup(cloudConfig, cloudConfig.projectId || '');
+              if (!baselineRes.success || !baselineRes.data) {
+                  return {
+                      ok: false,
+                      message: `当前页面缺少云端基线，且无法读取后端数据，已阻止全量覆盖保存。请确认 PocketBase 连接正常后重试。${baselineRes.message ? `\n\n后端返回：${baselineRes.message}` : ''}`,
+                  };
+              }
+              const cloudBaseline = { ...generateInitialData(), ...baselineRes.data };
+              baseline = dashboardDataToPbRecords(cloudBaseline, cloudConfig.projectId || '');
+              baseRecordMeta = baselineRes.recordMeta || {};
+              baselineSnapshotRef.current = baseline;
+              setRecordMeta(baseRecordMeta);
+              dirtyTrackerRef.current.reset();
+          } catch (baselineError: any) {
+              return {
+                  ok: false,
+                  message: `当前页面缺少云端基线，且读取后端数据失败，已阻止全量覆盖保存。请确认 PocketBase 连接正常后重试。\n\n错误：${baselineError?.message || '未知错误'}`,
+              };
+          }
+      }
+
+      // ---- 增量保存（自动 diff baseline ↔ current）----
+      const nextSnapshot = dashboardDataToPbRecords(currentData, cloudConfig.projectId || '');
+      // 如果业务组件以后接入了 dirtyTracker，可以把它的 payload 与 diff 结果合并；
+      // 当前阶段以 diff 为唯一来源，避免双重登记导致重复请求。
+      const payload = diffPbRecords(baseline, nextSnapshot, baseRecordMeta);
+      const summary = payloadCount(payload);
+
+      if (summary.total === 0) {
+          // 没有任何改动 —— 不打扰服务器，直接成功
+          console.log('[runCloudSave] 无改动，跳过保存');
+          return { ok: true, message: '无改动，无需保存' };
+      }
+
+      console.log(
+          `[runCloudSave] 增量保存：creates=${summary.creates} updates=${summary.updates} deletes=${summary.deletes}`,
+          payload
+      );
+
+      const res = await saveIncrementalToCloud(payload, cloudConfig, baseRecordMeta);
+      if (res.errors.length > 0) {
+          console.warn('[runCloudSave] 增量保存出现 errors（不阻塞 conflicts 流程）', res.errors);
+      }
+      if (res.conflicts.length > 0) {
+          setPendingConflicts(res.conflicts);
+          // 即便有冲突，已成功落库的部分也要把 baseline 刷新
+          await refreshAfterSave(currentData);
+          return {
+              ok: false,
+              conflict: true,
+              conflictCount: res.conflicts.length,
+              message: res.message,
+          };
+      }
+      // 全部成功 —— bump 一下 dashboard_data_version 用于审计
+      try {
+          const v = await bumpCloudSaveVersion(cloudConfig);
+          if (typeof v === 'number') {
+              applyCloudSaveSuccess(currentData, { success: true, message: '', newVersion: v });
+          }
+      } catch {
+          /* version bump 失败可忽略，不影响业务 */
+      }
+      await refreshAfterSave(currentData);
+      return { ok: res.errors.length === 0, message: res.message };
+  };
+
   const confirmCloudSave = async () => {
       if (!data) return;
       if (!operatorName.trim()) {
@@ -558,16 +1157,21 @@ const App: React.FC = () => {
       setIsSnapshotModalOpen(false);
       const timestamp = new Date().toLocaleString();
       const finalNote = `${operatorName} ${timestamp} ${snapshotNote ? `(${snapshotNote})` : ''}`;
-      const res = await saveToCloud(data, cloudConfig, finalNote);
+      const res = await runCloudSave(data, finalNote);
       setIsSyncing(false);
-      if (res.success) {
-          applyCloudSaveSuccess(data, res);
+      if (res.ok) {
           alert("✅ 云端备份成功！");
           fetchCloudHistory();
       } else if (res.conflict) {
-          await handleCloudSaveConflict();
+          // 增量保存的冲突已经被 runCloudSave 写入 pendingConflicts；
+          // 旧整包覆写的 conflict 仍走原弹窗
+          if ((res.conflictCount || 0) === 0) {
+              await handleCloudSaveConflict();
+          } else {
+              alert(`检测到 ${res.conflictCount} 条冲突，请在冲突弹窗中处理。`);
+          }
       } else {
-          alert("保存失败: " + res.message);
+          alert("保存失败: " + (res.message || '未知错误'));
       }
   };
 
@@ -576,22 +1180,25 @@ const App: React.FC = () => {
       setIsSyncing(true);
       const timestamp = new Date().toLocaleString();
       const finalNote = `[预算方案] ${operator} ${timestamp} - ${scenarioName}`;
-      const res = await saveToCloud(data, cloudConfig, finalNote);
+      const res = await runCloudSave(data, finalNote);
       setIsSyncing(false);
-      if (res.success) {
-          applyCloudSaveSuccess(data, res);
+      if (res.ok) {
           alert("✅ 预算方案已保存至云端！");
       } else if (res.conflict) {
-          await handleCloudSaveConflict();
+          if ((res.conflictCount || 0) === 0) {
+              await handleCloudSaveConflict();
+          } else {
+              alert(`检测到 ${res.conflictCount} 条冲突，请在冲突弹窗中处理。`);
+          }
       } else {
-          alert("保存失败: " + res.message);
+          alert("保存失败: " + (res.message || '未知错误'));
       }
   };
 
   const handleQuickCloudSave = async () => {
       if (!isCloudConnected) {
           if (confirm("后端未连接。是否前往系统设置？")) {
-              setActiveTab('settings');
+              setActiveTab(canAccessSystemSettings ? 'settings' : 'initData');
               handleCloudConfigSave();
           }
           return;
@@ -604,23 +1211,82 @@ const App: React.FC = () => {
       if (!data) return;
       if (!isCloudConnected) {
           alert('未连接 PocketBase。请到「系统与备份」填写地址并点击「保存配置」。');
-          setActiveTab('settings');
+          setActiveTab(canAccessSystemSettings ? 'settings' : 'initData');
           return;
       }
       setIsSyncing(true);
       try {
-          const res = await saveToCloud(data, cloudConfig, '手动保存');
-          if (res.success) {
-              applyCloudSaveSuccess(data, res);
+          const res = await runCloudSave(data, '手动保存');
+          if (res.ok) {
               setLastSaved(new Date().toLocaleTimeString());
               await fetchCloudHistory();
           } else if (res.conflict) {
-              await handleCloudSaveConflict();
+              if ((res.conflictCount || 0) === 0) {
+                  await handleCloudSaveConflict();
+              }
+              // pendingConflicts 已设置时由 ConflictDialog（步骤 4）接管
           } else {
-              alert('保存失败：' + res.message);
+              alert('保存失败：' + (res.message || '未知错误'));
           }
       } finally {
           setIsSyncing(false);
+      }
+  };
+
+  /**
+   * 强制把本地某条记录覆盖到服务端（用户在 ConflictDialog 选择「用我的值」时调用）。
+   * 步骤 4 的 ConflictDialog 会调用本回调；这里集中处理重试逻辑。
+   */
+  const handleResolveConflict = async (
+      decisions: Array<{
+          conflict: IncrementalConflict;
+          action: 'mine' | 'theirs' | 'skip';
+      }>
+  ): Promise<void> => {
+      const overwrites = decisions.filter((d) => d.action === 'mine');
+      const acceptServer = decisions.filter((d) => d.action === 'theirs');
+      const overwriteFailures: string[] = [];
+
+      // 「用我的值」 → forceOverwrite
+      for (const d of overwrites) {
+          if (!d.conflict.localChanges) {
+              // delete 类型的"用我的值" → 仍然要执行删除（暂未单独实现强制 delete API）
+              console.warn('[handleResolveConflict] 强制删除尚未实现，跳过', d.conflict);
+              continue;
+          }
+          const overwriteRes = await forceOverwriteCloudRecord(
+              cloudConfig,
+              d.conflict.collection,
+              d.conflict.originalId,
+              d.conflict.localChanges
+          );
+          if (!overwriteRes.success) {
+              const label =
+                  d.conflict.collection === 'pb_billing_period_notes'
+                      ? '账期备注'
+                      : d.conflict.collection;
+              overwriteFailures.push(
+                  `${label}/${d.conflict.originalId}: ${overwriteRes.message || '未知错误'}`
+              );
+          }
+      }
+      // 「用服务端值」 → 不需要写入服务端，但本地需要刷新数据
+      void acceptServer;
+
+      if (overwriteFailures.length > 0) {
+          alert(
+              `以下冲突未能成功覆盖到服务端，本地数据已保留，请稍后重试：\n\n${overwriteFailures.join('\n')}`
+          );
+          return;
+      }
+
+      // 用户处理完所有冲突 → 清空冲突列表 + 重新拉取
+      setPendingConflicts([]);
+      const res = await fetchCloudBackup(cloudConfig, cloudConfig.projectId || '');
+      if (res.success && res.data) {
+          const safeData = { ...generateInitialData(), ...res.data };
+          recalculateMetrics(safeData, selectedYear, selectedQuarter);
+          captureBaselineFromCloud(safeData, res.recordMeta);
       }
   };
 
@@ -632,7 +1298,8 @@ const App: React.FC = () => {
           if (res.success && res.data) {
               const safeData = { ...generateInitialData(), ...res.data };
               recalculateMetrics(safeData, selectedYear, selectedQuarter);
-              localStorage.setItem(STORAGE_KEY, JSON.stringify(safeData));
+              captureBaselineFromCloud(safeData, res.recordMeta);
+              localStorage.setItem(getParkStorageKey(cloudConfig.projectId), JSON.stringify(safeData));
               setShowRestorePrompt(false);
               // alert("✅ 系统已同步至最新云端版本");
           } else {
@@ -652,12 +1319,16 @@ const App: React.FC = () => {
       try {
         const res = await fetchCloudBackup(cloudConfig, backupId);
         if (res.success && res.data) {
-            const dataStr = JSON.stringify(res.data, null, 2);
+            const dataStr = JSON.stringify(createDashboardBackupEnvelope(res.data, {
+                projectId: cloudConfig.projectId,
+                parkName: getCurrentParkName(),
+                exportedBy: authUser?.email,
+            }), null, 2);
             const blob = new Blob([dataStr], { type: 'application/json' });
             const url = URL.createObjectURL(blob);
             const link = document.createElement('a');
             link.href = url;
-            link.download = `cloud_backup_${note ? note.replace(/\s+/g, '_') : 'snapshot'}_${new Date().toISOString().split('T')[0]}.json`;
+            link.download = `cloud_backup_${cloudConfig.projectId}_${note ? note.replace(/\s+/g, '_') : 'snapshot'}_${new Date().toISOString().split('T')[0]}.json`;
             document.body.appendChild(link);
             link.click();
             document.body.removeChild(link);
@@ -678,7 +1349,7 @@ const App: React.FC = () => {
           const res = await fetchCloudBackup(cloudConfig, backupId);
           if (res.success && res.data) {
               const safeData = { ...generateInitialData(), ...res.data };
-              localStorage.setItem(STORAGE_KEY, JSON.stringify(safeData));
+              localStorage.setItem(getParkStorageKey(cloudConfig.projectId), JSON.stringify(safeData));
               alert("✅ 恢复成功！系统正在刷新...");
               window.location.reload();
           } else alert("恢复失败: " + res.message);
@@ -701,12 +1372,14 @@ const App: React.FC = () => {
       adjustments: BudgetAdjustment[],
       initializationData: MonthlyInitData[] = [],
       buildings: Building[] = [],
-      budgetContext?: { tenants: Tenant[]; buildings: Building[]; assumptions: BudgetAssumption[]; adjustments: BudgetAdjustment[] }
+      budgetContext?: { tenants: Tenant[]; buildings: Building[]; assumptions: BudgetAssumption[]; adjustments: BudgetAdjustment[] },
+      billingPeriodNotes?: Record<string, string>
   ): MonthlyTrend[] => {
       const trends: MonthlyTrend[] = [];
       const now = new Date();
       const currentSystemYear = now.getFullYear();
       const currentSystemMonth = now.getMonth(); // 0-11
+      const importedBudgetTable = readImportedBudgetTable(billingPeriodNotes, year);
 
       // Map to quickly check if a building is a 'Site' (and thus excluded from occupancy)
       const buildingMap = new Map(buildings.map(b => [b.id, b]));
@@ -805,16 +1478,19 @@ const App: React.FC = () => {
               )
               .reduce((sum, p) => sum + p.amount, 0);
 
-          let revenueTarget = monthlyTargetBilled;
+          const budgetFromTableOrScenario = importedBudgetTable
+              ? Math.round(Number(importedBudgetTable.monthlyTotals?.[month] || 0))
+              : monthlyTargetBilled;
+          let revenueTarget = budgetFromTableOrScenario;
           let revenueCollected: number | null = actualFromPaymentDetails;
           let collectionRate: number | null = revenueTarget > 0 ? Math.round((revenueCollected / revenueTarget) * 100) : 0;
           
           if (initEntry) {
               occupancyRate = initEntry.occupancyRate;
               revenueCollected = initEntry.revenueCollected;
-              // 预算收入应优先取“生效预算方案”月度应收，仅在无生效方案时允许初始化值覆盖
-              if (!budgetContext && initEntry.revenueTarget !== undefined) {
-                  revenueTarget = initEntry.revenueTarget;
+              const initRt = Number(initEntry.revenueTarget);
+              if (Number.isFinite(initRt) && initRt > 0.005) {
+                  revenueTarget = Math.round(initRt);
               }
               collectionRate = revenueTarget > 0 ? Math.round((revenueCollected / revenueTarget) * 100) : 0;
           }
@@ -895,7 +1571,8 @@ const App: React.FC = () => {
           snapshot.firstPaymentMonths !== live.firstPaymentMonths ||
           snapshot.leaseStart !== live.leaseStart ||
           snapshot.leaseEnd !== live.leaseEnd ||
-          snapshot.monthlyRent !== live.monthlyRent;
+          snapshot.monthlyRent !== live.monthlyRent ||
+          JSON.stringify(snapshot.unitTerms || snapshot.paymentTerms || []) !== JSON.stringify(live.unitTerms || live.paymentTerms || []);
       const inferContractChangeDate = (snapshot: Tenant, live: Tenant): Date | null => {
           const candidates: string[] = [];
           if (snapshot.terminationDate !== live.terminationDate && live.terminationDate) candidates.push(live.terminationDate);
@@ -953,10 +1630,10 @@ const App: React.FC = () => {
 
   const getBillingDetailsForPeriod = (year: number, month: number): BillingDetail[] => {
       if (!data) return [];
-      return buildBillingDetailsForPeriod(year, month, data);
+      return buildBillingDetailsForPeriodService(year, month, data);
   };
 
-  const recalculateMetrics = (currentData: DashboardData, year: number = selectedYear, quarter: 'All' | 'Q1' | 'Q2' | 'Q3' | 'Q4' = selectedQuarter) => {
+  const calculateDashboardMetrics = (currentData: DashboardData, year: number = selectedYear, quarter: 'All' | 'Q1' | 'Q2' | 'Q3' | 'Q4' = selectedQuarter): { processedData: DashboardData; fullYearMonthlyTrends: MonthlyTrend[] } => {
     const tenants = currentData.tenants || [];
     const buildings = currentData.buildings || [];
     const payments = currentData.payments || [];
@@ -1030,7 +1707,8 @@ const App: React.FC = () => {
         adjustments,
         initData,
         buildings,
-        budgetContextForYear
+        budgetContextForYear,
+        currentData.billingPeriodNotes
     );
     const monthlyTrends = calculateTrends(
         tenants,
@@ -1044,9 +1722,10 @@ const App: React.FC = () => {
         adjustments,
         initData,
         buildings,
-        budgetContextForYear
+        budgetContextForYear,
+        currentData.billingPeriodNotes
     );
-    const prevYearMonthlyTrends = calculateTrends(tenants, virtualTenants, payments, totalLeasableArea, selfUseUnitIds, year - 1, 'All', assumptions, adjustments, initData, buildings, budgetContextForPrevYear);
+    const prevYearMonthlyTrends = calculateTrends(tenants, virtualTenants, payments, totalLeasableArea, selfUseUnitIds, year - 1, 'All', assumptions, adjustments, initData, buildings, budgetContextForPrevYear, currentData.billingPeriodNotes);
 
     const annualRevenueCollected = monthlyTrends.reduce((sum, t) => sum + (t.revenueCollected || 0), 0);
     const annualRevenueTarget = monthlyTrends.reduce((sum, t) => sum + t.revenueTarget, 0);
@@ -1104,7 +1783,10 @@ const App: React.FC = () => {
         const endMonth = (year === nowYear) ? nowMonth - 1 : 11; // 当年只到上月，其他年到12月
         
         for (let month = startMonth; month <= endMonth; month++) {
-            const billingDetails = buildBillingDetailsForPeriod(year, month, {
+            // 与「财务报表 应收核销」保持完全一致的口径：
+            // 走 service 版（含 Excel 导入预算覆盖、提前退租结算附加、缓缴备注、缓存等），
+            // 而不是 App.tsx 内的本地早期版本（缺少 Excel 覆盖等）。
+            const billingDetails = buildBillingDetailsForPeriodService(year, month, {
                 ...currentData,
                 buildings: syncedBuildings,
                 tenants,
@@ -1212,7 +1894,11 @@ const App: React.FC = () => {
         if (parts.length === 2) { billingYear = parseInt(parts[0], 10); billingMonth = parseInt(parts[1], 10) - 1; }
     }
     
-    const currentMonthBilling = buildBillingDetailsForPeriod(billingYear, billingMonth, {
+    // 关键：工作台「租金账单明细 / 当月应收总额」必须与「财务报表 本月应收租金」一致。
+    // 因此统一使用 services/dashboardMetrics.ts 中的 buildBillingDetailsForPeriod（service 版），
+    // 它含 Excel 导入预算覆盖、提前退租结算附加、缓缴备注、缓存等完整链路；
+    // 早期 App.tsx 内本地副本缺少 Excel 覆盖，会导致两处数字偏差，已废弃此调用路径。
+    const currentMonthBilling = buildBillingDetailsForPeriodService(billingYear, billingMonth, {
         ...currentData,
         buildings: syncedBuildings,
         tenants,
@@ -1276,16 +1962,27 @@ const App: React.FC = () => {
         billingPeriodNotes: currentData.billingPeriodNotes || {},
     };
 
-    const snapshotProjectId = (cloudConfig.projectId || '').trim();
-    if (snapshotProjectId) {
-        const fullSnapshot = buildIntegrationFullSnapshotV1(processedData, fullYearMonthlyTrends, {
-            statsYear: year,
-            projectId: snapshotProjectId,
-        });
-        scheduleUpsertIntegrationFullSnapshot(snapshotProjectId, fullSnapshot);
-    }
+    return { processedData, fullYearMonthlyTrends };
+  };
 
+  const recalculateMetrics = (currentData: DashboardData, year: number = selectedYear, quarter: DashboardQuarter = selectedQuarter) => {
+    const startedAt = typeof performance !== 'undefined' ? performance.now() : Date.now();
+    const { processedData } = calculateDashboardMetricsService(currentData, {
+        year,
+        quarter,
+        billingSelectedMonth,
+    });
+    const elapsed = (typeof performance !== 'undefined' ? performance.now() : Date.now()) - startedAt;
+    if (elapsed > 80) {
+        console.info(`[metrics] recalculate ${Math.round(elapsed)}ms`, {
+            tenants: currentData.tenants?.length || 0,
+            payments: currentData.payments?.length || 0,
+            buildings: currentData.buildings?.length || 0,
+        });
+    }
+    isKpiPreviewRef.current = false;
     setData(processedData);
+    return processedData;
   };
 
   const reconcileTenantAreasWithBuildings = (newBuildings: Building[], tenants: Tenant[]): Tenant[] =>
@@ -1339,7 +2036,7 @@ const App: React.FC = () => {
           return;
       }
 
-      const details = buildBillingDetailsForPeriod(fromYear, fromMonth, data);
+      const details = buildBillingDetailsForPeriodService(fromYear, fromMonth, data);
       const row = details.find((d) => d.tenantId === tenantId);
       const amountToDefer = Math.max(0, (row?.amountDue ?? 0) - (row?.amountPaid ?? 0));
 
@@ -1361,7 +2058,7 @@ const App: React.FC = () => {
       const fromLabel = `${fromYear}-${String(fromMonth + 1).padStart(2, '0')}`;
       const toLabel = `${toYear}-${String(toMonth + 1).padStart(2, '0')}`;
       alert(
-          `已申请缓缴（仅影响应收/执行视图，不修改预算表基准）。\n客户: ${tenant.name}\n金额: ¥${amountToDefer.toLocaleString()}\n原账期: ${fromLabel}\n调整至: ${toLabel}`
+          `已申请缓缴（仅影响应收/执行视图，不修改预算表基准）。\n客户: ${tenant.name}\n金额: ${formatCurrency(amountToDefer)}\n原账期: ${fromLabel}\n调整至: ${toLabel}`
       );
   };
 
@@ -1369,7 +2066,7 @@ const App: React.FC = () => {
       if (!data) return;
       setData({
           ...data,
-          budgetScenarios: normalizeScenarioForReceivable(newScenarios, data.tenants || [], data.buildings || []),
+          budgetScenarios: normalizeScenarioForReceivableService(newScenarios, data.tenants || [], data.buildings || []),
       });
   };
 
@@ -1378,7 +2075,7 @@ const App: React.FC = () => {
       const updated = data.budgetScenarios.map(s => s.id === id ? {...s, name: newName} : s);
       setData({
           ...data,
-          budgetScenarios: normalizeScenarioForReceivable(updated, data.tenants || [], data.buildings || []),
+          budgetScenarios: normalizeScenarioForReceivableService(updated, data.tenants || [], data.buildings || []),
       });
   };
 
@@ -1391,7 +2088,7 @@ const App: React.FC = () => {
       }));
       recalculateMetrics({
           ...data,
-          budgetScenarios: normalizeScenarioForReceivable(updatedScenarios, data.tenants || [], data.buildings || []),
+          budgetScenarios: normalizeScenarioForReceivableService(updatedScenarios, data.tenants || [], data.buildings || []),
       });
   };
 
@@ -1417,10 +2114,129 @@ const App: React.FC = () => {
       setIsTargetModalOpen(false); 
   };
   
-  const handleResetData = () => { if (window.confirm("危险操作！\n\n确定要清空所有本地数据并恢复出厂设置吗？所有录入的合同、财务、楼宇修改记录都将丢失。")) { localStorage.removeItem(STORAGE_KEY); const initial = generateInitialData(); recalculateMetrics(initial, currentYear, 'All'); alert("系统数据已重置。"); } };
+  const handleResetData = () => { if (window.confirm("危险操作！\n\n确定要清空当前园区的本地缓存并恢复出厂设置吗？所有未保存至后端的本地修改都将丢失。")) { localStorage.removeItem(getParkStorageKey(cloudConfig.projectId)); const initial = generateInitialData(); recalculateMetrics(initial, currentYear, 'All'); alert("当前园区本地缓存已重置。"); } };
 
-  const handleExport = () => { if (!data) return; const exportData = { buildings: data.buildings, tenants: data.tenants, payments: data.payments, yearlyTargets: data.yearlyTargets, initializationData: data.initializationData, invoices: data.invoices }; const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' }); const url = URL.createObjectURL(blob); const link = document.createElement('a'); link.href = url; link.download = `park_data_${new Date().toISOString().split('T')[0]}.json`; link.click(); };
-  const handleImport = (event: React.ChangeEvent<HTMLInputElement>) => { const file = event.target.files?.[0]; if (file) { const reader = new FileReader(); reader.onload = (e) => { try { const imported = JSON.parse(e.target?.result as string); if (imported.buildings && imported.tenants) { const mergedData = { ...generateInitialData(), ...imported }; setSelectedYear(new Date().getFullYear()); setSelectedQuarter('All'); recalculateMetrics(mergedData, new Date().getFullYear(), 'All'); alert("数据导入成功！"); } else { alert("文件格式不正确 (需要JSON格式)"); } } catch (err) { alert("解析文件失败"); } }; reader.readAsText(file); } };
+  const getCurrentParkName = () => {
+      return authorizedParks.find(park => park.projectId === cloudConfig.projectId)?.name || cloudConfig.projectId;
+  };
+
+  const handleExport = () => {
+      if (!data) return;
+      const projectId = (cloudConfig.projectId || '').trim();
+      if (!projectId) {
+          alert('当前未选择园区，不能导出备份。');
+          return;
+      }
+      const exportData = createDashboardBackupEnvelope(data, {
+          projectId,
+          parkName: getCurrentParkName(),
+          exportedBy: authUser?.email,
+      });
+      const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `park_data_${projectId}_${new Date().toISOString().split('T')[0]}.json`;
+      link.click();
+      URL.revokeObjectURL(url);
+  };
+
+  const handleImport = (event: React.ChangeEvent<HTMLInputElement>) => {
+      const file = event.target.files?.[0];
+      event.target.value = '';
+      if (!file) return;
+
+      const targetProjectId = (cloudConfig.projectId || '').trim();
+      const allowedProjectIds = authUser?.allowedProjectIds?.length ? authUser.allowedProjectIds : [targetProjectId];
+      const reader = new FileReader();
+      reader.onload = async (e) => {
+          try {
+              const raw = JSON.parse(e.target?.result as string);
+              const parsed = parseDashboardBackup(raw);
+              const validation = validateBackupTarget(parsed, targetProjectId, allowedProjectIds);
+              if (!validation.ok) {
+                  alert(validation.message);
+                  return;
+              }
+
+              const warnings = validation.warnings.length ? `\n\n风险提示：\n${validation.warnings.join('\n')}` : '';
+              const sourceProject = parsed.projectId || '旧格式未声明';
+              const confirmText = [
+                  `目标园区：${getCurrentParkName()} (${targetProjectId})`,
+                  `文件园区：${sourceProject}`,
+                  parsed.exportedAt ? `导出时间：${new Date(parsed.exportedAt).toLocaleString()}` : '',
+                  parsed.exportedBy ? `导出人员：${parsed.exportedBy}` : '',
+                  '',
+                  '数据摘要：',
+                  formatBackupSummary(parsed.summary),
+                  warnings,
+                  '',
+                  '确认后仅会恢复到当前园区的本地状态；如需写入后端，请再点击右上角「保存」。',
+                  '是否继续？',
+              ].filter(Boolean).join('\n');
+
+              if (!window.confirm(confirmText)) return;
+
+              // 预算方案的 baseDataSnapshot 是预算生成时点快照，旧版预算表依赖它复原静态口径。
+              const sanitizedData = sanitizeImportedDashboardData(parsed.data || {});
+              const rawObj = (raw && typeof raw === 'object') ? (raw as any) : {};
+              const rawPayload = rawObj.backup_type === 'park_dashboard_backup' && rawObj.data && typeof rawObj.data === 'object'
+                  ? rawObj.data
+                  : rawObj;
+              const effectiveBudgetTablesRaw = Array.isArray(rawPayload.effectiveBudgetTables)
+                  ? rawPayload.effectiveBudgetTables
+                  : [];
+
+              let mergedData = { ...generateInitialData(), ...sanitizedData } as DashboardData;
+              const restoredBudgetYears: number[] = [];
+              if (effectiveBudgetTablesRaw.length > 0) {
+                  let nextInitData = mergedData.initializationData || [];
+                  let nextNotes = mergedData.billingPeriodNotes || {};
+                  for (const table of effectiveBudgetTablesRaw) {
+                      const restored = normalizeEffectiveBudgetTableFromBackup(table);
+                      if (!restored) continue;
+                      nextInitData = mergeBudgetTotalsIntoInitData(nextInitData, restored.year, restored.snapshot.monthlyTotals);
+                      nextNotes = writeImportedBudgetTable(nextNotes, restored.year, restored.snapshot);
+                      restoredBudgetYears.push(restored.year);
+                  }
+                  mergedData = {
+                      ...mergedData,
+                      initializationData: nextInitData,
+                      billingPeriodNotes: nextNotes,
+                  };
+              }
+              setSelectedYear(new Date().getFullYear());
+              setSelectedQuarter('All');
+              setRecordMeta({});
+              baselineSnapshotRef.current = null;
+              dirtyTrackerRef.current.reset();
+              setPendingConflicts([]);
+              localStorage.setItem(getParkStorageKey(targetProjectId), JSON.stringify(mergedData));
+              let canSaveIncrementally = false;
+              try {
+                  const baselineRes = await fetchCloudBackup({ ...cloudConfig, projectId: targetProjectId }, targetProjectId);
+                  if (baselineRes.success && baselineRes.data) {
+                      const cloudBaseline = { ...generateInitialData(), ...baselineRes.data };
+                      captureBaselineFromCloud(cloudBaseline, baselineRes.recordMeta, targetProjectId);
+                      canSaveIncrementally = true;
+                  }
+              } catch (baselineError) {
+                  console.warn('[handleImport] 导入后读取云端 baseline 失败', baselineError);
+              }
+              recalculateMetrics(mergedData, new Date().getFullYear(), 'All');
+              const budgetRestoreNote = restoredBudgetYears.length > 0
+                  ? `\n\n已按备份内 effectiveBudgetTables 回填预算执行目标：${Array.from(new Set(restoredBudgetYears)).sort((a, b) => a - b).join('、')} 年。`
+                  : '';
+              alert(canSaveIncrementally
+                  ? `数据已恢复到当前园区本地状态，并已建立云端增量保存基线。请检查无误后点击右上角「保存」写入后端。${budgetRestoreNote}`
+                  : `数据已恢复到当前园区本地状态，但暂未读取到云端保存基线。请先确认后端连接正常，再刷新/重新登录后保存。${budgetRestoreNote}`
+              );
+          } catch (err: any) {
+              alert(`解析或校验备份失败：${err?.message || '未知错误'}`);
+          }
+      };
+      reader.readAsText(file);
+  };
 
   const handleYearChange = (year: number) => {
       setSelectedYear(year);
@@ -1440,8 +2256,10 @@ const App: React.FC = () => {
 
   const openInitDataModal = () => {
       if (!data) return;
-      setInitDataYear(2023); // Default to earliest year
-      loadTempInitData(2023);
+      const y = new Date().getFullYear();
+      const defaultYear = y >= 2023 && y <= 2026 ? y : 2026;
+      setInitDataYear(defaultYear);
+      loadTempInitData(defaultYear);
       setIsInitDataModalOpen(true);
   };
 
@@ -1464,6 +2282,301 @@ const App: React.FC = () => {
       recalculateMetrics(updatedData); 
       setIsInitDataModalOpen(false);
   };
+
+  const handleCreateManagedUser = async (e: React.FormEvent) => {
+      e.preventDefault();
+      if (!isPlatformAdmin()) {
+          alert('仅平台管理员可新增登录人员。');
+          return;
+      }
+      if (!newUserForm.email.trim() || !newUserForm.password.trim() || !newUserForm.projectId.trim()) {
+          alert('请填写邮箱、初始密码和默认园区。');
+          return;
+      }
+      setIsCreatingUser(true);
+      const res = await createManagedCloudUser({
+          email: newUserForm.email,
+          password: newUserForm.password,
+          name: newUserForm.name,
+          role: newUserForm.role,
+          projectId: newUserForm.projectId,
+          allowedProjectIds: [newUserForm.projectId],
+          enabled: newUserForm.enabled,
+      });
+      setIsCreatingUser(false);
+      if (!res.success) {
+          alert(`新增失败：${res.message || '未知错误'}`);
+          return;
+      }
+      setNewUserForm(prev => ({
+          ...prev,
+          email: '',
+          name: '',
+          password: '',
+          role: 'park_user',
+      }));
+      await loadManagedUsers();
+      alert(newUserForm.enabled ? '登录人员已新增并启用。' : '登录人员已新增，等待管理员审批启用。');
+  };
+
+  const handleApproveManagedUser = async (user: ManagedUserAccount, enabled: boolean) => {
+      if (!isPlatformAdmin()) {
+          alert('仅平台管理员可审批登录人员。');
+          return;
+      }
+      const res = await updateManagedCloudUserEnabled(user.id, enabled);
+      if (!res.success) {
+          alert(`操作失败：${res.message || '未知错误'}`);
+          return;
+      }
+      await loadManagedUsers();
+  };
+
+  const handleApproveSignupRequest = async (req: SignupRequestRecord) => {
+      if (!isPlatformAdmin()) {
+          alert('仅平台管理员可审批注册申请。');
+          return;
+      }
+      const res = await approveCloudSignupRequest(req.id);
+      if (!res.success) {
+          alert(`审批失败：${res.message || '未知错误'}`);
+          return;
+      }
+      await Promise.all([loadSignupRequests(), loadManagedUsers()]);
+      alert('审批完成，已创建可登录账号。');
+  };
+
+  const openUserManageModal = (u: ManagedUserAccount) => {
+      setUserManageTarget(u);
+      const pid = u.projectId || u.allowedProjectIds[0] || '';
+      const allowed = u.allowedProjectIds.length ? [...u.allowedProjectIds] : pid ? [pid] : [];
+      setUserManageForm({
+          name: u.name || '',
+          role: u.role,
+          projectId: pid,
+          allowedParkIds: allowed,
+          password: '',
+          enabled: u.enabled,
+      });
+  };
+
+  const toggleUserManagePark = (projectId: string, checked: boolean) => {
+      setUserManageForm((prev) => {
+          const set = new Set(prev.allowedParkIds);
+          if (checked) set.add(projectId);
+          else set.delete(projectId);
+          return { ...prev, allowedParkIds: Array.from(set) };
+      });
+  };
+
+  const handleSaveUserManageModal = async () => {
+      if (!userManageTarget || !isPlatformAdmin()) return;
+      const pid = userManageForm.projectId.trim();
+      if (!pid) {
+          alert('请填写默认园区 project_id');
+          return;
+      }
+      setUserManageSaving(true);
+      const allowed = Array.from(new Set([pid, ...userManageForm.allowedParkIds.map((x) => x.trim()).filter(Boolean)]));
+      const res = await updateManagedCloudUser({
+          userId: userManageTarget.id,
+          name: userManageForm.name.trim() || undefined,
+          role: userManageForm.role,
+          projectId: pid,
+          allowedProjectIds: allowed,
+          enabled: userManageForm.enabled,
+          password: userManageForm.password.trim() || undefined,
+      });
+      setUserManageSaving(false);
+      if (!res.success) {
+          alert(res.message || '保存失败');
+          return;
+      }
+      setUserManageTarget(null);
+      await Promise.all([loadManagedUsers(), loadSignupRequests()]);
+      alert('已保存');
+  };
+
+  const handleDeleteUserManageModal = async () => {
+      if (!userManageTarget || !isPlatformAdmin()) return;
+      if (!window.confirm(`确定删除登录账号「${userManageTarget.email}」？此操作不可恢复。`)) return;
+      setUserManageSaving(true);
+      const res = await deleteManagedCloudUser(userManageTarget.id, authUser?.id);
+      setUserManageSaving(false);
+      if (!res.success) {
+          alert(res.message || '删除失败');
+          return;
+      }
+      setUserManageTarget(null);
+      await Promise.all([loadManagedUsers(), loadSignupRequests()]);
+      alert(res.message || '已删除账号');
+  };
+
+  const handleDeleteSignupRequest = async (req: SignupRequestRecord) => {
+      if (!isPlatformAdmin()) {
+          alert('仅平台管理员可清理审批记录。');
+          return;
+      }
+      if (!window.confirm(`确认清理审批记录「${req.email}」？\n注意：此操作仅删除审批/申请记录，不影响已创建账号的登录状态。`)) {
+          return;
+      }
+      const res = await deleteCloudSignupRequest(req.id);
+      if (!res.success) {
+          alert(res.message || '清理失败');
+          return;
+      }
+      await loadSignupRequests();
+      alert(res.message || '已清理审批记录');
+  };
+
+  const formatPct = formatPercent;
+
+  const buildDashboardDataFromKpiSnapshot = (snapshot: { summary: KpiSnapshotSummary; monthlyTrends?: MonthlyTrend[]; dataVersion?: number }): DashboardData => {
+      const summary = normalizeKpiSummaryWithMonthlyTrends(snapshot.summary, snapshot.monthlyTrends || []);
+      return {
+          ...generateInitialData(),
+          annualRevenueTarget: summary.annualRevenueTarget,
+          annualRevenueCollected: summary.annualRevenueCollected,
+          annualOccupancyTarget: summary.annualOccupancyTarget,
+          occupancyRate: summary.occupancyRate,
+          totalArea: summary.totalArea,
+          monthlyRevenueTarget: summary.annualBudgetTarget,
+          monthlyRevenueCollected: summary.annualRevenueCollected,
+          collectionRate: summary.annualBudgetCompletion,
+          monthlyTrends: snapshot.monthlyTrends || [],
+          cloudSaveVersion: snapshot.dataVersion || 0,
+      };
+  };
+
+  const buildParkMetric = (park: ParkInfo, rawData: DashboardData): AdminParkMetric => {
+      const { processedData } = calculateDashboardMetricsService(rawData, {
+          year: selectedYear,
+          quarter: 'All',
+          billingSelectedMonth,
+      });
+      const summary = buildKpiSummaryFromProcessedData(processedData);
+      return {
+          projectId: park.projectId,
+          name: park.name || park.projectId,
+          ...summary,
+      };
+  };
+
+  const buildParkMetricFromSnapshot = (park: ParkInfo, summary: KpiSnapshotSummary): AdminParkMetric => ({
+      projectId: park.projectId,
+      name: park.name || park.projectId,
+      ...summary,
+  });
+
+  useEffect(() => {
+      if (!authUser || !isGlobalAdmin(authUser) || authorizedParks.length === 0) {
+          setAdminParkMetrics([]);
+          return;
+      }
+      let cancelled = false;
+      const loadAdminSummary = async () => {
+          setIsLoadingAdminSummary(true);
+          try {
+              const parks = authorizedParks.filter(park => park.enabled);
+              const metrics: AdminParkMetric[] = [];
+              for (const park of parks) {
+                  if (park.projectId === cloudConfig.projectId && data && hasMeaningfulDashboardPayload(data)) {
+                      metrics.push(buildParkMetric(park, data));
+                      continue;
+                  }
+
+                  const config = { ...cloudConfig, projectId: park.projectId };
+                  const snapshotRes = await fetchCloudKpiSnapshot(config, selectedYear);
+                  if (snapshotRes.success && snapshotRes.snapshot) {
+                      const snap = snapshotRes.snapshot;
+                      metrics.push(
+                          buildParkMetricFromSnapshot(
+                              park,
+                              normalizeKpiSummaryWithMonthlyTrends(snap.summary, snap.monthlyTrends || [])
+                          )
+                      );
+                      continue;
+                  }
+
+                  const res = await fetchCloudBackup(config, park.projectId);
+                  const cloudData = res.success && res.data
+                      ? { ...generateInitialData(), ...res.data }
+                      : null;
+                  if (cloudData && hasMeaningfulDashboardPayload(cloudData)) {
+                      metrics.push(buildParkMetric(park, cloudData));
+                  } else {
+                      const cached = localStorage.getItem(getParkStorageKey(park.projectId));
+                      const cachedData = cached
+                          ? { ...generateInitialData(), ...JSON.parse(cached) }
+                          : null;
+                      metrics.push(buildParkMetric(park, cachedData || generateInitialData()));
+                  }
+              }
+              if (!cancelled) setAdminParkMetrics(metrics);
+          } catch (e) {
+              console.warn('[adminSummary] 加载管理员园区汇总失败', e);
+              if (!cancelled) setAdminParkMetrics([]);
+          } finally {
+              if (!cancelled) setIsLoadingAdminSummary(false);
+          }
+      };
+      const timer = window.setTimeout(loadAdminSummary, 120);
+      return () => {
+          cancelled = true;
+          window.clearTimeout(timer);
+      };
+  }, [authUser, authorizedParks, cloudConfig.pocketbaseUrl, cloudConfig.projectId, selectedYear, data]);
+
+  useEffect(() => {
+      if (!canAccessSystemSettings && activeTab === 'settings') {
+          setActiveTab('dashboard');
+      }
+  }, [canAccessSystemSettings, activeTab]);
+
+  useEffect(() => {
+      if (activeTab === 'settings' && isPlatformAdmin()) {
+          loadManagedUsers();
+          loadSignupRequests();
+      }
+  }, [activeTab, authUser?.id, cloudConfig.projectId]);
+
+  useEffect(() => {
+      if (!authUser) {
+          loadPublicParkOptions();
+      }
+  }, [authUser, cloudConfig.pocketbaseUrl]);
+
+  const adminSummaryTotals = useMemo(() => {
+      const totals = adminParkMetrics.reduce((acc, item) => {
+          acc.annualRevenueTarget += item.annualRevenueTarget;
+          acc.annualRevenueCollected += item.annualRevenueCollected;
+          acc.annualBudgetTarget += item.annualBudgetTarget;
+          acc.tenantCount += item.tenantCount;
+          acc.totalArea += item.totalArea;
+          acc.occupancyWeightedArea += item.totalArea * item.occupancyRate;
+          acc.occupancyTargetWeightedArea += item.totalArea * item.annualOccupancyTarget;
+          return acc;
+      }, {
+          annualRevenueTarget: 0,
+          annualRevenueCollected: 0,
+          annualBudgetTarget: 0,
+          tenantCount: 0,
+          totalArea: 0,
+          occupancyWeightedArea: 0,
+          occupancyTargetWeightedArea: 0,
+      });
+      return {
+          ...totals,
+          annualGoalCompletion: totals.annualRevenueTarget > 0
+              ? Math.min(100, (totals.annualRevenueCollected / totals.annualRevenueTarget) * 100)
+              : 0,
+          annualBudgetCompletion: totals.annualBudgetTarget > 0
+              ? Math.min(100, (totals.annualRevenueCollected / totals.annualBudgetTarget) * 100)
+              : 0,
+          occupancyRate: totals.totalArea > 0 ? totals.occupancyWeightedArea / totals.totalArea : 0,
+          annualOccupancyTarget: totals.totalArea > 0 ? totals.occupancyTargetWeightedArea / totals.totalArea : 0,
+      };
+  }, [adminParkMetrics]);
 
   const annualComparisonData: AnnualComparisonData[] = useMemo(() => {
       if (!data) return [];
@@ -1550,7 +2663,121 @@ const App: React.FC = () => {
 
   if (!data) return <div className="min-h-screen flex items-center justify-center bg-slate-50"><div className="flex flex-col items-center gap-2"><Loader2 size={32} className="text-blue-500 animate-spin"/><div className="text-slate-400">Loading Dashboard...</div></div></div>;
 
+  if (!authUser) {
+      return (
+          <div className="min-h-screen bg-slate-100 flex items-center justify-center p-4">
+              <form onSubmit={authMode === 'login' ? handleLogin : handleSignupSubmit} className="w-full max-w-md bg-white rounded-2xl shadow-xl border border-slate-200 p-6 space-y-5">
+                  <div className="flex items-center gap-3">
+                      <div className="p-3 rounded-xl bg-sky-50 text-sky-600 border border-sky-100">
+                          <User size={24} />
+                      </div>
+                      <div>
+                          <h1 className="text-xl font-bold text-slate-800">{authMode === 'login' ? '多园区登录' : '账号注册申请'}</h1>
+                          <p className="text-sm text-slate-500 mt-1">{authMode === 'login' ? '输入账号密码即可进入。管理员可查看并切换所有授权园区。' : '填写姓名、邮箱、密码并选择园区，管理员审批后即可登录。'}</p>
+                      </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 rounded-lg bg-slate-100 p-1">
+                      <button type="button" onClick={() => { setAuthMode('login'); setSignupMsg(null); }} className={`py-1.5 rounded text-sm font-medium ${authMode === 'login' ? 'bg-white shadow-sm text-sky-700' : 'text-slate-500'}`}>登录</button>
+                      <button type="button" onClick={() => { setAuthMode('register'); setLoginError(null); }} className={`py-1.5 rounded text-sm font-medium ${authMode === 'register' ? 'bg-white shadow-sm text-sky-700' : 'text-slate-500'}`}>注册申请</button>
+                  </div>
+
+                  <div className="space-y-3">
+                      <div>
+                          <label className="block text-xs font-medium text-slate-500 mb-1">邮箱</label>
+                          <input
+                              type="email"
+                              className="w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-sky-100 focus:border-sky-300"
+                              value={authMode === 'login' ? loginForm.email : signupForm.email}
+                              onChange={e => authMode === 'login' ? setLoginForm({ ...loginForm, email: e.target.value }) : setSignupForm(prev => ({ ...prev, email: e.target.value }))}
+                              placeholder="user@example.com"
+                          />
+                      </div>
+                      {authMode === 'register' && (
+                          <div>
+                              <label className="block text-xs font-medium text-slate-500 mb-1">姓名</label>
+                              <input
+                                  type="text"
+                                  className="w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-sky-100 focus:border-sky-300"
+                                  value={signupForm.applicantName}
+                                  onChange={(e) => setSignupForm((prev) => ({ ...prev, applicantName: e.target.value }))}
+                                  placeholder="真实姓名"
+                                  autoComplete="name"
+                              />
+                          </div>
+                      )}
+                      <div>
+                          <label className="block text-xs font-medium text-slate-500 mb-1">密码</label>
+                          <input
+                              type="password"
+                              className="w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-sky-100 focus:border-sky-300"
+                              value={authMode === 'login' ? loginForm.password : signupForm.password}
+                              onChange={e => authMode === 'login' ? setLoginForm({ ...loginForm, password: e.target.value }) : setSignupForm(prev => ({ ...prev, password: e.target.value }))}
+                              placeholder="请输入密码"
+                          />
+                      </div>
+                      {authMode === 'register' && (
+                          <div>
+                              <div className="block text-xs font-medium text-slate-500 mb-2">申请园区（可多选）</div>
+                              <div className="max-h-36 overflow-y-auto bg-slate-50 border border-slate-200 rounded-lg p-2 space-y-1">
+                                  {isLoadingPublicParks ? (
+                                      <div className="text-xs text-slate-500 px-2 py-1">正在加载园区...</div>
+                                  ) : publicParks.length === 0 ? (
+                                      <div className="text-xs text-slate-500 px-2 py-1">暂无可选园区，请联系管理员</div>
+                                  ) : (
+                                      publicParks.map(park => {
+                                          const checked = signupForm.requestedProjectIds.includes(park.projectId);
+                                          return (
+                                              <label key={park.projectId} className="flex items-center gap-2 px-2 py-1.5 rounded hover:bg-white text-sm text-slate-700">
+                                                  <input
+                                                      type="checkbox"
+                                                      checked={checked}
+                                                      onChange={(e) => {
+                                                          const nextIds = e.target.checked
+                                                              ? Array.from(new Set([...signupForm.requestedProjectIds, park.projectId]))
+                                                              : signupForm.requestedProjectIds.filter(pid => pid !== park.projectId);
+                                                          setSignupForm(prev => ({ ...prev, requestedProjectIds: nextIds }));
+                                                      }}
+                                                  />
+                                                  <span>{park.name} ({park.projectId})</span>
+                                              </label>
+                                          );
+                                      })
+                                  )}
+                              </div>
+                          </div>
+                      )}
+                  </div>
+
+                  {loginError && (
+                      <div className="text-sm text-rose-600 bg-rose-50 border border-rose-100 rounded-lg px-3 py-2">
+                          {loginError}
+                      </div>
+                  )}
+                  {signupMsg && (
+                      <div className={`text-sm rounded-lg px-3 py-2 border ${signupMsg.includes('失败') || signupMsg.includes('请') ? 'text-rose-600 bg-rose-50 border-rose-100' : 'text-emerald-700 bg-emerald-50 border-emerald-100'}`}>
+                          {signupMsg}
+                      </div>
+                  )}
+
+                  <button
+                      type="submit"
+                      disabled={authMode === 'login' ? isLoggingIn : isSubmittingSignup}
+                      className="w-full bg-sky-600 text-white rounded-lg py-2.5 font-medium hover:bg-sky-700 disabled:opacity-60 flex items-center justify-center gap-2"
+                  >
+                      {(authMode === 'login' ? isLoggingIn : isSubmittingSignup) ? <Loader2 size={16} className="animate-spin" /> : <Cloud size={16} />}
+                      {authMode === 'login' ? '登录并加载园区数据' : '提交注册申请'}
+                  </button>
+                  <p className="text-xs text-slate-400 leading-relaxed">
+                      {authMode === 'login' ? '普通账号会自动进入已分配园区；如需调整后端地址，请由管理员在部署配置中统一维护。' : '提交后等待管理员审批；审批通过后管理员可在「系统与备份」中按园区查看已通过人员名单。'}
+                  </p>
+              </form>
+          </div>
+      );
+  }
+
   return (
+    <DirtyTrackerProvider recordMeta={recordMeta} tracker={dirtyTrackerRef.current}>
     <div className="min-h-screen bg-slate-50 flex font-sans text-slate-900">
       <div className={`fixed inset-0 bg-black/50 z-30 lg:hidden transition-opacity duration-300 ${isSidebarOpen ? 'opacity-100' : 'opacity-0 pointer-events-none'}`} onClick={() => setSidebarOpen(false)} />
       
@@ -1574,8 +2801,11 @@ const App: React.FC = () => {
           <SidebarItem icon={<Users size={22} />} label="客户管理" isOpen={true} active={activeTab === 'contracts'} onClick={() => { setActiveTab('contracts'); if(window.innerWidth < 1024) setSidebarOpen(false); }} />
           <SidebarItem icon={<PieChart size={22} />} label="财务报表" isOpen={true} active={activeTab === 'finance'} onClick={() => { setActiveTab('finance'); if(window.innerWidth < 1024) setSidebarOpen(false); }} />
           <SidebarItem icon={<Calculator size={22} />} label="预算管理" isOpen={true} active={activeTab === 'budget'} onClick={() => { setActiveTab('budget'); if(window.innerWidth < 1024) setSidebarOpen(false); }} />
+          <SidebarItem icon={<TableIcon size={22} />} label="初始化数据" isOpen={true} active={activeTab === 'initData'} onClick={() => { setActiveTab('initData'); if(window.innerWidth < 1024) setSidebarOpen(false); }} />
           <div className="my-2 h-px bg-slate-100 mx-4" />
-          <SidebarItem icon={<Settings size={22} />} label="系统与备份" isOpen={true} active={activeTab === 'settings'} onClick={() => { setActiveTab('settings'); if(window.innerWidth < 1024) setSidebarOpen(false); }} />
+          {canAccessSystemSettings && (
+            <SidebarItem icon={<Settings size={22} />} label="系统与备份" isOpen={true} active={activeTab === 'settings'} onClick={() => { setActiveTab('settings'); if(window.innerWidth < 1024) setSidebarOpen(false); }} />
+          )}
         </nav>
       </aside>
 
@@ -1583,9 +2813,36 @@ const App: React.FC = () => {
         <header className="h-14 lg:h-16 bg-white border-b border-slate-200 sticky top-0 z-20 px-4 flex items-center justify-between shadow-sm">
           <div className="flex items-center gap-3">
             <button onClick={() => setSidebarOpen(true)} className="p-2 -ml-2 hover:bg-slate-100 rounded-lg text-slate-600 lg:hidden"><Menu size={20} /></button>
-            <h1 className="text-base lg:text-xl font-bold text-slate-800 truncate">{activeTab === 'dashboard' ? '招商管理看板' : activeTab === 'buildings' ? '楼宇资产管理' : activeTab === 'contracts' ? '客户合同中心' : activeTab === 'finance' ? '财务收款报表' : activeTab === 'budget' ? '招商预算管理' : '系统设置'}</h1>
+            <h1 className="text-base lg:text-xl font-bold text-slate-800 truncate">{activeTab === 'dashboard' ? '金蝶地产——招商管理系统' : activeTab === 'buildings' ? '楼宇资产管理' : activeTab === 'contracts' ? '客户合同中心' : activeTab === 'finance' ? '财务收款报表' : activeTab === 'budget' ? '招商预算管理' : activeTab === 'initData' ? '初始化数据' : '系统设置'}</h1>
           </div>
           <div className="flex items-center gap-2 flex-shrink-0">
+             <div className="hidden md:flex items-center gap-2 text-xs bg-slate-50 border border-slate-200 rounded-lg px-2 py-1.5">
+                 <User size={14} className="text-slate-400" />
+                 <span className="text-slate-600 max-w-[120px] truncate">{authUser.email}</span>
+             </div>
+             {isGlobalAdmin() && authorizedParks.length > 1 ? (
+               <div className="hidden sm:flex items-center gap-1 rounded-xl border border-slate-200 bg-slate-50 p-1" title="切换授权园区">
+                 {authorizedParks.map(park => (
+                   <button
+                     key={park.projectId}
+                     type="button"
+                     onClick={() => switchProject(park.projectId)}
+                     disabled={isSyncing || park.projectId === cloudConfig.projectId}
+                     className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${
+                       park.projectId === cloudConfig.projectId
+                         ? 'bg-sky-600 text-white shadow-sm ring-1 ring-sky-500'
+                         : 'text-slate-600 hover:bg-white hover:text-sky-700'
+                     } disabled:cursor-default`}
+                   >
+                     {park.name}
+                   </button>
+                 ))}
+               </div>
+             ) : (
+               <span className="hidden sm:inline-flex text-xs text-slate-600 bg-slate-50 border border-slate-200 rounded-lg px-2 py-1.5">
+                 {authorizedParks.find(park => park.projectId === cloudConfig.projectId)?.name || cloudConfig.projectId}
+               </span>
+             )}
              <button
                type="button"
                onClick={handleSaveToBackend}
@@ -1609,12 +2866,90 @@ const App: React.FC = () => {
                  {isCloudConnected ? <CheckCircle2 size={12} className="text-emerald-500"/> : <Cloud size={12} />}
                  <span>{isCloudConnected ? '后端在线' : '仅本地'}</span>
              </div>
+             <button
+               type="button"
+               onClick={handleLogout}
+               className="p-2 text-slate-400 hover:text-rose-500 hover:bg-rose-50 rounded-lg"
+               title="退出登录"
+             >
+               <LogOut size={16} />
+             </button>
           </div>
         </header>
 
         <div className="p-3 md:p-6 max-w-7xl mx-auto w-full overflow-hidden">
           {activeTab === 'dashboard' && (
             <div className="space-y-4 md:space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
+               {isGlobalAdmin() && (
+                 <div className="bg-slate-900 text-white rounded-2xl shadow-xl overflow-hidden border border-slate-800">
+                   <div className="px-4 md:px-6 py-4 border-b border-white/10 flex flex-col md:flex-row md:items-center md:justify-between gap-2">
+                     <div>
+                       <div className="text-xs text-sky-200 font-semibold tracking-wide">管理员视图</div>
+                       <h2 className="text-lg md:text-xl font-bold mt-1">所有园区经营汇总</h2>
+                     </div>
+                     <div className="text-xs text-slate-300">
+                       {isLoadingAdminSummary ? '正在汇总各园区数据...' : `统计年度 ${selectedYear} · ${adminParkMetrics.length} 个园区`}
+                     </div>
+                   </div>
+                   <div className="p-4 md:p-6 space-y-4">
+                     <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
+                       <div className="bg-white/10 rounded-xl p-3 border border-white/10">
+                         <div className="text-xs text-slate-300">年度营收目标</div>
+                         <div className="text-xl font-bold mt-1">{formatWan(adminSummaryTotals.annualRevenueTarget, 0)}</div>
+                         <div className="text-xs text-slate-400 mt-1">实收 {formatWan(adminSummaryTotals.annualRevenueCollected, 0)}</div>
+                       </div>
+                       <div className="bg-white/10 rounded-xl p-3 border border-white/10">
+                         <div className="text-xs text-slate-300">年度指标完成率</div>
+                         <div className="text-xl font-bold mt-1 text-emerald-300">{formatPct(adminSummaryTotals.annualGoalCompletion, 0)}</div>
+                         <div className="text-xs text-slate-400 mt-1">按年度营收目标</div>
+                       </div>
+                       <div className="bg-white/10 rounded-xl p-3 border border-white/10">
+                         <div className="text-xs text-slate-300">预算执行完成率</div>
+                         <div className="text-xl font-bold mt-1 text-sky-300">{formatPct(adminSummaryTotals.annualBudgetCompletion, 0)}</div>
+                         <div className="text-xs text-slate-400 mt-1">预算 {formatWan(adminSummaryTotals.annualBudgetTarget, 0)}</div>
+                       </div>
+                       <div className="bg-white/10 rounded-xl p-3 border border-white/10">
+                         <div className="text-xs text-slate-300">综合出租率</div>
+                         <div className="text-xl font-bold mt-1 text-amber-300">{formatPct(adminSummaryTotals.occupancyRate, 0)}</div>
+                         <div className="text-xs text-slate-400 mt-1">目标 {formatPct(adminSummaryTotals.annualOccupancyTarget, 0)}</div>
+                       </div>
+                       <div className="bg-white/10 rounded-xl p-3 border border-white/10">
+                         <div className="text-xs text-slate-300">租户 / 可租面积</div>
+                         <div className="text-xl font-bold mt-1">{adminSummaryTotals.tenantCount.toLocaleString()}户</div>
+                         <div className="text-xs text-slate-400 mt-1">{formatArea(adminSummaryTotals.totalArea, 0)}</div>
+                       </div>
+                     </div>
+                     {adminParkMetrics.length > 0 && (
+                       <div className="overflow-x-auto rounded-xl border border-white/10">
+                         <table className="w-full text-xs md:text-sm">
+                           <thead className="bg-white/10 text-slate-200">
+                             <tr>
+                               <th className="text-left px-3 py-2">园区</th>
+                              <th className="text-right px-3 py-2">年度应收目标</th>
+                               <th className="text-right px-3 py-2">实收</th>
+                               <th className="text-right px-3 py-2">年度完成</th>
+                               <th className="text-right px-3 py-2">出租率</th>
+                               <th className="text-right px-3 py-2">租户</th>
+                             </tr>
+                           </thead>
+                           <tbody className="divide-y divide-white/10">
+                             {adminParkMetrics.map(item => (
+                               <tr key={item.projectId} className={item.projectId === cloudConfig.projectId ? 'bg-sky-500/10' : ''}>
+                                 <td className="px-3 py-2 font-medium">{item.name}</td>
+                                <td className="px-3 py-2 text-right tabular-nums">{formatWan(item.annualRevenueTarget, 0)}</td>
+                                 <td className="px-3 py-2 text-right tabular-nums">{formatWan(item.annualRevenueCollected, 0)}</td>
+                                 <td className="px-3 py-2 text-right tabular-nums">{formatPct(item.annualGoalCompletion, 0)}</td>
+                                 <td className="px-3 py-2 text-right tabular-nums">{formatPct(item.occupancyRate, 0)}</td>
+                                 <td className="px-3 py-2 text-right tabular-nums">{item.tenantCount}</td>
+                               </tr>
+                             ))}
+                           </tbody>
+                         </table>
+                       </div>
+                     )}
+                   </div>
+                 </div>
+               )}
                <DashboardAlerts tenants={data.tenants} invoices={data.invoices} />
                <div className="flex items-center justify-between bg-white p-3 rounded-xl border border-slate-100 shadow-sm">
                    <div className="flex items-center gap-2">
@@ -1659,74 +2994,533 @@ const App: React.FC = () => {
                   />
               </div>
           )}
-          {activeTab === 'budget' && (<div className="animate-in fade-in zoom-in-50 duration-300"><BudgetManager buildings={data.buildings} tenants={data.tenants} budgetAssumptions={data.budgetAssumptions} onUpdateAssumptions={updateBudgetAssumptions} budgetAdjustments={data.budgetAdjustments} onUpdateAdjustments={updateBudgetAdjustments} budgetAnalysis={data.budgetAnalysis} onUpdateAnalysis={updateBudgetAnalysis} payments={data.payments} scenarios={data.budgetScenarios || []} onUpdateScenarios={updateBudgetScenarios} onRenameScenario={handleRenameScenario} onActivateScenario={handleActivateScenario} onSaveBudgetToCloud={handleSaveBudgetToCloud} /></div>)}
+          {activeTab === 'budget' && (<div className="animate-in fade-in zoom-in-50 duration-300"><BudgetManager buildings={data.buildings} tenants={data.tenants} budgetAssumptions={data.budgetAssumptions} onUpdateAssumptions={updateBudgetAssumptions} budgetAdjustments={data.budgetAdjustments} onUpdateAdjustments={updateBudgetAdjustments} budgetAnalysis={data.budgetAnalysis} onUpdateAnalysis={updateBudgetAnalysis} payments={data.payments} scenarios={data.budgetScenarios || []} onUpdateScenarios={updateBudgetScenarios} onRenameScenario={handleRenameScenario} onActivateScenario={handleActivateScenario} onSaveBudgetToCloud={handleSaveBudgetToCloud} initializationData={data.initializationData} billingPeriodNotes={data.billingPeriodNotes} onBatchUpdate={handleBatchUpdate} /></div>)}
+          {activeTab === 'initData' && (
+            <div className="animate-in fade-in zoom-in-50 duration-300 max-w-2xl mx-auto space-y-4">
+                <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
+                    <div className="p-4 md:p-6 border-b border-slate-200"><h2 className="text-lg md:text-xl font-bold text-slate-800 flex items-center gap-2"><TableIcon className="text-indigo-500" /> 初始化数据</h2></div>
+                    <div className="p-4 md:p-6 border-b border-slate-200 bg-indigo-50/30">
+                        <div className="flex items-center gap-3 mb-4">
+                            <div className="p-2 bg-white rounded-lg text-indigo-600 shadow-sm border border-indigo-100"><TableIcon size={24} /></div>
+                            <div>
+                                <h3 className="font-bold text-slate-700">系统初始化数据 (2023-2026)</h3>
+                                <div className="text-sm text-slate-500 mt-1">手动录入历史月度应收、实收及出租率数据，用于看板展示；当某月「月度应收」大于 0 时，首页「预算执行」该月预算收款优先取此值，为 0 时回退到预算表/生效方案。2025年12月支持录入累计欠款。</div>
+                            </div>
+                        </div>
+                        <div className="bg-white p-4 rounded-lg border border-slate-200">
+                            <button onClick={openInitDataModal} className="w-full py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 font-medium flex items-center justify-center gap-2">
+                                <FileInput size={16} /> 录入/编辑 初始化数据
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+          )}
           {activeTab === 'settings' && (
              <div className="animate-in fade-in zoom-in-50 duration-300 max-w-2xl mx-auto space-y-4">
                  <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
                      <div className="p-4 md:p-6 border-b border-slate-200"><h2 className="text-lg md:text-xl font-bold text-slate-800 flex items-center gap-2"><Settings className="text-slate-400" /> 系统设置</h2></div>
-                     
-                     <div className="p-4 md:p-6 border-b border-slate-200 bg-indigo-50/30">
-                         <div className="flex items-center gap-3 mb-4">
-                             <div className="p-2 bg-white rounded-lg text-indigo-600 shadow-sm border border-indigo-100"><TableIcon size={24} /></div>
+
+                     <div className="p-4 md:p-6 border-b border-slate-200 bg-sky-50/30">
+                       <div className="flex items-center gap-3 mb-4"><div className="p-2 bg-white rounded-lg text-sky-600 shadow-sm border border-sky-100"><CloudCog size={24} /></div><div><h3 className="font-bold text-slate-700">PocketBase 后端</h3><div className="flex items-center gap-2 text-sm mt-1 text-slate-600">当前以登录账号绑定园区访问后端；可通过 Tailscale IP、MagicDNS 或反向代理域名连接中心 PocketBase。</div><div className="flex items-center gap-2 text-sm mt-2">{isCloudConnected ? (<span className="flex items-center gap-1 text-emerald-600 font-medium"><CheckCircle2 size={14} /> 已连接</span>) : (<span className="flex items-center gap-1 text-rose-500 font-medium"><AlertCircle size={14} /> 未连接</span>)}</div></div></div>
+                        <div className="bg-white p-4 rounded-lg border border-slate-200 space-y-4">
+                            <div className="rounded-lg bg-slate-50 border border-slate-100 p-3">
+                                <div className="text-xs font-medium text-slate-500">后端连接</div>
+                                <div className="text-sm text-slate-700 mt-1">{cloudConfig.pocketbaseUrl || DEFAULT_CLOUD_CONFIG.pocketbaseUrl || '/api/pb'}</div>
+                                <p className="text-xs text-slate-400 mt-1">连接地址由部署配置统一维护，用户登录时无需填写。</p>
+                            </div>
                              <div>
-                                 <h3 className="font-bold text-slate-700">系统初始化数据 (2023-2025)</h3>
-                                 <div className="text-sm text-slate-500 mt-1">手动录入历史月度应收、实收及出租率数据，用于看板展示。2025年12月支持录入累计欠款。</div>
+                                 <label className="block text-xs font-medium text-slate-500 mb-1">当前园区</label>
+                                 <div className="flex gap-2">
+                                     {isGlobalAdmin() ? <select
+                                        className="flex-1 bg-slate-50 border border-slate-200 rounded px-3 py-2 text-sm text-slate-600 outline-none focus:ring-1 focus:ring-sky-200"
+                                        value={cloudConfig.projectId}
+                                        onChange={e => switchProject(e.target.value)}
+                                        disabled={authorizedParks.length <= 1}
+                                     >
+                                        {(authorizedParks.length ? authorizedParks : [{ projectId: cloudConfig.projectId, name: cloudConfig.projectId, enabled: true } as ParkInfo]).map(park => (
+                                            <option key={park.projectId} value={park.projectId}>{park.name} ({park.projectId})</option>
+                                        ))}
+                                     </select> : <div className="flex-1 bg-slate-50 border border-slate-200 rounded px-3 py-2 text-sm text-slate-600">{authorizedParks.find(park => park.projectId === cloudConfig.projectId)?.name || cloudConfig.projectId}</div>}
+                                     <button onClick={handleCloudConfigSave} className="bg-sky-500 text-white px-4 py-2 rounded text-sm hover:bg-sky-600 font-medium transition-colors">保存配置</button>
+                                 </div>
+                                 <p className="text-xs text-slate-400 mt-1">{isGlobalAdmin() ? '管理员可在授权园区间切换。' : '普通用户登录后自动进入已分配园区。'}</p>
                              </div>
-                         </div>
-                         <div className="bg-white p-4 rounded-lg border border-slate-200">
-                             <button onClick={openInitDataModal} className="w-full py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 font-medium flex items-center justify-center gap-2">
-                                 <FileInput size={16} /> 录入/编辑 初始化数据
-                             </button>
                          </div>
                      </div>
 
-                     <div className="p-4 md:p-6 border-b border-slate-200 bg-sky-50/30">
-                        <div className="flex items-center gap-3 mb-4"><div className="p-2 bg-white rounded-lg text-sky-600 shadow-sm border border-sky-100"><CloudCog size={24} /></div><div><h3 className="font-bold text-slate-700">PocketBase 后端</h3><div className="flex items-center gap-2 text-sm mt-1 text-slate-600">数据直连本地/内网 PocketBase，无中间云端服务。应用启动会自动连接后端；编辑后请点击右上角「保存」写入后端。</div><div className="flex items-center gap-2 text-sm mt-2">{isCloudConnected ? (<span className="flex items-center gap-1 text-emerald-600 font-medium"><CheckCircle2 size={14} /> 已连接</span>) : (<span className="flex items-center gap-1 text-rose-500 font-medium"><AlertCircle size={14} /> 未连接</span>)}</div></div></div>
-                         <div className="bg-white p-4 rounded-lg border border-slate-200 space-y-4">
-                                     <div>
-                                         <label className="block text-xs font-medium text-slate-500 mb-1">PocketBase URL</label>
-                                         <input 
-                                             type="text" 
-                                             className="w-full bg-slate-50 border border-slate-200 rounded px-3 py-2 text-sm text-slate-600 outline-none focus:ring-1 focus:ring-sky-200" 
-                                             placeholder="http://127.0.0.1:8090"
-                                             value={cloudConfig.pocketbaseUrl || ''}
-                                             onChange={e => setCloudConfig({...cloudConfig, pocketbaseUrl: e.target.value})}
-                                         />
-                                     </div>
-                                     <div>
-                                         <label className="block text-xs font-medium text-slate-500 mb-1">邮箱（可选，视 API 规则而定）</label>
-                                         <input 
-                                             type="email" 
-                                             className="w-full bg-slate-50 border border-slate-200 rounded px-3 py-2 text-sm text-slate-600 outline-none focus:ring-1 focus:ring-sky-200" 
-                                             placeholder="admin@example.com"
-                                             value={cloudConfig.pocketbaseEmail || ''}
-                                             onChange={e => setCloudConfig({...cloudConfig, pocketbaseEmail: e.target.value})}
-                                         />
-                                     </div>
-                                     <div>
-                                         <label className="block text-xs font-medium text-slate-500 mb-1">密码（可选）</label>
-                                         <input 
-                                             type="password" 
-                                             className="w-full bg-slate-50 border border-slate-200 rounded px-3 py-2 text-sm text-slate-600 outline-none focus:ring-1 focus:ring-sky-200" 
-                                             placeholder="请输入密码"
-                                             value={cloudConfig.pocketbasePassword || ''}
-                                             onChange={e => setCloudConfig({...cloudConfig, pocketbasePassword: e.target.value})}
-                                         />
-                                     </div>
-                             <div>
-                                 <label className="block text-xs font-medium text-slate-500 mb-1">项目标识 (Project ID)</label>
-                                 <div className="flex gap-2">
-                                     <input 
-                                         type="text" 
-                                         className="flex-1 bg-slate-50 border border-slate-200 rounded px-3 py-2 text-sm text-slate-600 outline-none focus:ring-1 focus:ring-sky-200" 
-                                         value={cloudConfig.projectId} 
-                                         onChange={e => setCloudConfig({...cloudConfig, projectId: e.target.value})} 
-                                     />
-                                     <button onClick={handleCloudConfigSave} className="bg-sky-500 text-white px-4 py-2 rounded text-sm hover:bg-sky-600 font-medium transition-colors">保存配置</button>
-                                 </div>
-                             </div>
-                         </div>
-                     </div>
+                    <div className="p-4 md:p-6 border-b border-slate-200 bg-emerald-50/40">
+                        <div className="flex items-center gap-3 mb-4">
+                            <div className="p-2 bg-white rounded-lg text-emerald-600 shadow-sm border border-emerald-100"><Users size={24} /></div>
+                            <div>
+                                <h3 className="font-bold text-slate-700">登录人员管理（管理员）</h3>
+                                <div className="text-sm text-slate-500 mt-1">管理员可新增登录人员，并审批待启用账号。</div>
+                            </div>
+                        </div>
+                        {!isPlatformAdmin() ? (
+                            <div className="bg-white border border-amber-100 text-amber-700 rounded-lg px-4 py-3 text-sm">
+                                当前账号为管理员但非平台管理员，仅可查看系统设置，不可维护登录人员。
+                            </div>
+                        ) : (
+                            <div className="space-y-4">
+                                <form onSubmit={handleCreateManagedUser} className="bg-white p-4 rounded-lg border border-slate-200 grid grid-cols-1 md:grid-cols-2 gap-3">
+                                    <input
+                                        className="bg-slate-50 border border-slate-200 rounded px-3 py-2 text-sm"
+                                        placeholder="登录邮箱"
+                                        value={newUserForm.email}
+                                        onChange={e => setNewUserForm(prev => ({ ...prev, email: e.target.value }))}
+                                    />
+                                    <input
+                                        className="bg-slate-50 border border-slate-200 rounded px-3 py-2 text-sm"
+                                        placeholder="姓名（可选）"
+                                        value={newUserForm.name}
+                                        onChange={e => setNewUserForm(prev => ({ ...prev, name: e.target.value }))}
+                                    />
+                                    <input
+                                        type="password"
+                                        className="bg-slate-50 border border-slate-200 rounded px-3 py-2 text-sm"
+                                        placeholder="初始密码"
+                                        value={newUserForm.password}
+                                        onChange={e => setNewUserForm(prev => ({ ...prev, password: e.target.value }))}
+                                    />
+                                    <select
+                                        className="bg-slate-50 border border-slate-200 rounded px-3 py-2 text-sm"
+                                        value={newUserForm.role}
+                                        onChange={e => setNewUserForm(prev => ({ ...prev, role: e.target.value as 'park_user' | 'park_admin' | 'group_admin' }))}
+                                    >
+                                        <option value="park_user">普通用户（park_user）</option>
+                                        <option value="park_admin">园区管理员（park_admin）</option>
+                                        <option value="group_admin">集团管理员（group_admin）</option>
+                                    </select>
+                                    <input
+                                        className="bg-slate-50 border border-slate-200 rounded px-3 py-2 text-sm"
+                                        placeholder="默认园区 project_id"
+                                        value={newUserForm.projectId}
+                                        onChange={e => setNewUserForm(prev => ({ ...prev, projectId: e.target.value }))}
+                                    />
+                                    <label className="flex items-center gap-2 text-sm text-slate-600">
+                                        <input
+                                            type="checkbox"
+                                            checked={newUserForm.enabled}
+                                            onChange={e => setNewUserForm(prev => ({ ...prev, enabled: e.target.checked }))}
+                                        />
+                                        新增后直接启用（不勾选则待审批）
+                                    </label>
+                                    <div className="md:col-span-2 flex justify-end gap-2">
+                                        <button type="button" onClick={loadManagedUsers} className="px-4 py-2 rounded border border-slate-200 text-slate-600 hover:bg-slate-50 text-sm">刷新列表</button>
+                                        <button type="submit" disabled={isCreatingUser} className="px-4 py-2 rounded bg-emerald-600 text-white hover:bg-emerald-700 text-sm disabled:opacity-60">
+                                            {isCreatingUser ? '提交中...' : '新增登录人员'}
+                                        </button>
+                                    </div>
+                                </form>
+
+                                <div className="bg-white rounded-lg border border-slate-200 overflow-hidden">
+                                    <div className="px-4 py-3 border-b border-slate-100 flex items-center justify-between">
+                                        <div className="text-sm font-semibold text-slate-700">待审批账号</div>
+                                        <div className="text-xs text-slate-400">{managedUsers.filter(u => !u.enabled).length} 条</div>
+                                    </div>
+                                    <div className="max-h-64 overflow-y-auto">
+                                        {isLoadingManagedUsers ? (
+                                            <div className="px-4 py-3 text-sm text-slate-500">正在加载登录人员...</div>
+                                        ) : managedUsersError ? (
+                                            <div className="px-4 py-3 text-sm text-rose-600">{managedUsersError}</div>
+                                        ) : managedUsers.filter(u => !u.enabled).length === 0 ? (
+                                            <div className="px-4 py-3 text-sm text-slate-500">暂无待审批账号</div>
+                                        ) : (
+                                            managedUsers.filter(u => !u.enabled).map(u => (
+                                                <div key={u.id} className="px-4 py-3 border-t border-slate-100 flex items-center justify-between gap-3">
+                                                    <div className="min-w-0">
+                                                        <div className="font-medium text-sm text-slate-700 truncate">{u.email}</div>
+                                                        <div className="text-xs text-slate-500 mt-1">{u.name || '未填写姓名'} · {u.projectId || '未绑定园区'} · {u.role}</div>
+                                                    </div>
+                                                    <button onClick={() => handleApproveManagedUser(u, true)} className="px-3 py-1.5 text-xs rounded bg-emerald-600 text-white hover:bg-emerald-700">审批通过</button>
+                                                </div>
+                                            ))
+                                        )}
+                                    </div>
+                                </div>
+
+                                <div className="bg-white rounded-lg border border-slate-200 overflow-hidden">
+                                    <div className="px-4 py-3 border-b border-slate-100 flex items-center justify-between">
+                                        <div className="text-sm font-semibold text-slate-700">已启用登录账号</div>
+                                        <div className="text-xs text-slate-400">
+                                            {managedUsers.filter((u) => u.enabled).length} 个
+                                        </div>
+                                    </div>
+                                    <div className="max-h-72 overflow-y-auto">
+                                        {isLoadingManagedUsers ? (
+                                            <div className="px-4 py-3 text-sm text-slate-500">正在加载...</div>
+                                        ) : managedUsers.filter((u) => u.enabled).length === 0 ? (
+                                            <div className="px-4 py-3 text-sm text-slate-500">暂无已启用账号</div>
+                                        ) : (
+                                            managedUsers
+                                                .filter((u) => u.enabled)
+                                                .map((u) => (
+                                                    <div
+                                                        key={u.id}
+                                                        className="px-4 py-3 border-t border-slate-100 flex flex-wrap items-center justify-between gap-2"
+                                                    >
+                                                        <div className="min-w-0">
+                                                            <div className="font-medium text-sm text-slate-800 truncate">
+                                                                {u.email}
+                                                            </div>
+                                                            <div className="text-xs text-slate-500 mt-0.5">
+                                                                {u.name || '未填姓名'} · {u.role} · 默认{' '}
+                                                                {u.projectId || '—'} · 可访问{' '}
+                                                                {u.allowedProjectIds.length
+                                                                    ? u.allowedProjectIds.join('、')
+                                                                    : '—'}
+                                                            </div>
+                                                        </div>
+                                                        <div className="flex flex-wrap gap-1.5 shrink-0">
+                                                            <button
+                                                                type="button"
+                                                                onClick={() => openUserManageModal(u)}
+                                                                className="inline-flex items-center gap-1 px-2.5 py-1 text-xs rounded border border-slate-200 text-slate-700 hover:bg-slate-50"
+                                                            >
+                                                                <Pencil size={12} /> 编辑
+                                                            </button>
+                                                            <button
+                                                                type="button"
+                                                                onClick={() => openUserManageModal(u)}
+                                                                className="inline-flex items-center gap-1 px-2.5 py-1 text-xs rounded border border-indigo-200 text-indigo-700 hover:bg-indigo-50"
+                                                            >
+                                                                <UserCog size={12} /> 权限
+                                                            </button>
+                                                            <button
+                                                                type="button"
+                                                                onClick={() => {
+                                                                    if (
+                                                                        !window.confirm(
+                                                                            `确定删除登录账号「${u.email}」？\n该账号将无法登录，关联的「已审批通过」申请记录也会一并清理。`
+                                                                        )
+                                                                    ) {
+                                                                        return;
+                                                                    }
+                                                                    void (async () => {
+                                                                        const res = await deleteManagedCloudUser(
+                                                                            u.id,
+                                                                            authUser?.id
+                                                                        );
+                                                                        if (!res.success) {
+                                                                            alert(res.message || '删除失败');
+                                                                            return;
+                                                                        }
+                                                                        await Promise.all([
+                                                                            loadManagedUsers(),
+                                                                            loadSignupRequests(),
+                                                                        ]);
+                                                                        alert(res.message || '已删除账号');
+                                                                    })();
+                                                                }}
+                                                                className="inline-flex items-center gap-1 px-2.5 py-1 text-xs rounded border border-rose-200 text-rose-700 hover:bg-rose-50"
+                                                            >
+                                                                <Trash2 size={12} /> 删除
+                                                            </button>
+                                                        </div>
+                                                    </div>
+                                                ))
+                                        )}
+                                    </div>
+                                </div>
+
+                                <div className="bg-white rounded-lg border border-slate-200 overflow-hidden">
+                                    <div className="px-4 py-3 border-b border-slate-100 flex items-center justify-between">
+                                        <div className="text-sm font-semibold text-slate-700">注册申请审批（姓名/邮箱/密码/园区）</div>
+                                        <div className="text-xs text-slate-400">{signupRequests.filter(r => r.status === 'pending').length} 条待审批</div>
+                                    </div>
+                                    <div className="max-h-72 overflow-y-auto">
+                                        {isLoadingSignupRequests ? (
+                                            <div className="px-4 py-3 text-sm text-slate-500">正在加载注册申请...</div>
+                                        ) : signupRequestsError ? (
+                                            <div className="px-4 py-3 text-sm text-rose-600">{signupRequestsError}</div>
+                                        ) : signupRequests.filter(r => r.status === 'pending').length === 0 ? (
+                                            <div className="px-4 py-3 text-sm text-slate-500">暂无待审批注册申请</div>
+                                        ) : (
+                                            signupRequests.filter(r => r.status === 'pending').map(req => (
+                                                <div key={req.id} className="px-4 py-3 border-t border-slate-100 space-y-2">
+                                                    <div className="text-sm font-semibold text-slate-700">{req.applicantName || '（未填姓名）'}</div>
+                                                    <div className="text-xs text-slate-600">邮箱：{req.email}</div>
+                                                    <div className="text-xs text-slate-600">密码：{req.password || '（未填写）'}</div>
+                                                    <div className="text-xs text-slate-600">申请园区：{req.requestedProjectIds.length ? req.requestedProjectIds.join('、') : '无'}</div>
+                                                    <div className="flex justify-end">
+                                                        <button onClick={() => handleApproveSignupRequest(req)} className="px-3 py-1.5 text-xs rounded bg-emerald-600 text-white hover:bg-emerald-700">审批通过并创建账号</button>
+                                                    </div>
+                                                </div>
+                                            ))
+                                        )}
+                                    </div>
+                                </div>
+
+                                <div className="bg-white rounded-lg border border-slate-200 overflow-hidden">
+                                    <div className="px-4 py-3 border-b border-slate-100">
+                                        <div className="text-sm font-semibold text-slate-700">已审批通过的人员清单</div>
+                                        <div className="text-xs text-slate-400 mt-0.5">按申请园区分别列出（同一人在多个园区申请则各园区各显示一条）</div>
+                                    </div>
+                                    <div className="max-h-96 overflow-y-auto">
+                                        {isLoadingSignupRequests ? (
+                                            <div className="px-4 py-3 text-sm text-slate-500">正在加载...</div>
+                                        ) : signupRequestsError ? (
+                                            <div className="px-4 py-3 text-sm text-rose-600">{signupRequestsError}</div>
+                                        ) : approvedSignupByPark.parkOrder.length === 0 ? (
+                                            <div className="px-4 py-3 text-sm text-slate-500">暂无通过线上注册审批的人员</div>
+                                        ) : (
+                                            approvedSignupByPark.parkOrder.map((projectId) => {
+                                                  const parkTitle =
+                                                      authorizedParks.find((p) => p.projectId === projectId)?.name || projectId;
+                                                  const rows = approvedSignupByPark.byPark.get(projectId) || [];
+                                                  return (
+                                                      <div key={projectId} className="border-t border-slate-200 first:border-t-0">
+                                                          <div className="px-4 py-2 bg-slate-50 text-sm font-medium text-slate-800">
+                                                              {parkTitle}
+                                                              <span className="text-slate-400 font-normal ml-1">({projectId})</span>
+                                                          </div>
+                                                          {rows.map((req) => {
+                                                              const linked =
+                                                                  req.approvedUserId
+                                                                      ? managedUsers.find((x) => x.id === req.approvedUserId)
+                                                                      : managedUsers.find(
+                                                                            (x) =>
+                                                                                x.email.trim().toLowerCase() ===
+                                                                                req.email.trim().toLowerCase()
+                                                                        );
+                                                              const orphan = !linked;
+                                                              return (
+                                                                  <div
+                                                                      key={`${req.id}-${projectId}`}
+                                                                      className="px-4 py-2.5 border-t border-slate-100 text-sm"
+                                                                  >
+                                                                      <div className="font-medium text-slate-800">
+                                                                          {req.applicantName || '（未填姓名）'}
+                                                                      </div>
+                                                                      <div className="text-xs text-slate-600 mt-0.5">
+                                                                          邮箱：{req.email}
+                                                                      </div>
+                                                                      <div className="text-xs text-slate-500 mt-0.5">
+                                                                          审批时间：
+                                                                          {req.approvedAt
+                                                                              ? new Date(req.approvedAt).toLocaleString()
+                                                                              : '—'}
+                                                                      </div>
+                                                                      <div className="flex flex-wrap gap-1.5 mt-2 justify-end">
+                                                                          {linked && (
+                                                                              <>
+                                                                                  <button
+                                                                                      type="button"
+                                                                                      onClick={() => openUserManageModal(linked)}
+                                                                                      className="inline-flex items-center gap-1 px-2 py-0.5 text-[11px] rounded border border-slate-200 text-slate-700 hover:bg-slate-50"
+                                                                                  >
+                                                                                      <Pencil size={11} /> 编辑
+                                                                                  </button>
+                                                                                  <button
+                                                                                      type="button"
+                                                                                      onClick={() => openUserManageModal(linked)}
+                                                                                      className="inline-flex items-center gap-1 px-2 py-0.5 text-[11px] rounded border border-indigo-200 text-indigo-700 hover:bg-indigo-50"
+                                                                                  >
+                                                                                      <UserCog size={11} /> 权限
+                                                                                  </button>
+                                                                                  <button
+                                                                                      type="button"
+                                                                                      onClick={() => {
+                                                                                          if (
+                                                                                              !window.confirm(
+                                                                                                  `确定删除登录账号「${linked.email}」？\n关联的审批/申请记录也将一并清理。`
+                                                                                              )
+                                                                                          ) {
+                                                                                              return;
+                                                                                          }
+                                                                                          void (async () => {
+                                                                                              const res =
+                                                                                                  await deleteManagedCloudUser(
+                                                                                                      linked.id,
+                                                                                                      authUser?.id
+                                                                                                  );
+                                                                                              if (!res.success) {
+                                                                                                  alert(res.message || '删除失败');
+                                                                                                  return;
+                                                                                              }
+                                                                                              await Promise.all([
+                                                                                                  loadManagedUsers(),
+                                                                                                  loadSignupRequests(),
+                                                                                              ]);
+                                                                                              alert(res.message || '已删除账号');
+                                                                                          })();
+                                                                                      }}
+                                                                                      className="inline-flex items-center gap-1 px-2 py-0.5 text-[11px] rounded border border-rose-200 text-rose-700 hover:bg-rose-50"
+                                                                                  >
+                                                                                      <Trash2 size={11} /> 删除账号
+                                                                                  </button>
+                                                                              </>
+                                                                          )}
+                                                                          <button
+                                                                              type="button"
+                                                                              onClick={() => void handleDeleteSignupRequest(req)}
+                                                                              className="inline-flex items-center gap-1 px-2 py-0.5 text-[11px] rounded border border-amber-200 text-amber-700 hover:bg-amber-50"
+                                                                              title="仅清理审批/申请记录，不影响已创建账号"
+                                                                          >
+                                                                              <Trash2 size={11} /> 清理审批记录
+                                                                          </button>
+                                                                      </div>
+                                                                      {orphan && (
+                                                                          <div className="text-[11px] text-amber-600 mt-2">
+                                                                              已绑定用户 ID 但 users 表中已无该记录（账号已被删除或未授权可见）。可点击「清理审批记录」移除该条孤立条目。
+                                                                          </div>
+                                                                      )}
+                                                                  </div>
+                                                              );
+                                                          })}
+                                                      </div>
+                                                  );
+                                              })
+                                        )}
+                                    </div>
+                                </div>
+
+                                {userManageTarget && (
+                                    <div className="fixed inset-0 z-[80] flex items-center justify-center p-4 bg-black/40">
+                                        <div className="bg-white rounded-xl shadow-xl border border-slate-200 max-w-md w-full max-h-[90vh] overflow-y-auto p-5 space-y-4">
+                                            <div className="flex items-start justify-between gap-2">
+                                                <div>
+                                                    <h4 className="font-bold text-slate-800 text-sm">管理登录账号</h4>
+                                                    <p className="text-xs text-slate-500 mt-0.5 break-all">{userManageTarget.email}</p>
+                                                </div>
+                                                <button
+                                                    type="button"
+                                                    aria-label="关闭"
+                                                    className="p-1 rounded hover:bg-slate-100 text-slate-500"
+                                                    onClick={() => setUserManageTarget(null)}
+                                                >
+                                                    <X size={18} />
+                                                </button>
+                                            </div>
+                                            <div>
+                                                <label className="block text-xs font-medium text-slate-500 mb-1">姓名</label>
+                                                <input
+                                                    className="w-full bg-slate-50 border border-slate-200 rounded px-3 py-2 text-sm"
+                                                    value={userManageForm.name}
+                                                    onChange={(e) =>
+                                                        setUserManageForm((p) => ({ ...p, name: e.target.value }))
+                                                    }
+                                                />
+                                            </div>
+                                            <div>
+                                                <label className="block text-xs font-medium text-slate-500 mb-1">角色</label>
+                                                <select
+                                                    className="w-full bg-slate-50 border border-slate-200 rounded px-3 py-2 text-sm"
+                                                    value={userManageForm.role}
+                                                    onChange={(e) =>
+                                                        setUserManageForm((p) => ({
+                                                            ...p,
+                                                            role: e.target.value as UserRole,
+                                                        }))
+                                                    }
+                                                >
+                                                    <option value="park_user">普通用户（park_user）</option>
+                                                    <option value="park_admin">园区管理员（park_admin）</option>
+                                                    <option value="group_admin">集团管理员（group_admin）</option>
+                                                    <option value="platform_admin">平台管理员（platform_admin）</option>
+                                                </select>
+                                            </div>
+                                            <div>
+                                                <label className="block text-xs font-medium text-slate-500 mb-1">
+                                                    默认园区 project_id
+                                                </label>
+                                                <input
+                                                    className="w-full bg-slate-50 border border-slate-200 rounded px-3 py-2 text-sm font-mono"
+                                                    value={userManageForm.projectId}
+                                                    onChange={(e) =>
+                                                        setUserManageForm((p) => ({ ...p, projectId: e.target.value }))
+                                                    }
+                                                />
+                                            </div>
+                                            <div>
+                                                <label className="block text-xs font-medium text-slate-500 mb-1">
+                                                    可访问园区（含默认园区）
+                                                </label>
+                                                <div className="space-y-2 border border-slate-100 rounded-lg p-3 bg-slate-50/80 max-h-40 overflow-y-auto">
+                                                    {(authorizedParks.length ? authorizedParks : []).map((park) => (
+                                                        <label
+                                                            key={park.projectId}
+                                                            className="flex items-center gap-2 text-sm text-slate-700"
+                                                        >
+                                                            <input
+                                                                type="checkbox"
+                                                                checked={userManageForm.allowedParkIds.includes(
+                                                                    park.projectId
+                                                                )}
+                                                                onChange={(e) =>
+                                                                    toggleUserManagePark(park.projectId, e.target.checked)
+                                                                }
+                                                            />
+                                                            <span>
+                                                                {park.name}{' '}
+                                                                <span className="text-slate-400">({park.projectId})</span>
+                                                            </span>
+                                                        </label>
+                                                    ))}
+                                                    {authorizedParks.length === 0 && (
+                                                        <p className="text-xs text-amber-600">
+                                                            当前未加载园区目录，可直接保存默认园区；完整多选需先能拉取 pb_parks。
+                                                        </p>
+                                                    )}
+                                                </div>
+                                            </div>
+                                            <label className="flex items-center gap-2 text-sm text-slate-600">
+                                                <input
+                                                    type="checkbox"
+                                                    checked={userManageForm.enabled}
+                                                    onChange={(e) =>
+                                                        setUserManageForm((p) => ({ ...p, enabled: e.target.checked }))
+                                                    }
+                                                />
+                                                账号已启用（可登录）
+                                            </label>
+                                            <div>
+                                                <label className="block text-xs font-medium text-slate-500 mb-1">
+                                                    新密码（留空表示不修改，至少 8 位）
+                                                </label>
+                                                <input
+                                                    type="password"
+                                                    className="w-full bg-slate-50 border border-slate-200 rounded px-3 py-2 text-sm"
+                                                    value={userManageForm.password}
+                                                    onChange={(e) =>
+                                                        setUserManageForm((p) => ({ ...p, password: e.target.value }))
+                                                    }
+                                                    placeholder="不修改请留空"
+                                                    autoComplete="new-password"
+                                                />
+                                            </div>
+                                            <div className="flex flex-wrap gap-2 justify-end pt-2 border-t border-slate-100">
+                                                <button
+                                                    type="button"
+                                                    className="px-3 py-2 text-sm rounded border border-slate-200 text-slate-600 hover:bg-slate-50"
+                                                    onClick={() => setUserManageTarget(null)}
+                                                >
+                                                    取消
+                                                </button>
+                                                <button
+                                                    type="button"
+                                                    className="px-3 py-2 text-sm rounded border border-rose-200 text-rose-700 hover:bg-rose-50"
+                                                    disabled={userManageSaving}
+                                                    onClick={() => void handleDeleteUserManageModal()}
+                                                >
+                                                    删除账号
+                                                </button>
+                                                <button
+                                                    type="button"
+                                                    className="px-3 py-2 text-sm rounded bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-50"
+                                                    disabled={userManageSaving}
+                                                    onClick={() => void handleSaveUserManageModal()}
+                                                >
+                                                    {userManageSaving ? '保存中…' : '保存'}
+                                                </button>
+                                            </div>
+                                        </div>
+                                    </div>
+                                )}
+                            </div>
+                        )}
+                    </div>
                      
                      {/* AI API Configuration */}
                      <div className="p-4 md:p-6 border-b border-slate-200 bg-purple-50/30">
@@ -1885,7 +3679,7 @@ const App: React.FC = () => {
                              </div>
                          </div>
                      )}
-                     <div className="p-4 md:p-6 bg-slate-50/50"><h3 className="font-bold text-slate-700 mb-4 flex items-center gap-2"><Database size={18} /> 本地数据管理</h3><div className="space-y-3"><div className="flex items-center justify-between p-3 bg-white border border-slate-200 rounded-lg"><div><div className="text-sm font-medium text-slate-700">导出数据备份 (JSON)</div><div className="text-xs text-slate-400">将当前所有数据导出为本地文件</div></div><button onClick={handleExport} className="px-3 py-1.5 text-slate-600 bg-slate-100 hover:bg-slate-200 rounded text-xs font-medium transition-colors">导出</button></div><div className="flex items-center justify-between p-3 bg-white border border-slate-200 rounded-lg"><div><div className="text-sm font-medium text-slate-700">导入数据恢复</div><div className="text-xs text-slate-400">从JSON文件恢复数据 (将覆盖当前数据)</div></div><label className="px-3 py-1.5 text-slate-600 bg-slate-100 hover:bg-slate-200 rounded text-xs font-medium transition-colors cursor-pointer">选择文件<input type="file" className="hidden" accept=".json" onChange={handleImport} /></label></div><div className="flex items-center justify-between p-3 bg-rose-50 border border-rose-100 rounded-lg"><div><div className="text-sm font-medium text-rose-700">重置系统</div><div className="text-xs text-rose-400">清除所有本地数据并恢复默认演示数据</div></div><button onClick={handleResetData} className="px-3 py-1.5 text-rose-600 bg-white border border-rose-200 hover:bg-rose-100 rounded text-xs font-medium transition-colors">重置</button></div></div></div>
+                     <div className="p-4 md:p-6 bg-slate-50/50"><h3 className="font-bold text-slate-700 mb-4 flex items-center gap-2"><Database size={18} /> 本地数据管理</h3><div className="space-y-3"><div className="flex items-center justify-between p-3 bg-white border border-slate-200 rounded-lg"><div><div className="text-sm font-medium text-slate-700">导出当前园区备份 (JSON)</div><div className="text-xs text-slate-400">导出文件会写入 project_id={cloudConfig.projectId}，用于后续隔离恢复</div></div><button onClick={handleExport} className="px-3 py-1.5 text-slate-600 bg-slate-100 hover:bg-slate-200 rounded text-xs font-medium transition-colors">导出</button></div><div className="flex items-center justify-between p-3 bg-white border border-slate-200 rounded-lg"><div><div className="text-sm font-medium text-slate-700">导入到当前园区</div><div className="text-xs text-slate-400">上传前校验备份 project_id；旧格式文件需要确认目标园区，只恢复到 {cloudConfig.projectId}</div></div><label className="px-3 py-1.5 text-slate-600 bg-slate-100 hover:bg-slate-200 rounded text-xs font-medium transition-colors cursor-pointer">选择文件<input type="file" className="hidden" accept=".json" onChange={handleImport} /></label></div><div className="flex items-center justify-between p-3 bg-rose-50 border border-rose-100 rounded-lg"><div><div className="text-sm font-medium text-rose-700">重置当前园区本地缓存</div><div className="text-xs text-rose-400">只清除当前园区浏览器缓存，不影响其他园区与后端</div></div><button onClick={handleResetData} className="px-3 py-1.5 text-rose-600 bg-white border border-rose-200 hover:bg-rose-100 rounded text-xs font-medium transition-colors">重置</button></div></div></div>
                  </div>
                  <div className="text-center text-xs text-slate-400"><p>Kingdee Park Management System v4.0</p><p>© 2024 Kingdee. All rights reserved.</p></div>
              </div>
@@ -1999,6 +3793,7 @@ const App: React.FC = () => {
                               <button onClick={() => handleInitYearChange(2023)} className={`px-4 py-1.5 rounded-md text-sm font-bold transition-all ${initDataYear === 2023 ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-500'}`}>2023年</button>
                               <button onClick={() => handleInitYearChange(2024)} className={`px-4 py-1.5 rounded-md text-sm font-bold transition-all ${initDataYear === 2024 ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-500'}`}>2024年</button>
                               <button onClick={() => handleInitYearChange(2025)} className={`px-4 py-1.5 rounded-md text-sm font-bold transition-all ${initDataYear === 2025 ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-500'}`}>2025年</button>
+                              <button onClick={() => handleInitYearChange(2026)} className={`px-4 py-1.5 rounded-md text-sm font-bold transition-all ${initDataYear === 2026 ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-500'}`}>2026年</button>
                           </div>
                       </div>
                       <button onClick={() => setIsInitDataModalOpen(false)}><X size={24} className="text-slate-400 hover:text-slate-600"/></button>
@@ -2098,7 +3893,17 @@ const App: React.FC = () => {
               </div>
           </div>
       )}
+
+      <ConflictDialog
+        open={pendingConflicts.length > 0}
+        conflicts={pendingConflicts}
+        onClose={() => setPendingConflicts([])}
+        onResolve={async (decisions) => {
+            await handleResolveConflict(decisions);
+        }}
+      />
     </div>
+    </DirtyTrackerProvider>
   );
 };
 

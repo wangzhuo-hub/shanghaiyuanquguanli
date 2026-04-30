@@ -12,12 +12,12 @@ function normalizePocketbaseUrl(raw: string | undefined): string {
         if (typeof window !== 'undefined') {
             return new URL(t.startsWith('/') ? t : `/${t}`, window.location.origin).href;
         }
-        return `http://localhost:8001${t.startsWith('/') ? t : `/${t}`}`;
+        return `http://localhost:1002${t.startsWith('/') ? t : `/${t}`}`;
     }
     if (typeof window !== 'undefined') {
         return new URL('/api/pb', window.location.origin).href;
     }
-    return 'http://localhost:8001';
+    return 'http://localhost:1002';
 }
 
 /** 默认 PocketBase 根 URL（含子路径部署时的完整 URL） */

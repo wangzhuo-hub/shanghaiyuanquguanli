@@ -2,6 +2,7 @@
 import React from 'react';
 import { DashboardData, ContractStatus } from '../types';
 import { ChevronDown, ChevronRight, TrendingUp, TrendingDown, Target, Activity } from 'lucide-react';
+import { formatArea, formatPercent, formatWan } from '../services/numberFormat';
 
 const StatusBadge: React.FC<{ status: ContractStatus }> = ({ status }) => {
   const styles = {
@@ -37,7 +38,7 @@ const ActivityCard: React.FC<{ tenant: any, buildingName: string, unitNames: str
      <div className="text-xs text-slate-500 space-y-1">
          <div className="flex justify-between">
              <span>位置: {buildingName} {unitNames}</span>
-             <span className="font-semibold text-slate-700">{tenant.totalArea} ㎡</span>
+             <span className="font-semibold text-slate-700">{formatArea(tenant.totalArea)}</span>
          </div>
          <div className="text-slate-400">{tenant.leaseStart} ~ {tenant.leaseEnd}</div>
      </div>
@@ -86,7 +87,7 @@ export const RecentActivityTable: React.FC<{ data: DashboardData }> = ({ data })
                 <td className="px-6 py-4 text-slate-600">
                   {building?.name} <span className="text-slate-500 text-xs ml-1">{unitNames}</span>
                 </td>
-                <td className="px-6 py-4 text-slate-800 font-semibold text-right">{tenant.totalArea} ㎡</td>
+                <td className="px-6 py-4 text-slate-800 font-semibold text-right">{formatArea(tenant.totalArea)}</td>
                 <td className="px-6 py-4 text-slate-500">{tenant.leaseStart} 至 {tenant.leaseEnd}</td>
                 <td className="px-6 py-4">
                   <StatusBadge status={tenant.status} />
@@ -122,7 +123,7 @@ const ExpiryCard: React.FC<{ tenant: any, daysLeft: number }> = ({ tenant, daysL
         </div>
         <div className="text-right">
              <div className="text-xs text-slate-400 mb-1">{daysLeft > 0 ? `剩 ${daysLeft} 天` : '已过期'}</div>
-             <div className="text-sm font-bold text-slate-700">{tenant.totalArea} ㎡</div>
+             <div className="text-sm font-bold text-slate-700">{formatArea(tenant.totalArea)}</div>
         </div>
     </div>
 );
@@ -134,7 +135,7 @@ export const ExpiringSoonTable: React.FC<{ data: DashboardData }> = ({ data }) =
     <div className="bg-white rounded-xl shadow-sm border border-slate-100 overflow-hidden h-full">
       <div className="p-4 md:p-6 border-b border-slate-100 flex justify-between items-center bg-amber-50/50">
         <h3 className="text-lg font-semibold text-amber-900">到期预警</h3>
-        <span className="text-xs font-semibold bg-amber-100 text-amber-700 px-2 py-1 rounded">合计空置: {totalArea.toLocaleString()} ㎡</span>
+        <span className="text-xs font-semibold bg-amber-100 text-amber-700 px-2 py-1 rounded">合计空置: {formatArea(totalArea)}</span>
       </div>
       
       {/* Desktop View */}
@@ -160,7 +161,7 @@ export const ExpiringSoonTable: React.FC<{ data: DashboardData }> = ({ data }) =
                       <div className="text-slate-400 text-xs">{daysLeft > 0 ? `剩 ${daysLeft} 天` : '已过期'}</div>
                   </td>
                   <td className="px-4 py-4 text-right font-medium text-slate-700">
-                     {tenant.totalArea} ㎡
+                     {formatArea(tenant.totalArea)}
                   </td>
                 </tr>
               );
@@ -168,7 +169,7 @@ export const ExpiringSoonTable: React.FC<{ data: DashboardData }> = ({ data }) =
             {data.expiringSoon.length > 0 && (
                 <tr className="bg-slate-50 font-bold text-slate-700 border-t border-slate-200">
                     <td className="px-4 py-3" colSpan={2}>合计</td>
-                    <td className="px-4 py-3 text-right">{totalArea.toLocaleString()} ㎡</td>
+                    <td className="px-4 py-3 text-right">{formatArea(totalArea)}</td>
                 </tr>
             )}
           </tbody>
@@ -196,7 +197,8 @@ interface BudgetExecutionProps {
 export const BudgetExecutionSummaryTable: React.FC<BudgetExecutionProps> = ({ data, selectedYear, onYearChange }) => {
   let cumulativeBudget = 0;
   let cumulativeActual = 0;
-  const formatWanCurrency = (val: number) => `${Math.round(val / 10000)}万`;
+  const execWan = (v: number | null | undefined) => formatWan(v, 0);
+  const execPct = (v: number | null | undefined) => formatPercent(v, 0);
   
   const displayYear = selectedYear || new Date().getFullYear();
   const now = new Date();
@@ -242,8 +244,8 @@ export const BudgetExecutionSummaryTable: React.FC<BudgetExecutionProps> = ({ da
           <thead className="bg-slate-50 text-slate-500 font-medium">
             <tr>
               <th className="px-4 py-3 text-center sticky left-0 bg-slate-50 z-10 shadow-[2px_0_5px_-2px_rgba(0,0,0,0.1)]">月份</th>
-              <th className="px-4 py-3 text-right bg-blue-50/30 text-blue-700">预算收入(万元)</th>
-              <th className="px-4 py-3 text-right bg-emerald-50/30 text-emerald-700">实际收入(万元)</th>
+              <th className="px-4 py-3 text-right bg-blue-50/30 text-blue-700">预算收款(万元)</th>
+              <th className="px-4 py-3 text-right bg-emerald-50/30 text-emerald-700">实际收款(万元)</th>
               <th className="px-4 py-3 text-right hidden sm:table-cell">去年同期(万元)</th>
               <th className="px-4 py-3 text-right">同比</th>
               <th className="px-4 py-3 text-right">当月完成率</th>
@@ -278,31 +280,31 @@ export const BudgetExecutionSummaryTable: React.FC<BudgetExecutionProps> = ({ da
                 return (
                     <tr key={index} className="hover:bg-slate-50 transition-colors">
                     <td className="px-4 py-3 font-medium text-slate-700 text-center sticky left-0 bg-white z-10 shadow-[2px_0_5px_-2px_rgba(0,0,0,0.05)] border-r border-slate-100">{monthData.month}</td>
-                    <td className="px-4 py-3 text-right text-slate-600 bg-blue-50/10">{formatWanCurrency(monthData.revenueTarget)}</td>
+                    <td className="px-4 py-3 text-right text-slate-600 bg-blue-50/10">{execWan(monthData.revenueTarget)}</td>
                     <td className="px-4 py-3 text-right font-medium text-slate-800 bg-emerald-50/10">
-                        {hasActual ? formatWanCurrency(monthData.revenueCollected!) : <span className="text-slate-300">-</span>}
+                        {hasActual ? execWan(monthData.revenueCollected!) : <span className="text-slate-300">-</span>}
                     </td>
                     <td className="px-4 py-3 text-right text-slate-400 text-xs hidden sm:table-cell">
-                        {formatWanCurrency(prevActual)}
+                        {execWan(prevActual)}
                     </td>
                     <td className="px-4 py-3 text-right">
                         {hasActual && prevActual > 0 ? (
                             <span className={`text-xs font-medium ${yoy >= 0 ? 'text-emerald-600' : 'text-rose-500'}`}>
-                                {yoy > 0 ? '+' : ''}{yoy.toFixed(1)}%
+                                {yoy > 0 ? '+' : ''}{execPct(yoy)}
                             </span>
                         ) : <span className="text-slate-300">-</span>}
                     </td>
                     <td className="px-4 py-3 text-right">
                         {hasActual ? (
                             <span className={`font-bold ${monthlyRate >= 100 ? 'text-emerald-600' : monthlyRate >= 80 ? 'text-blue-600' : 'text-amber-600'}`}>
-                            {monthlyRate.toFixed(1)}%
+                            {execPct(monthlyRate)}
                             </span>
                         ) : <span className="text-slate-300">-</span>}
                     </td>
                     <td className="px-4 py-3 text-right border-l border-slate-100 hidden sm:table-cell">
                         {hasActual ? (
                             <span className={`text-xs px-2 py-0.5 rounded ${cumulativeRate >= 100 ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-100 text-slate-600'}`}>
-                            {cumulativeRate.toFixed(1)}%
+                            {execPct(cumulativeRate)}
                             </span>
                         ) : <span className="text-slate-300">-</span>}
                     </td>
@@ -338,7 +340,6 @@ interface AnnualMetricComparisonTableProps {
 }
 
 export const AnnualMetricComparisonTable: React.FC<AnnualMetricComparisonTableProps> = ({ data }) => {
-    const formatWanInt = (val: number) => `${Math.round(val / 10000)}万`;
     return (
         <div className="bg-white rounded-xl shadow-sm border border-slate-100 overflow-hidden mb-6">
             <div className="p-4 md:p-6 border-b border-slate-100 bg-gradient-to-r from-blue-50 to-white">
@@ -365,29 +366,29 @@ export const AnnualMetricComparisonTable: React.FC<AnnualMetricComparisonTablePr
                                 <td className="px-6 py-4 text-right text-slate-500">
                                     <div className="flex items-center justify-end gap-1">
                                         <Target size={12} className="text-slate-300"/>
-                                        {formatWanInt(row.revenueTarget)}
+                                        {formatWan(row.revenueTarget, 0)}
                                     </div>
                                 </td>
                                 <td className="px-6 py-4 text-right font-medium text-slate-800">
-                                    {formatWanInt(row.revenueActual)}
+                                    {formatWan(row.revenueActual, 0)}
                                 </td>
                                 <td className="px-6 py-4 text-right">
                                     <span className={`px-2 py-1 rounded text-xs font-bold ${row.revenueCompletionRate >= 100 ? 'bg-emerald-100 text-emerald-700' : row.revenueCompletionRate >= 90 ? 'bg-blue-100 text-blue-700' : 'bg-amber-100 text-amber-700'}`}>
-                                        {row.revenueCompletionRate.toFixed(1)}%
+                                        {formatPercent(row.revenueCompletionRate, 0)}
                                     </span>
                                 </td>
                                 <td className="px-6 py-4 text-right">
                                     {row.revenueYoY !== null ? (
                                         <div className={`flex items-center justify-end gap-1 font-medium ${row.revenueYoY >= 0 ? 'text-emerald-600' : 'text-rose-500'}`}>
                                             {row.revenueYoY > 0 ? <TrendingUp size={14}/> : <TrendingDown size={14}/>}
-                                            {row.revenueYoY > 0 ? '+' : ''}{row.revenueYoY.toFixed(1)}%
+                                            {row.revenueYoY > 0 ? '+' : ''}{formatPercent(row.revenueYoY, 0)}
                                         </div>
                                     ) : <span className="text-slate-300">-</span>}
                                 </td>
                                 <td className="px-6 py-4 text-right">
                                     <div className="flex items-center justify-end gap-1 font-medium text-blue-700">
                                         <Activity size={14} className="text-blue-400"/>
-                                        {row.occupancyRate}%
+                                        {formatPercent(row.occupancyRate, 0)}
                                     </div>
                                 </td>
                             </tr>

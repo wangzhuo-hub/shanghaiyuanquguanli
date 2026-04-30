@@ -5,7 +5,7 @@
  * 
  * 使用方法：
  *   # 从 JSON 文件导入（必须指定备份文件路径）
- *   node scripts/migrate-json-to-pb.mjs http://127.0.0.1:8090 admin@example.com password123 ./park_data_2026-03-04.json
+ *   node scripts/migrate-json-to-pb.mjs http://127.0.0.1:8090 admin@example.com password123 ./park_data_2026-03-04.json shanghai_park --replace
  * 
  * 前提条件：
  *   1. 已运行 setup-pb-collections.mjs 创建集合
@@ -19,8 +19,9 @@ const PB_URL = process.argv[2] || 'http://127.0.0.1:8090';
 const ADMIN_EMAIL = process.argv[3] || 'admin@example.com';
 const ADMIN_PASSWORD = process.argv[4] || 'admin123456';
 const JSON_FILE = process.argv[5] || null;
-const PROJECT_ID = process.argv[6] || 'park_data_main';
+let PROJECT_ID = process.argv[6] && !process.argv[6].startsWith('--') ? process.argv[6] : '';
 const REPLACE_PROJECT = process.argv.includes('--replace');
+const BACKUP_TYPE = 'park_dashboard_backup';
 
 // ===================== 数据转换函数 =====================
 
@@ -78,7 +79,7 @@ function extractTenants(data, projectId) {
     monthly_rent: t.monthlyRent || 0,
     rent_free_periods: t.rentFreePeriods || [],
     payment_cycle: t.paymentCycle || 'Monthly',
-    payment_terms: Array.isArray(t.paymentTerms) ? t.paymentTerms : [],
+    payment_terms: Array.isArray(t.unitTerms) ? t.unitTerms : (Array.isArray(t.paymentTerms) ? t.paymentTerms : []),
     payment_cycle_months: t.paymentCycleMonths || null,
     first_payment_date: t.firstPaymentDate || '',
     first_payment_months: t.firstPaymentMonths || null,
@@ -89,6 +90,9 @@ function extractTenants(data, projectId) {
     termination_date: t.terminationDate || '',
     termination_type: t.terminationType || null,
     termination_reason: t.terminationReason || '',
+    early_termination_fr_clawback_override: t.earlyTerminationFreeRentClawbackOverride ?? null,
+    early_termination_deposit_deduction: t.earlyTerminationDepositDeduction ?? null,
+    early_termination_other_adjustment: t.earlyTerminationOtherAdjustment ?? null,
     special_requirements: t.specialRequirements || '',
     is_risk: t.isRisk || false,
     contract_parking_spaces: t.contractParkingSpaces ?? t.parkingSpaces ?? 0,
@@ -282,7 +286,7 @@ async function clearProjectData(pb, projectId) {
 async function main() {
   console.log('╔══════════════════════════════════════════════════╗');
   console.log('║   JSON → PocketBase 数据迁移工具                 ║');
-  console.log('║   上海园区招商管理看板                           ║');
+  console.log('║   金蝶地产——招商管理系统                        ║');
   console.log('╚══════════════════════════════════════════════════╝');
   console.log();
 
@@ -323,8 +327,25 @@ async function main() {
     console.log(`[i] 从文件读取: ${JSON_FILE}`);
     try {
       const raw = readFileSync(JSON_FILE, 'utf-8');
-      dashboardData = JSON.parse(raw);
+      const parsed = JSON.parse(raw);
+      const isEnvelope = parsed?.backup_type === BACKUP_TYPE && parsed?.data && typeof parsed.data === 'object';
+      const fileProjectId = isEnvelope && typeof parsed.project_id === 'string' ? parsed.project_id.trim() : '';
+      if (!PROJECT_ID && fileProjectId) PROJECT_ID = fileProjectId;
+      if (!PROJECT_ID) {
+        console.error('[✗] 未指定目标 project_id，且备份文件没有 project_id。');
+        console.error('    为避免跨园区污染，请在文件路径后追加目标园区，例如：shanghai_park');
+        process.exit(1);
+      }
+      if (fileProjectId && fileProjectId !== PROJECT_ID) {
+        console.error(`[✗] 备份文件属于 ${fileProjectId}，但目标 project_id 是 ${PROJECT_ID}。已阻止跨园区导入。`);
+        process.exit(1);
+      }
+      dashboardData = isEnvelope ? parsed.data : parsed;
       console.log('[✓] JSON 文件解析成功');
+      console.log(`[i] 目标 project_id: ${PROJECT_ID}`);
+      if (!fileProjectId) {
+        console.warn('[!] 旧格式备份未声明 project_id；将按命令行指定目标园区导入。');
+      }
     } catch (e) {
       console.error('[✗] 文件读取失败:', e.message);
       process.exit(1);

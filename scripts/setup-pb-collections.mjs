@@ -73,11 +73,14 @@ const COLLECTIONS = [
       { name: 'unit_price', type: 'number', required: false, options: { min: null, max: null, noDecimal: false } },
       { name: 'monthly_rent', type: 'number', required: false, options: { min: null, max: null, noDecimal: false } },
       { name: 'rent_free_periods', type: 'json', required: false, options: { maxSize: 500000 } },
-      { name: 'payment_cycle', type: 'select', required: false, options: { maxSelect: 1, values: ['Monthly', 'Quarterly', 'SemiAnnual', 'Annual'] } },
+      { name: 'payment_cycle', type: 'select', required: false, options: { maxSelect: 1, values: ['HalfMonthly', 'Monthly', 'BiMonthly', 'Quarterly', 'SemiAnnual', 'Annual', 'Custom'] } },
       { name: 'payment_terms', type: 'json', required: false, options: { maxSize: 2000000 } },
-      { name: 'payment_cycle_months', type: 'number', required: false, options: { min: null, max: null, noDecimal: true } },
+      { name: 'payment_cycle_months', type: 'number', required: false, options: { min: null, max: null, noDecimal: false } },
       { name: 'first_payment_date', type: 'text', required: false, options: { min: null, max: null, pattern: '' } },
-      { name: 'first_payment_months', type: 'number', required: false, options: { min: null, max: null, noDecimal: true } },
+      { name: 'first_payment_months', type: 'number', required: false, options: { min: null, max: null, noDecimal: false } },
+      { name: 'first_receivable_amount', type: 'number', required: false, options: { min: null, max: null, noDecimal: false } },
+      { name: 'first_receivable_start_date', type: 'text', required: false, options: { min: null, max: null, pattern: '' } },
+      { name: 'first_receivable_end_date', type: 'text', required: false, options: { min: null, max: null, pattern: '' } },
       { name: 'free_rent_handling', type: 'select', required: false, options: { maxSelect: 1, values: ['Deduct', 'Defer'] } },
       { name: 'deposit_amount', type: 'number', required: false, options: { min: null, max: null, noDecimal: false } },
       { name: 'deposit_status', type: 'select', required: false, options: { maxSelect: 1, values: ['Unpaid', 'Paid', 'Refunded', 'Deducted'] } },
@@ -85,6 +88,9 @@ const COLLECTIONS = [
       { name: 'termination_date', type: 'text', required: false, options: { min: null, max: null, pattern: '' } },
       { name: 'termination_type', type: 'select', required: false, options: { maxSelect: 1, values: ['Normal', 'Early'] } },
       { name: 'termination_reason', type: 'text', required: false, options: { min: null, max: null, pattern: '' } },
+      { name: 'early_termination_fr_clawback_override', type: 'number', required: false, options: { min: null, max: null, noDecimal: false } },
+      { name: 'early_termination_deposit_deduction', type: 'number', required: false, options: { min: null, max: null, noDecimal: false } },
+      { name: 'early_termination_other_adjustment', type: 'number', required: false, options: { min: null, max: null, noDecimal: false } },
       { name: 'special_requirements', type: 'text', required: false, options: { min: null, max: null, pattern: '' } },
       { name: 'is_risk', type: 'bool', required: false, options: {} },
       { name: 'contract_parking_spaces', type: 'number', required: false, options: { min: null, max: null, noDecimal: true } },
@@ -264,7 +270,7 @@ const COLLECTIONS = [
 async function main() {
   console.log('╔══════════════════════════════════════════════════╗');
   console.log('║   PocketBase 结构化集合创建工具                  ║');
-  console.log('║   上海园区招商管理看板                           ║');
+  console.log('║   金蝶地产——招商管理系统                        ║');
   console.log('╚══════════════════════════════════════════════════╝');
   console.log();
   console.log(`PocketBase URL: ${PB_URL}`);

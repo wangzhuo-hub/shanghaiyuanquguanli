@@ -2,6 +2,7 @@
 import React from 'react';
 import { Tenant, ContractStatus, InvoiceRecord } from '../types';
 import { Calendar, PartyPopper, Cake, X, Flag, Clock, ArrowRight, AlertTriangle } from 'lucide-react';
+import { formatCurrency } from '../services/numberFormat';
 
 interface DashboardAlertsProps {
   tenants: Tenant[];
@@ -99,7 +100,7 @@ export const DashboardAlerts: React.FC<DashboardAlertsProps> = ({ tenants, invoi
                                 const tenantName = tenants.find(t => t.id === inv.tenantId)?.name || '未知客户';
                                 return (
                                     <span key={inv.id} className="bg-white border border-red-200 text-red-700 px-2 py-1 rounded text-xs font-medium">
-                                        {tenantName} (¥{inv.amount.toLocaleString()})
+                                        {tenantName} ({formatCurrency(inv.amount)})
                                     </span>
                                 );
                             })}

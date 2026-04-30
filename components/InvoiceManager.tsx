@@ -3,6 +3,7 @@ import React, { useState, useMemo } from 'react';
 import { Tenant, BudgetAssumption, BudgetAdjustment, InvoiceRecord, Building } from '../types';
 import { generateBudgetedBills, getVirtualTenants } from '../services/billingService';
 import { Calendar, CheckCircle2, Clock, AlertCircle, ChevronLeft, ChevronRight, RefreshCw, FileText, Info, Layers, ArrowRight, HelpCircle, Lightbulb, Sparkles } from 'lucide-react';
+import { formatCurrency, formatPercent } from '../services/numberFormat';
 
 interface InvoiceManagerProps {
     tenants: Tenant[];
@@ -240,7 +241,7 @@ export const InvoiceManager: React.FC<InvoiceManagerProps> = ({
                     <div>
                         <p className="text-xs font-bold text-indigo-500 uppercase tracking-wider mb-1">本月计划开票 (总计)</p>
                         <div className="flex items-baseline gap-2">
-                            <h3 className="text-2xl font-bold text-slate-800">¥{stats.totalAmt.toLocaleString()}</h3>
+                            <h3 className="text-2xl font-bold text-slate-800">{formatCurrency(stats.totalAmt)}</h3>
                         </div>
                     </div>
                     <div className="mt-3 flex items-center justify-between text-xs">
@@ -257,13 +258,13 @@ export const InvoiceManager: React.FC<InvoiceManagerProps> = ({
                     <div>
                         <p className="text-xs font-bold text-emerald-600 uppercase tracking-wider mb-1">已开票 (Completed)</p>
                         <div className="flex items-baseline gap-2">
-                            <h3 className="text-2xl font-bold text-slate-800">¥{stats.paidAmt.toLocaleString()}</h3>
+                            <h3 className="text-2xl font-bold text-slate-800">{formatCurrency(stats.paidAmt)}</h3>
                         </div>
                     </div>
                     <div className="mt-3 flex items-center justify-between text-xs">
                         <span className="bg-white/60 px-2 py-1 rounded text-emerald-700 font-medium">{stats.paidCount} 笔已开</span>
                         <span className="text-emerald-600 font-bold">
-                            {stats.totalAmt > 0 ? Math.round((stats.paidAmt / stats.totalAmt) * 100) : 0}% 进度
+                            {formatPercent(stats.totalAmt > 0 ? (stats.paidAmt / stats.totalAmt) * 100 : 0)} 进度
                         </span>
                     </div>
                 </div>
@@ -276,7 +277,7 @@ export const InvoiceManager: React.FC<InvoiceManagerProps> = ({
                     <div>
                         <p className="text-xs font-bold text-amber-600 uppercase tracking-wider mb-1">待开票 (Pending)</p>
                         <div className="flex items-baseline gap-2">
-                            <h3 className="text-2xl font-bold text-amber-700">¥{stats.pendingAmt.toLocaleString()}</h3>
+                            <h3 className="text-2xl font-bold text-amber-700">{formatCurrency(stats.pendingAmt)}</h3>
                         </div>
                     </div>
                     <div className="mt-3 flex items-center justify-between text-xs">
@@ -335,7 +336,7 @@ export const InvoiceManager: React.FC<InvoiceManagerProps> = ({
                                             </div>
                                         </td>
                                         <td className="px-6 py-4 text-slate-500">{building?.name || '-'}</td>
-                                        <td className="px-6 py-4 font-mono font-bold text-slate-700">¥{inv.amount.toLocaleString()}</td>
+                                        <td className="px-6 py-4 font-mono font-bold text-slate-700">{formatCurrency(inv.amount)}</td>
                                         <td className="px-6 py-4 text-blue-600 font-medium text-xs bg-blue-50/30">{inv.billDate}</td>
                                         <td className="px-6 py-4 text-indigo-700 font-bold bg-indigo-50/30">{inv.targetInvoiceDate}</td>
                                         <td className="px-6 py-4">

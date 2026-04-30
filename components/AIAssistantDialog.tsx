@@ -4,6 +4,7 @@ import { DashboardData } from '../types';
 import { getAiProxyBaseForMessage, getAiProxyChatUrl } from '../config/urls';
 import html2canvas from 'html2canvas';
 import jsPDF from 'jspdf';
+import { formatArea, formatCurrency, formatPercent } from '../services/numberFormat';
 
 interface Message {
   role: 'user' | 'assistant';
@@ -373,7 +374,7 @@ function buildContext(data: DashboardData): string {
     })
     .reduce((sum, t) => sum + (t.totalArea || 0), 0);
     
-  const occupancyRate = totalLeasableArea > 0 ? (rentedArea / totalLeasableArea * 100).toFixed(1) : '0';
+  const occupancyRate = totalLeasableArea > 0 ? (rentedArea / totalLeasableArea * 100) : 0;
 
   // 构建当年月度完成率表格（参照预算执行表）
   let monthlyTable = '\n\n【当年月度完成率】\n';
@@ -387,9 +388,9 @@ function buildContext(data: DashboardData): string {
   
   relevantTrends.forEach(trend => {
     const monthNum = parseInt(trend.month);
-    const budget = trend.revenueTarget?.toLocaleString() || '-';
-    const actual = trend.revenueCollected !== null ? `¥${trend.revenueCollected.toLocaleString()}` : '-';
-    const monthlyRate = trend.collectionRate !== null ? `${trend.collectionRate.toFixed(1)}%` : '-';
+    const budget = trend.revenueTarget ? formatCurrency(trend.revenueTarget) : '-';
+    const actual = trend.revenueCollected !== null ? formatCurrency(trend.revenueCollected) : '-';
+    const monthlyRate = trend.collectionRate !== null ? formatPercent(trend.collectionRate) : '-';
     
     // 计算累计达成率（当月及以前）
     const cumulativeTarget = relevantTrends
@@ -398,20 +399,20 @@ function buildContext(data: DashboardData): string {
     const cumulativeActual = relevantTrends
       .filter(t => parseInt(t.month) <= monthNum)
       .reduce((sum, t) => sum + (t.revenueCollected || 0), 0);
-    const cumulativeRate = cumulativeTarget > 0 ? ((cumulativeActual / cumulativeTarget) * 100).toFixed(1) : '0';
+    const cumulativeRate = cumulativeTarget > 0 ? (cumulativeActual / cumulativeTarget) * 100 : 0;
     
-    monthlyTable += `${monthNum}月 | ¥${budget} | ${actual} | ${monthlyRate} | ${cumulativeRate}%\n`;
+    monthlyTable += `${monthNum}月 | ${budget} | ${actual} | ${monthlyRate} | ${formatPercent(cumulativeRate)}\n`;
   });
 
   return `【园区数据概况】
-- 总面积（可出租）：${totalLeasableArea.toLocaleString()}㎡
-- 已租面积：${rentedArea.toLocaleString()}㎡
-- 出租率：${occupancyRate}%
+- 总面积（可出租）：${formatArea(totalLeasableArea)}
+- 已租面积：${formatArea(rentedArea)}
+- 出租率：${formatPercent(occupancyRate)}
 - 在租客户数：${activeТеnants.length}家
-- 年度营收目标：¥${data.annualRevenueTarget.toLocaleString()}
-- 年度已收：¥${data.annualRevenueCollected.toLocaleString()}
-- 出租率目标：${data.annualOccupancyTarget}%
-- 当月收缴率：${data.collectionRate.toFixed(1)}%${monthlyTable}`;
+- 年度营收目标：${formatCurrency(data.annualRevenueTarget)}
+- 年度已收：${formatCurrency(data.annualRevenueCollected)}
+- 出租率目标：${formatPercent(data.annualOccupancyTarget)}
+- 当月收缴率：${formatPercent(data.collectionRate)}${monthlyTable}`;
 }
 
 // 调用千问API

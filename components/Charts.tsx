@@ -3,6 +3,7 @@ import React from 'react';
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, BarChart, Bar, Legend, LineChart, Line, ComposedChart } from 'recharts';
 import { DashboardData } from '../types';
 import { FileWarning } from 'lucide-react';
+import { formatCurrency, formatPercent, formatWan } from '../services/numberFormat';
 
 interface ChartProps {
   data: DashboardData;
@@ -60,14 +61,14 @@ export const RevenueChart: React.FC<ChartProps> = ({ data, period }) => {
             <ComposedChart data={data.monthlyTrends} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
               <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e2e8f0" />
               <XAxis dataKey="month" tick={{fill: '#64748b', fontSize: 12}} axisLine={false} tickLine={false} />
-              <YAxis yAxisId="left" tick={{fill: '#64748b', fontSize: 12}} axisLine={false} tickLine={false} tickFormatter={(value) => `${value / 10000}万`} />
+              <YAxis yAxisId="left" tick={{fill: '#64748b', fontSize: 12}} axisLine={false} tickLine={false} tickFormatter={(value) => formatWan(value as number)} />
               <YAxis yAxisId="right" orientation="right" domain={[0, 120]} tick={{fill: '#f59e0b', fontSize: 10}} axisLine={false} tickLine={false} unit="%" />
               <Tooltip 
                  contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)' }}
                  formatter={(value: any, name: string) => {
                     if (value === null) return ['--', name];
-                    if (name === '收缴率') return [`${value}%`, name];
-                    return [new Intl.NumberFormat('zh-CN', { style: 'currency', currency: 'CNY' }).format(value as number), name];
+                    if (name === '收缴率') return [formatPercent(value as number), name];
+                    return [formatCurrency(value as number), name];
                  }}
               />
               <Legend wrapperStyle={{paddingTop: '20px'}} />

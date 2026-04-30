@@ -2,6 +2,7 @@
 import React, { useMemo } from 'react';
 import { TrendingUp, TrendingDown, Target, Edit3, CalendarRange, UserPlus, UserMinus } from 'lucide-react';
 import { DashboardData, Tenant, ContractStatus } from '../types';
+import { formatArea, formatPercent, formatWan } from '../services/numberFormat';
 
 interface StatsCardsProps {
   data: DashboardData;
@@ -14,9 +15,10 @@ export const StatsCards: React.FC<StatsCardsProps> = ({ data, onEditTargets, sel
   // 租赁维度切换状态：'year' | 'quarter' | 'month'
   const [leasePeriod, setLeasePeriod] = React.useState<'year' | 'quarter' | 'month'>('year');
 
-  const formatCurrency = (val: number) =>
-    new Intl.NumberFormat('zh-CN', { style: 'currency', currency: 'CNY', maximumFractionDigits: 0 }).format(val);
-  const formatWanCurrency = (val: number) => `${Math.round(val / 10000)}万`;
+  const formatWanCurrency = formatWan;
+  /** 工作台「预算执行」表：万元、百分比取整 */
+  const dashboardWan = (v: number | null | undefined) => formatWan(v, 0);
+  const dashboardPct = (v: number | null | undefined) => formatPercent(v, 0);
 
   const annualProgress = data.annualRevenueTarget > 0 ? Math.min(100, (data.annualRevenueCollected / data.annualRevenueTarget) * 100) : 0;
   
@@ -149,6 +151,26 @@ export const StatsCards: React.FC<StatsCardsProps> = ({ data, onEditTargets, sel
       });
   }, [data.monthlyTrends, data.prevYearMonthlyTrends]);
 
+  const budgetExecutionTotal = useMemo(() => {
+      const totalBudget = monthlyBreakdown.reduce((sum, month) => sum + month.budget, 0);
+      const actualMonths = monthlyBreakdown.filter(month => month.hasActual);
+      const actualBudget = actualMonths.reduce((sum, month) => sum + month.budget, 0);
+      const totalActual = actualMonths.reduce((sum, month) => sum + (month.actual || 0), 0);
+      const comparablePrevActual = actualMonths.reduce((sum, month) => sum + month.prevActual, 0);
+      const yearPrevActual = monthlyBreakdown.reduce((sum, month) => sum + month.prevActual, 0);
+
+      return {
+          totalBudget,
+          totalActual,
+          comparablePrevActual,
+          yearPrevActual,
+          monthlyRate: actualBudget > 0 ? (totalActual / actualBudget) * 100 : 0,
+          cumulativeProgress: totalBudget > 0 ? (totalActual / totalBudget) * 100 : 0,
+          yoy: comparablePrevActual > 0 ? ((totalActual - comparablePrevActual) / comparablePrevActual) * 100 : 0,
+          hasActual: actualMonths.length > 0,
+      };
+  }, [monthlyBreakdown]);
+
   return (
     <div className="space-y-4 md:space-y-6">
         {/* Annual Goal Card with Monthly Breakdown Below */}
@@ -166,7 +188,7 @@ export const StatsCards: React.FC<StatsCardsProps> = ({ data, onEditTargets, sel
                             </div>
                         </div>
                         <div className="mt-1 text-[11px] text-emerald-700/80">
-                            数据源：生效预算方案（月度应收）
+                            数据源：初始化月度应收（有值则优先）+ 预算表/生效方案 + 财务报表收款明细
                         </div>
                     </div>
                     <div className="overflow-x-auto">
@@ -174,8 +196,8 @@ export const StatsCards: React.FC<StatsCardsProps> = ({ data, onEditTargets, sel
                             <thead>
                                 <tr className="bg-slate-50 border-b border-slate-200">
                                     <th className="px-4 py-3 text-center font-semibold text-slate-700">月份</th>
-                                    <th className="px-4 py-3 text-right font-semibold text-blue-700 bg-blue-50/30">预算收入(万元)</th>
-                                    <th className="px-4 py-3 text-right font-semibold text-emerald-700 bg-emerald-50/30">实际收入(万元)</th>
+                                    <th className="px-4 py-3 text-right font-semibold text-blue-700 bg-blue-50/30">预算收款(万元)</th>
+                                    <th className="px-4 py-3 text-right font-semibold text-emerald-700 bg-emerald-50/30">实际收款(万元)</th>
                                     <th className="px-4 py-3 text-right font-semibold text-slate-700 hidden sm:table-cell">去年同期(万元)</th>
                                     <th className="px-4 py-3 text-right font-semibold text-slate-700">同比</th>
                                     <th className="px-4 py-3 text-center font-semibold text-slate-700">当月完成率</th>
@@ -187,20 +209,20 @@ export const StatsCards: React.FC<StatsCardsProps> = ({ data, onEditTargets, sel
                                     <tr key={month.month} className="border-b border-slate-100 hover:bg-slate-50 transition-colors">
                                         <td className="px-4 py-3 font-medium text-slate-800 text-center">{month.monthName}</td>
                                         <td className="px-4 py-3 text-right text-slate-600 tabular-nums bg-blue-50/10">
-                                            {formatWanCurrency(month.budget)}
+                                            {dashboardWan(month.budget)}
                                         </td>
                                         <td className="px-4 py-3 text-right font-semibold text-slate-800 tabular-nums bg-emerald-50/10">
-                                            {month.hasActual ? formatWanCurrency(month.actual!) : <span className="text-slate-300">-</span>}
+                                            {month.hasActual ? dashboardWan(month.actual!) : <span className="text-slate-300">-</span>}
                                         </td>
                                         <td className="px-4 py-3 text-right text-slate-400 text-xs tabular-nums hidden sm:table-cell">
-                                            {formatWanCurrency(month.prevActual)}
+                                            {dashboardWan(month.prevActual)}
                                         </td>
                                         <td className="px-4 py-3 text-right">
                                             {month.hasActual && month.prevActual > 0 ? (
                                                 <span className={`text-xs font-medium ${
                                                     month.yoy >= 0 ? 'text-emerald-600' : 'text-rose-500'
                                                 }`}>
-                                                    {month.yoy > 0 ? '+' : ''}{month.yoy.toFixed(1)}%
+                                                    {month.yoy > 0 ? '+' : ''}{dashboardPct(month.yoy)}
                                                 </span>
                                             ) : <span className="text-slate-300">-</span>}
                                         </td>
@@ -211,7 +233,7 @@ export const StatsCards: React.FC<StatsCardsProps> = ({ data, onEditTargets, sel
                                                     month.monthlyRate >= 80 ? 'bg-blue-100 text-blue-700' :
                                                     'bg-amber-100 text-amber-700'
                                                 }`}>
-                                                    {month.monthlyRate.toFixed(1)}%
+                                                    {dashboardPct(month.monthlyRate)}
                                                 </span>
                                             ) : <span className="text-slate-300">-</span>}
                                         </td>
@@ -220,13 +242,50 @@ export const StatsCards: React.FC<StatsCardsProps> = ({ data, onEditTargets, sel
                                                 <span className={`text-xs px-2 py-0.5 rounded ${
                                                     month.cumulativeProgress >= 100 ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-100 text-slate-600'
                                                 }`}>
-                                                    {month.cumulativeProgress.toFixed(1)}%
+                                                    {dashboardPct(month.cumulativeProgress)}
                                                 </span>
                                             ) : <span className="text-slate-300">-</span>}
                                         </td>
                                     </tr>
                                 ))}
                             </tbody>
+                            <tfoot>
+                                <tr className="bg-slate-900 text-white border-t-2 border-slate-700">
+                                    <td className="px-4 py-3 font-bold text-center">合计</td>
+                                    <td className="px-4 py-3 text-right font-bold tabular-nums bg-blue-500/10">
+                                        {dashboardWan(budgetExecutionTotal.totalBudget)}
+                                    </td>
+                                    <td className="px-4 py-3 text-right font-bold tabular-nums bg-emerald-500/10">
+                                        {budgetExecutionTotal.hasActual ? dashboardWan(budgetExecutionTotal.totalActual) : <span className="text-slate-400">-</span>}
+                                    </td>
+                                    <td className="px-4 py-3 text-right text-slate-300 text-xs tabular-nums hidden sm:table-cell">
+                                        {dashboardWan(budgetExecutionTotal.yearPrevActual)}
+                                    </td>
+                                    <td className="px-4 py-3 text-right">
+                                        {budgetExecutionTotal.hasActual && budgetExecutionTotal.comparablePrevActual > 0 ? (
+                                            <span className={`text-xs font-bold ${
+                                                budgetExecutionTotal.yoy >= 0 ? 'text-emerald-300' : 'text-rose-300'
+                                            }`}>
+                                                {budgetExecutionTotal.yoy > 0 ? '+' : ''}{dashboardPct(budgetExecutionTotal.yoy)}
+                                            </span>
+                                        ) : <span className="text-slate-400">-</span>}
+                                    </td>
+                                    <td className="px-4 py-3 text-center">
+                                        {budgetExecutionTotal.hasActual ? (
+                                            <span className="inline-block px-2 py-1 rounded-full text-xs font-bold bg-white/15 text-white">
+                                                {dashboardPct(budgetExecutionTotal.monthlyRate)}
+                                            </span>
+                                        ) : <span className="text-slate-400">-</span>}
+                                    </td>
+                                    <td className="px-4 py-3 text-right font-bold border-l border-slate-700 hidden sm:table-cell">
+                                        {budgetExecutionTotal.hasActual ? (
+                                            <span className="text-xs px-2 py-0.5 rounded bg-white/15 text-white">
+                                                {dashboardPct(budgetExecutionTotal.cumulativeProgress)}
+                                            </span>
+                                        ) : <span className="text-slate-400">-</span>}
+                                    </td>
+                                </tr>
+                            </tfoot>
                         </table>
                     </div>
                 </div>
@@ -248,7 +307,7 @@ export const StatsCards: React.FC<StatsCardsProps> = ({ data, onEditTargets, sel
                                         annualProgress >= 80 ? 'text-blue-600' :
                                         'text-amber-600'
                                     }`}>
-                                        {annualProgress.toFixed(1)}%
+                                        {formatPercent(annualProgress)}
                                     </span>
                                 </div>
                                 <div className="w-full bg-slate-100 rounded-full h-3 overflow-hidden">
@@ -291,7 +350,7 @@ export const StatsCards: React.FC<StatsCardsProps> = ({ data, onEditTargets, sel
                                         occupancyGap <= 5 ? 'text-blue-600' :
                                         'text-amber-600'
                                     }`}>
-                                        {data.occupancyRate.toFixed(1)}%
+                                        {formatPercent(data.occupancyRate)}
                                     </span>
                                 </div>
                                 <div className="w-full bg-slate-100 rounded-full h-3 overflow-hidden">
@@ -305,9 +364,9 @@ export const StatsCards: React.FC<StatsCardsProps> = ({ data, onEditTargets, sel
                                     ></div>
                                 </div>
                                 <div className="flex justify-between text-xs text-slate-500 mt-2">
-                                    <span>目标: {data.annualOccupancyTarget}%</span>
+                                    <span>目标: {formatPercent(data.annualOccupancyTarget)}</span>
                                     <span className={occupancyGap > 0 ? 'text-amber-600 font-medium' : 'text-emerald-600 font-medium'}>
-                                        {occupancyGap > 0 ? `差 ${occupancyGap.toFixed(1)}%` : '✓ 已达标'}
+                                        {occupancyGap > 0 ? `差 ${formatPercent(occupancyGap)}` : '✓ 已达标'}
                                     </span>
                                 </div>
                             </div>
@@ -392,11 +451,11 @@ export const StatsCards: React.FC<StatsCardsProps> = ({ data, onEditTargets, sel
                                         <div className="text-sm text-white/80 mb-1">期间净增长面积</div>
                                         <div className="text-3xl font-bold text-white tabular-nums">
                                             {leasePeriod === 'year' ? (
-                                                <>{leaseStats.netIncreaseYear >= 0 ? '+' : ''}{leaseStats.netIncreaseYear.toFixed(0)}</>
+                                                <>{leaseStats.netIncreaseYear >= 0 ? '+' : ''}{formatArea(leaseStats.netIncreaseYear).replace('㎡', '')}</>
                                             ) : leasePeriod === 'quarter' ? (
-                                                <>{leaseStats.netIncreaseQuarter >= 0 ? '+' : ''}{leaseStats.netIncreaseQuarter.toFixed(0)}</>
+                                                <>{leaseStats.netIncreaseQuarter >= 0 ? '+' : ''}{formatArea(leaseStats.netIncreaseQuarter).replace('㎡', '')}</>
                                             ) : (
-                                                <>{leaseStats.netIncreaseMonth >= 0 ? '+' : ''}{leaseStats.netIncreaseMonth.toFixed(0)}</>
+                                                <>{leaseStats.netIncreaseMonth >= 0 ? '+' : ''}{formatArea(leaseStats.netIncreaseMonth).replace('㎡', '')}</>
                                             )}
                                             <span className="text-lg ml-1">㎡</span>
                                         </div>
@@ -405,17 +464,17 @@ export const StatsCards: React.FC<StatsCardsProps> = ({ data, onEditTargets, sel
                                         <div className="flex items-center gap-1">
                                             <UserPlus size={14} className="flex-shrink-0" />
                                             <span>
-                                                新租 {leasePeriod === 'year' ? leaseStats.newLeasesYearArea.toFixed(0) :
-                                                     leasePeriod === 'quarter' ? leaseStats.newLeasesQuarterArea.toFixed(0) :
-                                                     leaseStats.newLeasesMonthArea.toFixed(0)}㎡
+                                                新租 {leasePeriod === 'year' ? formatArea(leaseStats.newLeasesYearArea) :
+                                                     leasePeriod === 'quarter' ? formatArea(leaseStats.newLeasesQuarterArea) :
+                                                     formatArea(leaseStats.newLeasesMonthArea)}
                                             </span>
                                         </div>
                                         <div className="flex items-center gap-1">
                                             <UserMinus size={14} className="flex-shrink-0" />
                                             <span>
-                                                退租 {leasePeriod === 'year' ? leaseStats.terminatedYearArea.toFixed(0) :
-                                                     leasePeriod === 'quarter' ? leaseStats.terminatedQuarterArea.toFixed(0) :
-                                                     leaseStats.terminatedMonthArea.toFixed(0)}㎡
+                                                退租 {leasePeriod === 'year' ? formatArea(leaseStats.terminatedYearArea) :
+                                                     leasePeriod === 'quarter' ? formatArea(leaseStats.terminatedQuarterArea) :
+                                                     formatArea(leaseStats.terminatedMonthArea)}
                                             </span>
                                         </div>
                                     </div>

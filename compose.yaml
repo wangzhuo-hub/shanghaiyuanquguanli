@@ -4,7 +4,7 @@ services:
       context: .
       dockerfile: docker/pocketbase/Dockerfile
     ports:
-      - "8001:8090"
+      - "1002:8090"
     volumes:
       - pb_data:/pb/pb_data
     environment:

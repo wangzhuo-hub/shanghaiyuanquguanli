@@ -1,4 +1,4 @@
-# 上海园区招商管理看板
+# 金蝶地产——招商管理系统
 
 园区招商管理系统：楼宇与单元、合同与财务、预算与报表；云端后端推荐 **PocketBase**（本地/内网部署），AI 能力通过 **千问（DashScope）** 代理调用。
 
@@ -13,7 +13,7 @@
    # 编辑 .env，设置 QWEN_API_KEY=你的_DashScope_Key
    ```
 
-2. 构建并启动（前端 **1001**、PocketBase **8001**、AI 代理 **3010**）：
+2. 构建并启动（前端 **1001**、PocketBase **1002**、AI 代理 **3010**）：
 
    ```bash
    docker compose up -d --build
@@ -22,7 +22,7 @@
 3. 访问：
 
    - 看板前端：<http://localhost:1001>
-   - PocketBase 管理（首次需创建管理员）：<http://localhost:8001/_/>
+   - PocketBase 管理（首次需创建管理员）：<http://localhost:1002/_/>
    - AI 代理健康检查：向 `http://localhost:3010` 发 `POST /api/chat`（需 Key 已配置）
 
 前端在容器内通过 **同源** 路径访问后端：
@@ -30,12 +30,13 @@
 - PocketBase：`/api/pb/` → 由 Nginx 反代到 PocketBase
 - 千问代理：`/api/chat` → `ai-proxy`
 
-数据持久化在 Docker 卷 `pb_data`（勿把 `pocketbase/pb_data/` 提交到 Git）。
+数据持久化在 Docker 卷 `pb_data`（勿把 `pocketbase/pb_data/` 提交到 Git）。多园区登录、飞书/OpenClaw 来源映射和 Tailscale 异地访问见 [多园区登录与 Tailscale 部署](docs/04-多园区登录与Tailscale部署.md)。
 
 ### PocketBase 空库初始化说明
 
 - **Schema**：随镜像/仓库中的 `pocketbase/pb_migrations/` 在 PocketBase **首次启动时自动执行**，创建 `pb_*` 结构化集合。
-- **管理员**：首次访问 <http://localhost:8001/_/> 在界面中创建管理员账号（空库无示例业务数据）。
+- **管理员**：首次访问 <http://localhost:1002/_/> 在界面中创建管理员账号（空库无示例业务数据）。
+- **多园区初始化**：创建 `users` auth collection 后，可运行 `npm run init:multi-park` 写入上海、深圳、北京园区及外部来源映射。
 - **可选**：若需用脚本补建集合（一般与 migrations 二选一即可），见 `scripts/setup-pb-collections.mjs` 与 `POCKETBASE_SETUP.md`。
 
 ### 镜像内 PocketBase 版本
@@ -44,7 +45,7 @@
 
 ## 本地开发（不使用 Docker）
 
-**前置条件：** Node.js ≥ 18（推荐 20）、本机已启动 PocketBase（默认 **8001**）与 `ai-proxy`（默认 **3010**）。
+**前置条件：** Node.js ≥ 18（推荐 20）、本机已启动 PocketBase（默认 **1002**）与 `ai-proxy`（默认 **3010**）。
 
 ```bash
 npm install
@@ -73,6 +74,8 @@ export QWEN_API_KEY=你的_key
 | `VITE_POCKETBASE_URL` | 可选；不设置时浏览器默认使用同源 `/api/pb` |
 | `VITE_QWEN_PROXY_URL` | 可选；不设置时 AI 请求使用同源 `/api/chat` |
 | `VITE_DEV_PORT` / `VITE_PB_DEV_PORT` / `VITE_AI_PROXY_PORT` | 本地开发端口覆盖 |
+| `PB_URL` / `PB_ADMIN_EMAIL` / `PB_ADMIN_PASSWORD` | 初始化多园区和 integration-gateway 访问 PocketBase 使用 |
+| `INTEGRATION_GATEWAY_PORT` | OpenClaw / 飞书写入网关端口，默认 `8787` |
 
 ## 仓库维护检查
 

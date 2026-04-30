@@ -20,12 +20,21 @@ export enum DepositStatus {
   Deducted = 'Deducted', // 抵扣
 }
 
-export type PaymentCycle = 'Monthly' | 'Quarterly' | 'SemiAnnual' | 'Annual';
+export type PaymentCycle = 'HalfMonthly' | 'Monthly' | 'BiMonthly' | 'Quarterly' | 'SemiAnnual' | 'Annual' | 'Custom';
 
 export interface RentFreePeriod {
   start: string;
   end: string;
   description: string;
+}
+
+export interface LeaseUnitTerm {
+  unitId: string;
+  unitName?: string;
+  area: number;
+  unitPrice?: number;
+  monthlyRent?: number;
+  rentFreePeriods?: RentFreePeriod[];
 }
 
 export interface Unit {
@@ -83,14 +92,22 @@ export interface Tenant {
   // Rent
   unitPrice?: number; // Price per sqm per DAY
   monthlyRent: number; // Total monthly rent (calculated)
-  
+
+  unitTerms?: LeaseUnitTerm[];
+  paymentTerms?: LeaseUnitTerm[];
   rentFreePeriods: RentFreePeriod[];
 
   // Payment Terms
   paymentCycle: PaymentCycle;
-  paymentCycleMonths?: number; // Flexible months input (e.g. 1, 3, 6, 12)
+  paymentCycleMonths?: number; // Flexible months input (e.g. 0.5, 1, 2, 3, 6, 12)
   firstPaymentDate: string;
   firstPaymentMonths?: number;
+  /** 首期应收自定义金额（元），与计费引擎首期账单对齐时可覆盖首笔金额 */
+  firstReceivableAmount?: number;
+  /** 首期覆盖开始（YYYY-MM-DD），可选 */
+  firstReceivableStartDate?: string;
+  /** 首期覆盖结束（YYYY-MM-DD），可选 */
+  firstReceivableEndDate?: string;
   
   // New: Billing Strategy (免租期处理方式)
   // 'Deduct': 当期账单扣除 - 在当期账单中扣除免租期月数，收款时间不变但金额减少
@@ -106,6 +123,12 @@ export interface Tenant {
   terminationDate?: string;
   terminationType?: 'Normal' | 'Early';
   terminationReason?: string;
+  /** 提前退租：免租扣回金额手工覆盖（元）；不填则按「已享免租 − 比例应享」×月租金公式计算 */
+  earlyTerminationFreeRentClawbackOverride?: number;
+  /** 提前退租：押金扣款（元，可自定义，计入最后一期应收） */
+  earlyTerminationDepositDeduction?: number;
+  /** 提前退租：其它结算调整（元，正数为加收、负数为减免，计入最后一期应收） */
+  earlyTerminationOtherAdjustment?: number;
   
   // Special requirements
   specialRequirements?: string;
@@ -163,6 +186,8 @@ export interface BillingDetail {
   deferredInAmount?: number;
   /** 调入来源账期标签，如 "2026-03" 或多条用顿号连接 */
   deferredInFromSummary?: string;
+  /** 提前退租最后一期：免租扣回/押金等明细（金额已含在 amountDue 中） */
+  earlyTerminationBreakdown?: string;
 }
 
 export interface ParkingStatDetail {
@@ -239,6 +264,27 @@ export interface CloudConfig {
     pocketbasePassword?: string;
 }
 
+export type UserRole = 'park_user' | 'park_admin' | 'group_admin' | 'platform_admin';
+
+export interface ParkInfo {
+    id?: string;
+    projectId: string;
+    name: string;
+    city?: string;
+    enabled: boolean;
+    sortOrder?: number;
+}
+
+export interface AuthUser {
+    id: string;
+    email: string;
+    name?: string;
+    projectId: string;
+    role: UserRole;
+    allowedProjectIds: string[];
+    enabled: boolean;
+}
+
 export interface AIConfig {
     provider: 'qwen' | 'openai' | 'none';
     qwenApiKey?: string;
@@ -294,14 +340,27 @@ export interface MonthlyInitData {
 
 // New: Invoice Management
 export interface InvoiceRecord {
-    id: string;
-    tenantId: string;
-    billDate: string; // Original Due Date (from Budget)
-    targetInvoiceDate: string; // User adjusted or Default (billDate - 1 month)
-    amount: number;
-    status: 'Pending' | 'Invoiced';
-    invoicedAt?: string; // Timestamp when clicked
-    deferReason?: string;
+  id: string;
+  tenantId: string;
+  billDate: string; // Original Due Date (from Budget)
+  targetInvoiceDate: string; // User adjusted or Default (billDate - 1 month)
+  amount: number;
+  status: 'Pending' | 'Invoiced';
+  invoicedAt?: string; // Timestamp when clicked
+  deferReason?: string;
+}
+
+/** 手工应收行（存于 billingPeriodNotes 的 JSON，tenantId 为空时表示不关联系统客户） */
+export interface ManualReceivableLine {
+  id: string;
+  tenantId?: string;
+  /** 不关联客户时的展示名 / 与「应收项目」同步 */
+  customerLabel: string;
+  /** 应收项目名称 */
+  title?: string;
+  amount: number;
+  /** 归属账期 YYYY-MM */
+  periodYYYYMM: string;
 }
 
 export interface DashboardData {
@@ -362,7 +421,7 @@ export interface DashboardData {
   // New: Invoice Records
   invoices?: InvoiceRecord[];
 
-  /** 缓缴等仅影响应收展示，不写入 budgetAdjustments */
+  /** 缓缴等仅影响应收展示，不写入 budgetAdjustments（手工应收 JSON 亦存于此，键见 receivableListHelpers） */
   billingPeriodNotes?: Record<string, string>;
 
   /**

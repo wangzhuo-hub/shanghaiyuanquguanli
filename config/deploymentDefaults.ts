@@ -8,8 +8,8 @@ import type { CloudConfig } from '../types';
 export const DEFAULT_CLOUD_CONFIG: CloudConfig = {
     provider: 'pocketbase',
     autoSync: false,
-    projectId: 'park_data_main',
-    pocketbaseUrl: '',
+    projectId: 'shanghai_park',
+    pocketbaseUrl: '/api/pb',
     pocketbaseEmail: '',
     pocketbasePassword: '',
 };
