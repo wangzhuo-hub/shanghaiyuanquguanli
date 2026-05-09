@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>楼宇管理 UI 方案对比</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "PingFang SC", "Microsoft YaHei", sans-serif;
+      background: linear-gradient(135deg, #0f172a 0%, #1e293b 50%, #334155 100%);
+      color: #e2e8f0;
+      padding: 48px 24px 80px;
+    }
+    .wrap { max-width: 720px; margin: 0 auto; }
+    h1 { font-size: 1.5rem; font-weight: 700; margin: 0 0 8px; letter-spacing: -0.02em; }
+    p.lead { margin: 0 0 32px; color: #94a3b8; font-size: 0.95rem; line-height: 1.6; }
+    ul { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 12px; }
+    a.card {
+      display: block;
+      padding: 20px 22px;
+      border-radius: 14px;
+      background: rgba(255,255,255,0.06);
+      border: 1px solid rgba(255,255,255,0.1);
+      color: inherit;
+      text-decoration: none;
+      transition: transform 0.15s ease, border-color 0.15s ease, background 0.15s ease;
+    }
+    a.card:hover {
+      background: rgba(255,255,255,0.1);
+      border-color: rgba(96, 165, 250, 0.45);
+      transform: translateY(-2px);
+    }
+    a.card strong { display: block; font-size: 1.05rem; margin-bottom: 6px; color: #f8fafc; }
+    a.card span { font-size: 0.85rem; color: #94a3b8; line-height: 1.5; }
+    .tag {
+      display: inline-block;
+      font-size: 0.7rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: #38bdf8;
+      margin-bottom: 8px;
+    }
+    footer { margin-top: 40px; font-size: 0.8rem; color: #64748b; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="tag">Design mockups</div>
+    <h1>楼宇管理 · HTML 样式对比</h1>
+    <p class="lead">以下为同一组示例数据、五种不同视觉与布局气质。用浏览器分别打开各页全屏对比；确定方向后再迁回 React / Tailwind。</p>
+    <ul>
+      <li>
+        <a class="card" href="variant-a-stripe-saas.html">
+          <strong>方案 A · 色条 + Chip + 轻阴影</strong>
+          <span>典型现代 SaaS：左侧状态色条、胶囊状态、弱边框大留白，信息层级清晰。</span>
+        </a>
+      </li>
+      <li>
+        <a class="card" href="variant-b-zebra-air.html">
+          <strong>方案 B · 斑马纹楼层 + 极弱描边</strong>
+          <span>用行间底色区分楼层，卡片几乎无框，偏「空气感」后台。</span>
+        </a>
+      </li>
+      <li>
+        <a class="card" href="variant-c-rail-panel.html">
+          <strong>方案 C · 深色顶栏 + 轨道式楼层</strong>
+          <span>头部品牌区压暗，内容区高亮；楼层像时间轴轨道，适合大屏展示。</span>
+        </a>
+      </li>
+      <li>
+        <a class="card" href="variant-d-table-bars.html">
+          <strong>方案 D · 表格式 + 面积比例条</strong>
+          <span>偏运营录入：行内表格信息 + 横向比例条表达面积，密度高但可扫读。</span>
+        </a>
+      </li>
+      <li>
+        <a class="card" href="variant-e-tab-floor-list.html">
+          <strong>方案 E · Tab：平面图 / 列表</strong>
+          <span>同一卡片内切换：条带化平面示意 + 表格列表；纯 CSS radio 切换，无脚本。</span>
+        </a>
+      </li>
+    </ul>
+    <footer>示例数据与当前截图一致风格（1号楼、4F/3F 部分房源）；宽度按面积比例 flex 模拟。</footer>
+  </div>
+</body>
+</html>

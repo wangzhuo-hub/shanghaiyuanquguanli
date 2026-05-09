@@ -10,9 +10,18 @@
     <script src="https://cdn.sheetjs.com/xlsx-0.20.2/package/dist/xlsx.full.min.js"></script>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <style>
+      html {
+        -webkit-text-size-adjust: 100%;
+        text-size-adjust: 100%;
+      }
       body {
         font-family: 'Inter', sans-serif;
         background-color: #f8fafc;
+        margin: 0;
+        min-width: 0;
+      }
+      #root {
+        min-width: 0;
       }
       /* Custom scrollbar for webkit */
       ::-webkit-scrollbar {
@@ -30,21 +39,7 @@
         background: #94a3b8; 
       }
     </style>
-<script type="importmap">
-{
-  "imports": {
-    "react": "https://aistudiocdn.com/react@^19.2.1",
-    "react/": "https://aistudiocdn.com/react@^19.2.1/",
-    "@vitejs/plugin-react": "https://aistudiocdn.com/@vitejs/plugin-react@^5.1.1",
-    "recharts": "https://aistudiocdn.com/recharts@^3.5.1",
-    "lucide-react": "https://aistudiocdn.com/lucide-react@^0.556.0",
-    "vite": "https://aistudiocdn.com/vite@^7.2.6",
-    "react-dom/": "https://aistudiocdn.com/react-dom@^19.2.1/",
-    "@google/genai": "https://aistudiocdn.com/@google/genai@^1.31.0",
-    "@supabase/supabase-js": "https://aistudiocdn.com/@supabase/supabase-js@^2.86.2"
-  }
-}
-</script>
+<!-- 所有依赖通过 npm + Vite 构建，不使用 CDN importmap -->
 <script>
 // 清理旧的 AI 配置数据，移除 geminiApiKey 字段
 (function() {
@@ -73,18 +68,11 @@
 </script>
 <link rel="stylesheet" href="/index.css">
 <script>
-// 全局错误捕获
+// 全局错误捕获（仅记录，不破坏 DOM）
  window.addEventListener('error', function(e) {
-   console.error('全局错误:', e.error || e.message);
-   document.body.innerHTML = '<div style="padding: 20px; font-family: monospace;">' +
-     '<h1 style="color: red;">加载错误</h1>' +
-     '<p><strong>错误信息:</strong> ' + (e.message || '未知错误') + '</p>' +
-     '<p><strong>文件:</strong> ' + (e.filename || '未知') + '</p>' +
-     '<p><strong>行号:</strong> ' + (e.lineno || '未知') + '</p>' +
-     '<p style="margin-top: 20px;">请按 F12 打开控制台查看详细错误</p>' +
-     '</div>';
+   console.error('全局错误:', e.error || e.message, e.filename, e.lineno);
  });
- 
+
  window.addEventListener('unhandledrejection', function(e) {
    console.error('未处理的 Promise 拒绝:', e.reason);
  });

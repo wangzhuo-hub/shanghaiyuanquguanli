@@ -18,6 +18,7 @@ export default defineConfig(({ mode }) => {
     return {
         server: {
             port: devPort,
+            strictPort: true,
             host: '0.0.0.0',
             proxy: {
                 '/api/pb': {
@@ -39,10 +40,14 @@ export default defineConfig(({ mode }) => {
                 },
             },
         },
+        preview: {
+            port: devPort,
+            strictPort: true,
+            host: '0.0.0.0',
+        },
         plugins: [react()],
         define: {
-            'process.env.API_KEY': JSON.stringify(env.API_KEY ?? env.GEMINI_API_KEY),
-            'process.env.GEMINI_API_KEY': JSON.stringify(env.GEMINI_API_KEY),
+            // API Keys 仅通过服务端代理使用，不嵌入前端 bundle
         },
         build: {
             outDir: 'dist',

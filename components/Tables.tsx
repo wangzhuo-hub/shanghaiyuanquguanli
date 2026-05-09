@@ -35,10 +35,10 @@ const ActivityCard: React.FC<{ tenant: any, buildingName: string, unitNames: str
          <div className="font-medium text-slate-800">{tenant.name}</div>
          <StatusBadge status={tenant.status} />
      </div>
-     <div className="text-xs text-slate-500 space-y-1">
-         <div className="flex justify-between">
-             <span>位置: {buildingName} {unitNames}</span>
-             <span className="font-semibold text-slate-700">{formatArea(tenant.totalArea)}</span>
+     <div className="text-xs text-slate-500 space-y-1 min-w-0">
+         <div className="flex flex-col gap-1 sm:flex-row sm:justify-between sm:items-start sm:gap-2">
+             <span className="min-w-0 break-words">位置: {buildingName} {unitNames}</span>
+             <span className="font-semibold text-slate-700 shrink-0 sm:text-right">{formatArea(tenant.totalArea)}</span>
          </div>
          <div className="text-slate-400">{tenant.leaseStart} ~ {tenant.leaseEnd}</div>
      </div>

@@ -1,7 +1,7 @@
 
 import React, { useState, useMemo } from 'react';
 import { Building, Unit, UnitStatus, Tenant, ContractStatus } from '../types';
-import { Plus, Trash2, Edit2, Home, Info, X, Users, Scissors, Coffee, Car, Maximize, Unlock, ShieldCheck, LayoutGrid, Percent, Building2 as Building2Icon, MapPin, FileSpreadsheet } from 'lucide-react';
+import { Plus, Trash2, Edit2, Home, Info, X, Users, Scissors, Coffee, Car, Maximize, Unlock, ShieldCheck, LayoutGrid, LayoutList, Percent, Building2 as Building2Icon, MapPin, FileSpreadsheet } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { formatArea, formatNumber, formatPercent } from '../services/numberFormat';
 import { buildingImportReadmeRows, syncTenantFromBuildingImportRow } from '../services/buildingImportContractSync';
@@ -60,6 +60,9 @@ export const BuildingManager: React.FC<BuildingManagerProps> = ({ buildings, ten
 
   const [showSplitForm, setShowSplitForm] = useState(false);
   const [splitData, setSplitData] = useState({ currentArea: 0, newUnitName: '' });
+
+  /** 当前楼栋详情区视图：条带化「平面图」示意 vs 表格列表（方案 E） */
+  const [buildingDetailView, setBuildingDetailView] = useState<'plan' | 'list'>('plan');
 
   // 批量导入相关状态
   const [importErrors, setImportErrors] = useState<Array<{ row: number; reason: string; data: Record<string, any> }>>([]);
@@ -161,25 +164,6 @@ export const BuildingManager: React.FC<BuildingManagerProps> = ({ buildings, ten
     if (!activeBuilding || !activeBuilding.units.length) return 0;
     return Math.max(...activeBuilding.units.map(u => u.floor));
   }, [activeBuilding]);
-
-  const handleStatusColor = (status: UnitStatus) => {
-    switch (status) {
-      case UnitStatus.Occupied: return 'bg-blue-100 border-blue-300 text-blue-700';
-      case UnitStatus.Reserved: return 'bg-amber-100 border-amber-300 text-amber-700';
-      default: return 'bg-slate-50 border-slate-200 text-slate-500 hover:border-blue-400';
-    }
-  };
-
-  const getSizeClass = (area: number) => {
-      if (area >= 2000) return 'col-span-full';
-      if (area >= 1200) return 'col-span-6 md:col-span-8';
-      if (area >= 800) return 'col-span-4 md:col-span-6';
-      if (area >= 500) return 'col-span-3 md:col-span-4';
-      if (area >= 300) return 'col-span-2 md:col-span-3';
-      if (area >= 200) return 'col-span-2';
-      if (area >= 100) return 'col-span-1 md:col-span-2';
-      return 'col-span-1';
-  };
 
   const quickAddBuilding = () => {
     const buildingCount = buildings.filter(b => b.type !== 'Site').length;
@@ -762,16 +746,29 @@ export const BuildingManager: React.FC<BuildingManagerProps> = ({ buildings, ten
     editingUnit.id && t.unitIds.includes(editingUnit.id) && t.status === ContractStatus.Active
   );
 
-  const addUnitTile = (floor: number) => (
+  const addUnitStripSlot = (floor: number) => (
     <button
       type="button"
       onClick={() => addUnitOnFloor(floor)}
-      className="col-span-1 flex min-h-[80px] min-w-[56px] items-center justify-center rounded-lg border-2 border-dashed border-slate-300 bg-slate-50/80 text-slate-400 transition-colors hover:border-blue-400 hover:bg-blue-50/50 hover:text-blue-600"
-      title={`在本层新增单元（自动生成房号）`}
+      className="flex h-[88px] w-10 shrink-0 items-center justify-center rounded-lg border border-dashed border-slate-300 bg-white/60 text-slate-400 transition-colors hover:border-blue-400 hover:bg-sky-50 hover:text-blue-600"
+      title="在本层新增单元（自动生成房号）"
     >
-      <Plus size={22} strokeWidth={2} />
+      <Plus size={20} strokeWidth={2} />
     </button>
   );
+
+  const stripBlockVisual = (unit: Unit) => {
+    if (unit.isSelfUse) {
+      return 'border-slate-400/50 bg-gradient-to-b from-slate-200 to-slate-100 text-slate-800 shadow-sm';
+    }
+    if (unit.status === UnitStatus.Reserved) {
+      return 'border-amber-300 bg-gradient-to-b from-amber-50 to-amber-100/90 text-amber-950 shadow-sm';
+    }
+    if (unit.status === UnitStatus.Occupied) {
+      return 'border-sky-300 bg-gradient-to-b from-sky-100 to-sky-50/95 text-sky-950 shadow-sm';
+    }
+    return 'border-slate-200 bg-gradient-to-b from-slate-50 to-white text-slate-700 shadow-sm';
+  };
 
   return (
     <div className="space-y-6">
@@ -888,7 +885,7 @@ export const BuildingManager: React.FC<BuildingManagerProps> = ({ buildings, ten
       </div>
 
       {activeBuilding && buildingStats && (
-        <div className="bg-white p-4 md:p-6 rounded-xl shadow-sm border border-slate-200 relative">
+        <div className="relative min-w-0 rounded-xl border border-slate-200 bg-white p-4 shadow-sm md:p-6">
           <div className="flex flex-col md:flex-row justify-between items-start md:items-center mb-6 gap-4 border-b border-slate-100 pb-4">
              <div>
                  <div className="flex flex-col md:flex-row md:items-baseline gap-2 md:gap-3">
@@ -928,21 +925,6 @@ export const BuildingManager: React.FC<BuildingManagerProps> = ({ buildings, ten
             </div>
           </div>
 
-          <div className="flex gap-4 text-xs mb-6 overflow-x-auto pb-2 scrollbar-hide">
-               <div className="flex items-center gap-1.5 whitespace-nowrap flex-shrink-0">
-                 <div className="w-8 h-8 bg-slate-50 border border-slate-200 rounded"></div>
-                 <span>待租</span>
-               </div>
-               <div className="flex items-center gap-1.5 ml-2 whitespace-nowrap flex-shrink-0">
-                 <div className="w-8 h-8 bg-blue-100 border border-blue-300 rounded"></div>
-                 <span>已租</span>
-               </div>
-               <div className="flex items-center gap-1.5 ml-2 whitespace-nowrap flex-shrink-0">
-                 <div className="w-8 h-8 bg-gray-200 border border-gray-300 rounded opacity-75"></div>
-                 <span>自用</span>
-               </div>
-          </div>
-
           {activeBuilding.units.length === 0 ? (
             <button
               type="button"
@@ -953,74 +935,195 @@ export const BuildingManager: React.FC<BuildingManagerProps> = ({ buildings, ten
               <span className="text-sm font-medium">点击添加首个单元（自动生成 1 层房号）</span>
             </button>
           ) : (
-          <div className="space-y-6">
-            {Object.keys(unitsByFloor).sort((a,b) => Number(b) - Number(a)).map(floor => (
-              <div key={floor} className="flex gap-2 md:gap-4">
-                <div className="w-8 md:w-12 h-[80px] flex-shrink-0 flex items-center justify-center font-bold text-slate-500 bg-slate-100 rounded-lg text-sm md:text-base">
-                  {floor}F
-                </div>
-                <div className="flex-1 grid grid-cols-3 sm:grid-cols-4 md:grid-cols-6 lg:grid-cols-12 auto-rows-[80px] gap-2 md:gap-3 grid-flow-dense">
-                  {unitsByFloor[Number(floor)].map(unit => {
-                    const tenant = tenants.find(t => t.unitIds.includes(unit.id) && t.status === ContractStatus.Active);
-                    const isSelfUse = unit.isSelfUse;
-                    return (
-                        <div
-                        key={unit.id}
-                        role="button"
-                        tabIndex={0}
-                        onClick={() => openUnitDrawer(unit)}
-                        onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openUnitDrawer(unit); } }}
-                        className={`relative p-2 md:p-3 rounded-lg border cursor-pointer transition-all hover:shadow-md group flex flex-col justify-between overflow-hidden
-                            ${isSelfUse
-                                ? 'bg-gray-100 border-gray-200 text-gray-500 hover:border-gray-300'
-                                : handleStatusColor(unit.status)}
-                            ${getSizeClass(unit.area)}
-                        `}
-                        >
-                        <div className="flex justify-between items-start">
-                            <span className="font-bold text-sm md:text-lg truncate pr-1">{unit.name}</span>
-                            <div className="flex gap-1">
-                                {isSelfUse && <span title="自用" className="text-gray-400"><Coffee size={12}/></span>}
-                                {tenant?.specialRequirements && !isSelfUse && (
-                                <span title="有特殊备注">
-                                    <Info size={12} className="text-blue-500" />
-                                </span>
-                                )}
-                            </div>
-                        </div>
-                        <div className="mt-1 flex flex-col justify-end">
-                            <div className="flex justify-between items-end">
-                                <div className="min-w-0">
-                                    <div className="text-[10px] md:text-xs opacity-75">{formatArea(unit.area)}</div>
-                                    <div className="text-[10px] md:text-xs font-medium truncate w-full" title={isSelfUse ? '自用' : tenant?.name}>
-                                        {isSelfUse ? '自用保留' : (unit.status === UnitStatus.Vacant ? '待租' : tenant?.name || '已租')}
-                                    </div>
-                                </div>
-                            </div>
-                        </div>
-                        <div className="absolute top-1 right-1 opacity-0 group-hover:opacity-100 transition-opacity flex gap-1 bg-white/50 rounded pointer-events-none">
-                            <span className="p-1 rounded shadow-sm text-xs hover:bg-white"><Edit2 size={10} /></span>
-                        </div>
-                        </div>
-                    );
-                  })}
-                  {addUnitTile(Number(floor))}
-                </div>
-              </div>
-            ))}
-
-            <div className="flex gap-2 md:gap-4 pt-2 border-t border-dashed border-slate-200">
-              <div className="w-8 md:w-12 flex-shrink-0" />
+          <>
+            <div className="flex gap-0.5 rounded-t-lg bg-slate-50 p-1 -mx-1 sm:mx-0 border-b border-slate-200">
               <button
                 type="button"
-                onClick={addNewTopFloorUnit}
-                className="flex flex-1 items-center justify-center gap-2 rounded-lg border-2 border-dashed border-slate-300 bg-slate-50/80 py-4 text-sm font-medium text-slate-500 hover:border-blue-400 hover:bg-blue-50/50 hover:text-blue-700 transition-colors"
+                onClick={() => setBuildingDetailView('plan')}
+                className={`flex flex-1 items-center justify-center gap-2 rounded-md py-2.5 text-sm font-semibold transition-colors sm:flex-none sm:px-5 ${
+                  buildingDetailView === 'plan'
+                    ? 'bg-white text-slate-900 shadow-sm ring-1 ring-slate-200/80'
+                    : 'text-slate-500 hover:text-slate-800'
+                }`}
               >
-                <Plus size={18} />
-                添加更高楼层（下一层 {maxFloorInActive + 1}F，并自动生成房号）
+                <LayoutGrid size={16} className="opacity-80" />
+                平面图
+              </button>
+              <button
+                type="button"
+                onClick={() => setBuildingDetailView('list')}
+                className={`flex flex-1 items-center justify-center gap-2 rounded-md py-2.5 text-sm font-semibold transition-colors sm:flex-none sm:px-5 ${
+                  buildingDetailView === 'list'
+                    ? 'bg-white text-slate-900 shadow-sm ring-1 ring-slate-200/80'
+                    : 'text-slate-500 hover:text-slate-800'
+                }`}
+              >
+                <LayoutList size={16} className="opacity-80" />
+                列表
               </button>
             </div>
-          </div>
+
+            {buildingDetailView === 'plan' ? (
+              <div className="space-y-5 pt-5">
+                <div className="flex flex-wrap items-center gap-x-5 gap-y-2 text-xs text-slate-500">
+                  <span className="inline-flex items-center gap-2">
+                    <span className="h-2.5 w-2.5 rounded-sm bg-gradient-to-b from-slate-50 to-white ring-1 ring-slate-200" />
+                    待租
+                  </span>
+                  <span className="inline-flex items-center gap-2">
+                    <span className="h-2.5 w-2.5 rounded-sm bg-gradient-to-b from-sky-100 to-sky-50 ring-1 ring-sky-300" />
+                    已租
+                  </span>
+                  <span className="inline-flex items-center gap-2">
+                    <span className="h-2.5 w-2.5 rounded-sm bg-gradient-to-b from-slate-200 to-slate-100 ring-1 ring-slate-400/50" />
+                    自用
+                  </span>
+                  <span className="inline-flex items-center gap-2">
+                    <span className="h-2.5 w-2.5 rounded-sm bg-gradient-to-b from-amber-50 to-amber-100 ring-1 ring-amber-300" />
+                    预留
+                  </span>
+                  <span className="ml-auto text-[11px] text-slate-400">条块宽度大致按面积比例；同一层自动换行；点击块可编辑</span>
+                </div>
+
+                {Object.keys(unitsByFloor)
+                  .sort((a, b) => Number(b) - Number(a))
+                  .map(floor => (
+                    <div key={floor} className="space-y-2">
+                      <div className="text-[11px] font-extrabold tracking-wider text-slate-400">{floor}F</div>
+                      <div className="flex min-h-[88px] min-w-0 flex-wrap content-start items-stretch gap-1.5 rounded-xl border border-dashed border-slate-300 bg-slate-100/90 p-2 [background-image:repeating-linear-gradient(90deg,transparent,transparent_11px,rgba(148,163,184,0.25)_11px,rgba(148,163,184,0.25)_12px)]">
+                        {unitsByFloor[Number(floor)].map(unit => {
+                          const tenant = tenants.find(t => t.unitIds.includes(unit.id) && t.status === ContractStatus.Active);
+                          const isSelfUse = unit.isSelfUse;
+                          const flexGrow = Math.max(unit.area || 0, 8);
+                          return (
+                            <button
+                              key={unit.id}
+                              type="button"
+                              onClick={() => openUnitDrawer(unit)}
+                              style={{ flex: `${flexGrow} 1 5.25rem` }}
+                              className={`min-h-[88px] min-w-0 max-w-full rounded-lg border px-2 py-2 text-left transition hover:brightness-[1.02] hover:ring-2 hover:ring-blue-300/40 ${stripBlockVisual(unit)}`}
+                            >
+                              <div className="flex items-start justify-between gap-1">
+                                <span className="truncate text-xs font-bold leading-tight sm:text-sm">{unit.name}</span>
+                                <span className="flex shrink-0 gap-0.5">
+                                  {isSelfUse && (
+                                    <span title="自用" className="text-slate-500">
+                                      <Coffee size={11} />
+                                    </span>
+                                  )}
+                                  {tenant?.specialRequirements && !isSelfUse && (
+                                    <span title="有特殊备注">
+                                      <Info size={11} className="text-sky-600" />
+                                    </span>
+                                  )}
+                                </span>
+                              </div>
+                              <div className="mt-1 text-[10px] font-medium text-slate-500 tabular-nums sm:text-[11px]">{formatArea(unit.area)}</div>
+                              <div
+                                className="mt-0.5 line-clamp-2 text-[10px] font-medium leading-snug text-slate-600 sm:text-[11px]"
+                                title={isSelfUse ? '自用保留' : tenant?.name || (unit.status === UnitStatus.Vacant ? '待租' : '已租')}
+                              >
+                                {isSelfUse ? '自用保留' : unit.status === UnitStatus.Vacant ? '待租' : unit.status === UnitStatus.Reserved ? '预留' : tenant?.name || '已租'}
+                              </div>
+                            </button>
+                          );
+                        })}
+                        {addUnitStripSlot(Number(floor))}
+                      </div>
+                    </div>
+                  ))}
+
+                <div className="flex gap-2 border-t border-dashed border-slate-200 pt-4">
+                  <button
+                    type="button"
+                    onClick={addNewTopFloorUnit}
+                    className="flex w-full items-center justify-center gap-2 rounded-lg border-2 border-dashed border-slate-300 bg-slate-50/80 py-3.5 text-sm font-medium text-slate-500 transition-colors hover:border-blue-400 hover:bg-sky-50/60 hover:text-blue-700"
+                  >
+                    <Plus size={18} />
+                    添加更高楼层（{maxFloorInActive + 1}F，自动生成房号）
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div className="space-y-4 pt-5">
+                <div className="overflow-x-auto rounded-xl border border-slate-200">
+                  <table className="w-full min-w-[640px] border-collapse text-sm">
+                    <thead>
+                      <tr className="border-b border-slate-200 bg-slate-50 text-left text-[11px] font-bold uppercase tracking-wide text-slate-500">
+                        <th className="px-3 py-2.5">楼层</th>
+                        <th className="px-3 py-2.5">单元</th>
+                        <th className="px-3 py-2.5">面积</th>
+                        <th className="px-3 py-2.5">状态</th>
+                        <th className="px-3 py-2.5">租户 / 说明</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {Object.keys(unitsByFloor)
+                        .sort((a, b) => Number(b) - Number(a))
+                        .flatMap(floorKey =>
+                          unitsByFloor[Number(floorKey)].map(unit => {
+                            const tenant = tenants.find(t => t.unitIds.includes(unit.id) && t.status === ContractStatus.Active);
+                            const isSelfUse = unit.isSelfUse;
+                            let statusLabel = '待租';
+                            let tagClass = 'bg-slate-100 text-slate-600 ring-1 ring-slate-200/80';
+                            if (isSelfUse) {
+                              statusLabel = '自用';
+                              tagClass = 'bg-slate-200/80 text-slate-800 ring-1 ring-slate-300/80';
+                            } else if (unit.status === UnitStatus.Occupied) {
+                              statusLabel = '已租';
+                              tagClass = 'bg-sky-100 text-sky-900 ring-1 ring-sky-200/80';
+                            } else if (unit.status === UnitStatus.Reserved) {
+                              statusLabel = '预留';
+                              tagClass = 'bg-amber-100 text-amber-900 ring-1 ring-amber-200/80';
+                            }
+                            const tenantLine = isSelfUse
+                              ? '自用保留'
+                              : unit.status === UnitStatus.Vacant
+                                ? '—'
+                                : tenant?.name || '已租';
+                            return (
+                              <tr key={unit.id} className="hover:bg-slate-50/80">
+                                <td className="px-3 py-2.5 font-extrabold tabular-nums text-slate-400">{unit.floor}F</td>
+                                <td className="px-3 py-2.5">
+                                  <button
+                                    type="button"
+                                    onClick={() => openUnitDrawer(unit)}
+                                    className="font-semibold text-slate-800 underline-offset-2 hover:text-blue-600 hover:underline"
+                                  >
+                                    {unit.name}
+                                  </button>
+                                </td>
+                                <td className="px-3 py-2.5 tabular-nums text-slate-600">{formatArea(unit.area)}</td>
+                                <td className="px-3 py-2.5">
+                                  <span className={`inline-flex rounded-md px-2 py-0.5 text-[11px] font-bold ${tagClass}`}>{statusLabel}</span>
+                                </td>
+                                <td className="max-w-[min(28rem,40vw)] px-3 py-2.5 text-slate-600">
+                                  <span className="line-clamp-2" title={tenantLine}>
+                                    {tenantLine}
+                                    {tenant?.specialRequirements && !isSelfUse ? ' · 有特殊备注' : ''}
+                                  </span>
+                                </td>
+                              </tr>
+                            );
+                          })
+                        )}
+                    </tbody>
+                  </table>
+                </div>
+
+                <div className="flex gap-2 border-t border-dashed border-slate-200 pt-2">
+                  <button
+                    type="button"
+                    onClick={addNewTopFloorUnit}
+                    className="flex w-full items-center justify-center gap-2 rounded-lg border-2 border-dashed border-slate-300 bg-slate-50/80 py-3.5 text-sm font-medium text-slate-500 transition-colors hover:border-blue-400 hover:bg-sky-50/60 hover:text-blue-700"
+                  >
+                    <Plus size={18} />
+                    添加更高楼层（{maxFloorInActive + 1}F，自动生成房号）
+                  </button>
+                </div>
+              </div>
+            )}
+          </>
           )}
         </div>
       )}

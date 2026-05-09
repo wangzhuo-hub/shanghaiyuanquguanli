@@ -150,6 +150,7 @@ export function dashboardDataToPbRecords(
             early_termination_other_adjustment: t.earlyTerminationOtherAdjustment ?? null,
             special_requirements: t.specialRequirements || '',
             is_risk: !!t.isRisk,
+            is_special_business: !!t.isSpecialBusiness,
             contract_parking_spaces: t.contractParkingSpaces ?? t.parkingSpaces ?? 0,
             actual_parking_spaces: t.actualParkingSpaces ?? t.parkingSpaces ?? 0,
             parking_unit_price: t.parkingUnitPrice || 0,
@@ -240,23 +241,23 @@ export function dashboardDataToPbRecords(
     }
 
     // ---- budgetAdjustments ----
+    // amount_delta 在业务层用 originalYear/Month = -1 标记；PocketBase 的 original_month 约束为 0–11，-1 会 400，故落库用 null。
     for (const a of ensureArray<any>(data.budgetAdjustments)) {
         if (!a?.id) continue;
+        const isAmountDelta =
+            a.adjustmentKind === 'amount_delta' ||
+            (a.originalYear === -1 && a.originalMonth === -1);
         out.pb_budget_adjustments[a.id] = {
             original_id: a.id,
             tenant_id: a.tenantId,
             tenant_name: a.tenantName || '',
-            original_year: a.originalYear,
-            original_month: a.originalMonth,
+            original_year: isAmountDelta ? null : a.originalYear,
+            original_month: isAmountDelta ? null : a.originalMonth,
             adjusted_year: a.adjustedYear,
             adjusted_month: a.adjustedMonth,
             amount: a.amount || 0,
             reason: a.reason || '',
-            adjustment_kind:
-                a.adjustmentKind ||
-                (a.originalYear === -1 && a.originalMonth === -1
-                    ? 'amount_delta'
-                    : 'period_shift'),
+            adjustment_kind: isAmountDelta ? 'amount_delta' : a.adjustmentKind || 'period_shift',
             project_id: projectId,
         };
     }

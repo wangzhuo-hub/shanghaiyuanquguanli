@@ -6,6 +6,20 @@ import html2canvas from 'html2canvas';
 import jsPDF from 'jspdf';
 import { formatArea, formatCurrency, formatPercent } from '../services/numberFormat';
 
+/** 对 AI 返回的 HTML 做基础 XSS 清洗：移除 script 标签、事件处理器、javascript: 链接 */
+const sanitizeHtml = (html: string): string => {
+  return html
+    .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '')
+    .replace(/<script\b[^>]*\/>/gi, '')
+    .replace(/\bon\w+\s*=\s*"[^"]*"/gi, '')
+    .replace(/\bon\w+\s*=\s*'[^']*'/gi, '')
+    .replace(/\bon\w+\s*=\s*[^\s>]+/gi, '')
+    .replace(/javascript\s*:/gi, '')
+    .replace(/<iframe\b[^<]*(?:(?!<\/iframe>)<[^<]*)*<\/iframe>/gi, '')
+    .replace(/<embed\b[^>]*>/gi, '')
+    .replace(/<object\b[^<]*(?:(?!<\/object>)<[^<]*)*<\/object>/gi, '');
+};
+
 interface Message {
   role: 'user' | 'assistant';
   content: string;
@@ -50,16 +64,8 @@ export const AIAssistantDialog: React.FC<AIAssistantDialogProps> = ({
     setIsLoading(true);
 
     try {
-      console.log('AI配置:', { 
-        provider: aiConfig.provider, 
-        enabled: aiConfig.enabled,
-        hasApiKey: !!aiConfig.qwenApiKey,
-        baseUrl: aiConfig.qwenBaseUrl 
-      });
-      
       // 调用AI API
       const response = await callAI(userMessage, dashboardData, aiConfig);
-      console.log('AI响应:', response);
       
       setMessages(prev => [...prev, { 
         role: 'assistant', 
@@ -232,9 +238,9 @@ export const AIAssistantDialog: React.FC<AIAssistantDialogProps> = ({
                   }`}
                 >
                   {msg.isHTML ? (
-                    <div 
+                    <div
                       className="prose prose-sm max-w-none"
-                      dangerouslySetInnerHTML={{ __html: msg.content }}
+                      dangerouslySetInnerHTML={{ __html: sanitizeHtml(msg.content) }}
                     />
                   ) : (
                     <p className="text-sm whitespace-pre-wrap">{msg.content}</p>

@@ -157,4 +157,31 @@ describe('dataDiff', () => {
             payload.pb_billing_period_notes.updates[0].changedFields.notes_json
         ).toEqual({ 't1###2026-04': '已催收' });
     });
+
+    it('amount_delta 预算调整：PB 行使用 null 代替 originalYear/Month -1（满足 original_month 0–11 约束）', () => {
+        const data = baseData();
+        data.budgetAdjustments = [
+            {
+                id: 'adj_delta_1',
+                tenantId: 't1',
+                tenantName: '张三',
+                originalYear: -1,
+                originalMonth: -1,
+                adjustedYear: 2026,
+                adjustedMonth: 2,
+                amount: 500,
+                reason: '手动调额',
+                adjustmentKind: 'amount_delta',
+            } as any,
+        ];
+        const pb = dashboardDataToPbRecords(data, 'p1');
+        expect(pb.pb_budget_adjustments.adj_delta_1).toMatchObject({
+            original_year: null,
+            original_month: null,
+            adjusted_year: 2026,
+            adjusted_month: 2,
+            adjustment_kind: 'amount_delta',
+            amount: 500,
+        });
+    });
 });

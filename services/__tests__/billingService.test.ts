@@ -112,6 +112,57 @@ describe('generateBudgetedBills payment cycles', () => {
     expect(bills[0].amount).toBe(120000);
   });
 
+  it('applies contract-level rent-free when using unitTerms (merged with unit rows)', () => {
+    const bills = generateBudgetedBills(
+      tenant({
+        leaseEnd: '2026-03-31',
+        paymentCycle: 'Quarterly',
+        paymentCycleMonths: 3,
+        firstPaymentMonths: 3,
+        firstPaymentDate: '2026-01-01',
+        monthlyRent: 0,
+        rentFreePeriods: [{ start: '2026-01-01', end: '2026-01-31', description: '合同免租' }],
+        unitTerms: [
+          { unitId: 'unit-1', area: 100, monthlyRent: 30000, rentFreePeriods: [] },
+          { unitId: 'unit-2', area: 50, monthlyRent: 15000, rentFreePeriods: [] },
+        ],
+      }),
+      [],
+      [],
+      new Date(2026, 0, 1),
+      new Date(2026, 11, 31),
+    );
+
+    expect(bills).toHaveLength(1);
+    expect(bills[0].amount).toBe(90000);
+  });
+
+  it('applies firstReceivableAmount after merging unitTerms bills', () => {
+    const bills = generateBudgetedBills(
+      tenant({
+        leaseStart: '2026-01-01',
+        leaseEnd: '2026-12-31',
+        paymentCycle: 'Quarterly',
+        paymentCycleMonths: 3,
+        firstPaymentMonths: 3,
+        firstPaymentDate: '2026-01-01',
+        monthlyRent: 45000,
+        firstReceivableAmount: 150000,
+        unitTerms: [
+          { unitId: 'unit-1', area: 100, monthlyRent: 30000 },
+          { unitId: 'unit-2', area: 50, monthlyRent: 15000 },
+        ],
+      }),
+      [],
+      [],
+      new Date(2026, 0, 1),
+      new Date(2026, 11, 31),
+    );
+
+    // 分房源时首期自定义只改首笔金额，不触发单体下的「顺延整流重算」
+    expect(bills.map((bill) => bill.amount)).toEqual([150000, 135000, 135000, 135000]);
+  });
+
   it('deducts rent-free periods by whole monthly rent for anniversary-month ranges', () => {
     const bills = generateBudgetedBills(
       tenant({
@@ -223,12 +274,21 @@ describe('generateBudgetedBills payment cycles', () => {
       new Date(2026, 0, 1),
       new Date(2026, 11, 31)
     );
-    const tagged = bills.filter((b) => b.earlyTerminationExtraAmount != null && b.earlyTerminationExtraAmount !== 0);
-    expect(tagged).toHaveLength(1);
-    expect(formatLocalDate(tagged[0].date)).toBe('2026-05-15');
-    // 本期应收租金(5/1-5/15=15000) + 押金扣款5000 + 免租扣回0
-    expect(tagged[0].amount).toBe(20000);
-    expect(tagged[0].earlyTerminationExtraDetail).toEqual({ clawback: 0, deposit: 5000, other: 0 });
+    const settlement = bills.filter((b) => b.earlyTerminationExtraDetail != null);
+    expect(settlement).toHaveLength(1);
+    expect(formatLocalDate(settlement[0].date)).toBe('2026-05-15');
+    expect(settlement[0].amount).toBe(5000);
+    expect(settlement[0].earlyTerminationExtraDetail).toEqual({ clawback: 0, deposit: 5000, other: 0 });
+
+    const rentPartialMay = bills.find(
+      (b) =>
+        !b.earlyTerminationExtraDetail &&
+        b.coverageStart &&
+        b.coverageEnd &&
+        formatLocalDate(b.coverageStart) === '2026-05-01' &&
+        formatLocalDate(b.coverageEnd) === '2026-05-15'
+    );
+    expect(rentPartialMay?.amount).toBe(15000);
   });
 
   it('supports editable final receivable adjustment on early termination', () => {
@@ -251,11 +311,54 @@ describe('generateBudgetedBills payment cycles', () => {
       new Date(2026, 11, 31)
     );
 
-    const tagged = bills.filter((b) => b.earlyTerminationExtraAmount != null && b.earlyTerminationExtraAmount !== 0);
-    expect(tagged).toHaveLength(1);
-    expect(formatLocalDate(tagged[0].date)).toBe('2026-05-15');
-    // 本期租金15000 + 押金5000 - 其它抵扣3000
-    expect(tagged[0].amount).toBe(17000);
-    expect(tagged[0].earlyTerminationExtraDetail).toEqual({ clawback: 0, deposit: 5000, other: -3000 });
+    const settlement = bills.filter((b) => b.earlyTerminationExtraDetail != null);
+    expect(settlement).toHaveLength(1);
+    expect(formatLocalDate(settlement[0].date)).toBe('2026-05-15');
+    expect(settlement[0].amount).toBe(2000);
+    expect(settlement[0].earlyTerminationExtraDetail).toEqual({ clawback: 0, deposit: 5000, other: -3000 });
+
+    const rentPartialMay = bills.find(
+      (b) =>
+        !b.earlyTerminationExtraDetail &&
+        b.coverageStart &&
+        formatLocalDate(b.coverageStart) === '2026-05-01' &&
+        formatLocalDate(b.coverageEnd!) === '2026-05-15'
+    );
+    expect(rentPartialMay?.amount).toBe(15000);
+  });
+
+  it('keeps partial-quarter rent on advance bill date and adds settlement on termination day (quarterly)', () => {
+    const bills = generateBudgetedBills(
+      tenant({
+        leaseStart: '2025-09-01',
+        leaseEnd: '2028-08-31',
+        paymentCycle: 'Quarterly',
+        firstPaymentDate: '2025-08-10',
+        monthlyRent: 39420,
+        terminationType: 'Early',
+        terminationDate: '2026-04-30',
+        earlyTerminationDepositDeduction: 10000,
+        rentFreePeriods: [],
+      }),
+      [],
+      [],
+      new Date(2025, 0, 1),
+      new Date(2028, 11, 31)
+    );
+    const settlement = bills.find((b) => b.earlyTerminationExtraDetail);
+    expect(settlement).toBeDefined();
+    expect(formatLocalDate(settlement!.date)).toBe('2026-04-30');
+    expect(settlement!.amount).toBe(10000);
+
+    const partialMarApr = bills.find(
+      (b) =>
+        !b.earlyTerminationExtraDetail &&
+        b.coverageStart &&
+        formatLocalDate(b.coverageStart) === '2026-03-01' &&
+        formatLocalDate(b.coverageEnd) === '2026-04-30'
+    );
+    expect(partialMarApr).toBeDefined();
+    expect(partialMarApr!.amount).toBe(78840);
+    expect(partialMarApr!.date.getTime()).toBeLessThan(settlement!.date.getTime());
   });
 });

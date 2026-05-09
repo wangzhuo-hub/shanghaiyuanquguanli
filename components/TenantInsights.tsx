@@ -1,7 +1,8 @@
 import React, { useState } from 'react';
 import { Tenant, KeyMoment } from '../types';
 import { searchTenantInsights } from '../services/geminiService';
-import { Sparkles, Calendar, ExternalLink, Search, Globe, Award, Megaphone, Clock, Building2, Loader2, RefreshCw, Briefcase, User, Phone, Cake, ArrowLeft, Flag } from 'lucide-react';
+import { Sparkles, Calendar, ExternalLink, Search, Globe, Award, Megaphone, Clock, Building2, Loader2, RefreshCw, Briefcase, User, Phone, Cake, ArrowLeft, Flag, Edit2, Repeat } from 'lucide-react';
+import { paymentCycleLabelMap } from '../services/sharedUtils';
 
 interface TenantInsightsProps {
   tenants: Tenant[];
@@ -158,9 +159,9 @@ export const TenantInsights: React.FC<TenantInsightsProps> = ({ tenants, onUpdat
       : [];
 
   return (
-    <div className="flex h-[calc(100vh-140px)] bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
+    <div className="flex min-h-[320px] h-[calc(100dvh-10rem)] md:h-[calc(100vh-140px)] bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden min-w-0">
         {/* Left Sidebar: Tenant List */}
-        <div className={`w-full md:w-80 border-r border-slate-200 flex flex-col bg-slate-50 ${showMobileList ? 'flex' : 'hidden md:flex'}`}>
+        <div className={`w-full md:w-80 border-r border-slate-200 flex flex-col bg-slate-50 min-w-0 ${showMobileList ? 'flex' : 'hidden md:flex'}`}>
             <div className="p-4 border-b border-slate-200 space-y-3">
                 <h3 className="font-bold text-slate-700 flex items-center gap-2">
                     <Sparkles size={18} className="text-purple-500"/> 客户洞察
@@ -206,7 +207,7 @@ export const TenantInsights: React.FC<TenantInsightsProps> = ({ tenants, onUpdat
         </div>
 
         {/* Right Main: Details */}
-        <div className={`flex-1 flex-col ${!showMobileList ? 'flex' : 'hidden md:flex'}`}>
+        <div className={`flex-1 flex-col min-w-0 ${!showMobileList ? 'flex' : 'hidden md:flex'}`}>
             {selectedTenant ? (
                 <>
                     {/* Header */}
@@ -282,6 +283,56 @@ export const TenantInsights: React.FC<TenantInsightsProps> = ({ tenants, onUpdat
                                  </div>
                                  <p>暂无动态记录</p>
                                  <p className="text-xs mt-1">点击左侧"更新全员动态"获取AI洞察</p>
+                             </div>
+                         )}
+
+                         {/* 名称变更记录 */}
+                         {(selectedTenant.nameHistory && selectedTenant.nameHistory.length > 0) && (
+                             <div>
+                                 <h3 className="flex items-center gap-2 text-sm font-bold text-slate-600 mb-3"><Edit2 size={16} className="text-amber-500"/> 名称变更记录</h3>
+                                 <div className="relative border-l-2 border-amber-200 ml-4 space-y-4">
+                                     {[...selectedTenant.nameHistory].reverse().map(r => (
+                                         <div key={r.id} className="relative pl-8">
+                                             <div className="absolute -left-[9px] top-1 w-4 h-4 rounded-full bg-white border-2 border-amber-300"></div>
+                                             <div className="bg-white p-3 rounded-lg border border-slate-200 text-sm">
+                                                 <div className="flex items-center gap-2 text-slate-500">
+                                                     <span className="line-through text-slate-400">{r.oldName}</span>
+                                                     <span className="text-slate-300">→</span>
+                                                     <span className="font-medium text-slate-700">{r.newName}</span>
+                                                 </div>
+                                                 <div className="flex items-center gap-2 mt-1 text-xs text-slate-400">
+                                                     <span>{r.changedAt?.slice(0, 10)}</span>
+                                                     {r.reason && <span>· {r.reason}</span>}
+                                                 </div>
+                                             </div>
+                                         </div>
+                                     ))}
+                                 </div>
+                             </div>
+                         )}
+
+                         {/* 付款周期变更记录 */}
+                         {(selectedTenant.paymentCycleChanges && selectedTenant.paymentCycleChanges.length > 0) && (
+                             <div>
+                                 <h3 className="flex items-center gap-2 text-sm font-bold text-slate-600 mb-3"><Repeat size={16} className="text-blue-500"/> 付款周期变更记录</h3>
+                                 <div className="relative border-l-2 border-blue-200 ml-4 space-y-4">
+                                     {[...selectedTenant.paymentCycleChanges].reverse().map(r => (
+                                         <div key={r.id} className="relative pl-8">
+                                             <div className="absolute -left-[9px] top-1 w-4 h-4 rounded-full bg-white border-2 border-blue-300"></div>
+                                             <div className="bg-white p-3 rounded-lg border border-slate-200 text-sm">
+                                                 <div className="flex items-center gap-2 text-slate-500">
+                                                     <span className="text-slate-400">{paymentCycleLabelMap[r.fromCycle] || r.fromCycle}</span>
+                                                     <span className="text-slate-300">→</span>
+                                                     <span className="font-medium text-slate-700">{paymentCycleLabelMap[r.toCycle] || r.toCycle}</span>
+                                                 </div>
+                                                 <div className="flex items-center gap-2 mt-1 text-xs text-slate-400">
+                                                     <span>生效: {r.effectiveDate}</span>
+                                                     {r.reason && <span>· {r.reason}</span>}
+                                                 </div>
+                                             </div>
+                                         </div>
+                                     ))}
+                                 </div>
                              </div>
                          )}
                     </div>

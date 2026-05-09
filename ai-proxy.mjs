@@ -3,6 +3,8 @@ import http from 'http';
 import os from 'os';
 
 const PORT = 3010;
+const MAX_BODY_SIZE = 5 * 1024 * 1024; // 5MB
+const UPSTREAM_TIMEOUT_MS = 120_000; // 2 min
 const QWEN_BASE_URL = 'https://coding.dashscope.aliyuncs.com/v1';
 
 const QWEN_API_KEY =
@@ -27,9 +29,18 @@ if (!QWEN_API_KEY) {
   process.exit(1);
 }
 
+const ALLOWED_ORIGINS = process.env.CORS_ORIGINS
+  ? process.env.CORS_ORIGINS.split(',').map(s => s.trim())
+  : null; // null = 同源允许，可通过环境变量 CORS_ORIGINS 设置白名单
+
 const server = http.createServer(async (req, res) => {
+  const origin = req.headers.origin || '';
+  const allowOrigin = ALLOWED_ORIGINS
+    ? (ALLOWED_ORIGINS.includes(origin) ? origin : ALLOWED_ORIGINS[0])
+    : origin || '*';
+
   // CORS headers
-  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Origin', allowOrigin);
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 
@@ -43,15 +54,25 @@ const server = http.createServer(async (req, res) => {
   // Only handle POST /api/chat
   if (req.method === 'POST' && req.url === '/api/chat') {
     let body = '';
-    
+    let bodyLength = 0;
+
     req.on('data', chunk => {
+      bodyLength += chunk.length;
+      if (bodyLength > MAX_BODY_SIZE) {
+        res.writeHead(413, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: '请求体过大' }));
+        req.destroy();
+        return;
+      }
       body += chunk.toString();
     });
 
     req.on('end', async () => {
       try {
         const requestData = JSON.parse(body);
-        console.log('[Proxy] 收到请求:', requestData.model);
+
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), UPSTREAM_TIMEOUT_MS);
 
         const response = await fetch(`${QWEN_BASE_URL}/chat/completions`, {
           method: 'POST',
@@ -59,23 +80,20 @@ const server = http.createServer(async (req, res) => {
             'Content-Type': 'application/json',
             'Authorization': `Bearer ${QWEN_API_KEY}`
           },
-          body: JSON.stringify(requestData)
+          body: JSON.stringify(requestData),
+          signal: controller.signal,
         });
+        clearTimeout(timer);
 
         const data = await response.json();
-        
-        console.log('[Proxy] API响应:', {
-          status: response.status,
-          model: data.model,
-          tokens: data.usage?.total_tokens
-        });
 
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify(data));
       } catch (error) {
-        console.error('[Proxy] 错误:', error.message);
+        const message = error.name === 'AbortError' ? '上游请求超时' : error.message;
+        console.error('[Proxy] 错误:', message);
         res.writeHead(500, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: error.message }));
+        res.end(JSON.stringify({ error: message }));
       }
     });
   } else {

@@ -1,0 +1,295 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>方案 B · 斑马纹 · 楼宇管理</title>
+  <style>
+    :root {
+      --page: #eef2f6;
+      --text: #0f172a;
+      --sub: #64748b;
+      --line: rgba(15, 23, 42, 0.06);
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background: var(--page);
+      font-family: ui-sans-serif, system-ui, "PingFang SC", "Microsoft YaHei", sans-serif;
+      color: var(--text);
+      padding: 32px 18px 48px;
+    }
+    .note {
+      max-width: 1120px;
+      margin: 0 auto 14px;
+      font-size: 0.8125rem;
+      color: var(--sub);
+    }
+    a.back { color: #2563eb; }
+    .panel {
+      max-width: 1120px;
+      margin: 0 auto;
+      border-radius: 20px;
+      background: #fff;
+      overflow: hidden;
+      box-shadow: 0 24px 80px rgba(15, 23, 42, 0.08);
+    }
+    .hero {
+      padding: 28px 28px 22px;
+      background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
+    }
+    .hero-top {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: space-between;
+      gap: 16px;
+      align-items: flex-end;
+    }
+    h1 {
+      margin: 0 0 6px;
+      font-size: 1.5rem;
+      font-weight: 800;
+      letter-spacing: -0.03em;
+    }
+    .sub { font-size: 0.875rem; color: var(--sub); }
+    .kpis {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+      gap: 12px;
+      margin-top: 22px;
+    }
+    .kpi {
+      padding: 14px 16px;
+      border-radius: 14px;
+      background: #fff;
+      border: 1px solid var(--line);
+    }
+    .kpi label {
+      display: block;
+      font-size: 0.6875rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: #94a3b8;
+      margin-bottom: 4px;
+    }
+    .kpi val { font-size: 1.05rem; font-weight: 700; }
+    .kpi val.accent { color: #2563eb; }
+    .seg {
+      display: inline-flex;
+      padding: 4px;
+      border-radius: 12px;
+      background: #f1f5f9;
+      gap: 4px;
+    }
+    .seg button {
+      border: 0;
+      background: transparent;
+      padding: 8px 14px;
+      border-radius: 10px;
+      font-size: 0.8125rem;
+      font-weight: 600;
+      color: var(--sub);
+      cursor: pointer;
+    }
+    .seg button.on {
+      background: #fff;
+      color: var(--text);
+      box-shadow: 0 1px 3px rgba(15,23,42,0.08);
+    }
+    .hero-actions { display: flex; gap: 10px; }
+    .btn {
+      padding: 10px 18px;
+      border-radius: 12px;
+      font-size: 0.8125rem;
+      font-weight: 600;
+      border: none;
+      cursor: pointer;
+    }
+    .btn-ghost { background: #e2e8f0; color: #334155; }
+    .btn-danger { background: transparent; color: #b91c1c; border: 1px solid #fecaca; }
+
+    .floor {
+      padding: 20px 24px 24px;
+      border-top: 1px solid var(--line);
+    }
+    .floor:nth-child(odd) { background: #fafbfd; }
+    .floor:nth-child(even) { background: #ffffff; }
+    .floor-bar {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      margin-bottom: 16px;
+    }
+    .floor-num {
+      font-variant-numeric: tabular-nums;
+      font-size: 0.8125rem;
+      font-weight: 800;
+      color: #cbd5e1;
+      width: 40px;
+      text-align: right;
+    }
+    .rail {
+      flex: 1;
+      height: 1px;
+      background: linear-gradient(90deg, #e2e8f0, transparent);
+    }
+    .units {
+      display: flex;
+      gap: 12px;
+      align-items: stretch;
+      padding-left: 54px;
+    }
+    .u {
+      border-radius: 16px;
+      padding: 14px 16px;
+      min-width: 80px;
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      border: 1px solid transparent;
+      transition: box-shadow 0.15s ease, transform 0.15s ease;
+    }
+    .u:hover {
+      box-shadow: 0 8px 24px rgba(15, 23, 42, 0.06);
+      transform: translateY(-1px);
+    }
+    .u.rented {
+      background: linear-gradient(145deg, #f0f7ff 0%, #ffffff 55%);
+      border-color: #e0edfc;
+    }
+    .u.vacant {
+      background: #f8fafc;
+      border-color: #edf1f5;
+    }
+    .u.self {
+      background: linear-gradient(145deg, #eef1f5 0%, #fafbfc 60%);
+      border-color: #e5e9ef;
+    }
+    .u-top { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+    .u-no { font-weight: 800; font-size: 0.9375rem; }
+    .u-dot {
+      width: 8px; height: 8px;
+      border-radius: 999px;
+      flex-shrink: 0;
+    }
+    .u.rented .u-dot { background: #3b82f6; }
+    .u.vacant .u-dot { background: #cbd5e1; }
+    .u.self .u-dot { background: #64748b; }
+    .u-area { font-size: 0.75rem; color: var(--sub); font-weight: 500; }
+    .u-name {
+      margin-top: 8px;
+      font-size: 0.8125rem;
+      color: #475569;
+      line-height: 1.4;
+      display: -webkit-box;
+      -webkit-line-clamp: 2;
+      -webkit-box-orient: vertical;
+      overflow: hidden;
+    }
+    .add {
+      flex: 0 0 52px;
+      border-radius: 16px;
+      border: 1px dashed #cbd5e1;
+      display: grid;
+      place-items: center;
+      color: #94a3b8;
+      font-size: 1.4rem;
+      background: rgba(255,255,255,0.5);
+    }
+  </style>
+</head>
+<body>
+  <p class="note"><a class="back" href="index.html">← 返回方案列表</a> · 方案 B</p>
+  <div class="panel">
+    <div class="hero">
+      <div class="hero-top">
+        <div>
+          <h1>1号楼</h1>
+          <p class="sub">招商视图 · 按楼层浏览可租与已租单元</p>
+        </div>
+        <div class="hero-actions">
+          <button type="button" class="btn btn-ghost">+ 指定类型新增</button>
+          <button type="button" class="btn btn-danger">删除楼宇</button>
+        </div>
+      </div>
+      <div class="kpis">
+        <div class="kpi"><label>总面积</label><val>13,697.96㎡</val></div>
+        <div class="kpi"><label>可租面积</label><val>8,038.91㎡</val></div>
+        <div class="kpi"><label>自用面积</label><val>5,659.05㎡</val></div>
+        <div class="kpi"><label>签约出租率</label><val class="accent">74.48%</val></div>
+      </div>
+      <div style="margin-top:20px;display:flex;flex-wrap:wrap;gap:12px;align-items:center;">
+        <div class="seg">
+          <button type="button" class="on">全部</button>
+          <button type="button">待租</button>
+          <button type="button">已租</button>
+          <button type="button">自用</button>
+        </div>
+      </div>
+    </div>
+
+    <section class="floor">
+      <div class="floor-bar">
+        <span class="floor-num">4F</span>
+        <div class="rail"></div>
+      </div>
+      <div class="units">
+        <article class="u rented" style="flex: 44 1 0">
+          <div class="u-top"><span class="u-no">401-1</span><span class="u-dot"></span></div>
+          <span class="u-area">44.00㎡</span>
+          <span class="u-name">上海将广房地产有限公司</span>
+        </article>
+        <article class="u rented" style="flex: 360.76 1 0">
+          <div class="u-top"><span class="u-no">403</span><span class="u-dot"></span></div>
+          <span class="u-area">360.76㎡</span>
+          <span class="u-name">上海脉科医疗科技有限公司</span>
+        </article>
+        <article class="u rented" style="flex: 101.8 1 0">
+          <div class="u-top"><span class="u-no">406</span><span class="u-dot"></span></div>
+          <span class="u-area">101.80㎡</span>
+          <span class="u-name">上海润景晖科技有限公司</span>
+        </article>
+        <article class="u rented" style="flex: 507.45 1 0">
+          <div class="u-top"><span class="u-no">407-409</span><span class="u-dot"></span></div>
+          <span class="u-area">507.45㎡</span>
+          <span class="u-name">上海游牛信息科技有限公司</span>
+        </article>
+        <article class="u vacant" style="flex: 248 1 0">
+          <div class="u-top"><span class="u-no">408-410</span><span class="u-dot"></span></div>
+          <span class="u-area">248.00㎡</span>
+          <span class="u-name">待租</span>
+        </article>
+        <div class="add">+</div>
+      </div>
+    </section>
+
+    <section class="floor">
+      <div class="floor-bar">
+        <span class="floor-num">3F</span>
+        <div class="rail"></div>
+      </div>
+      <div class="units">
+        <article class="u self" style="flex: 200 1 0">
+          <div class="u-top"><span class="u-no">301</span><span class="u-dot"></span></div>
+          <span class="u-area">200.00㎡</span>
+          <span class="u-name">园区自用办公</span>
+        </article>
+        <article class="u vacant" style="flex: 120 1 0">
+          <div class="u-top"><span class="u-no">302</span><span class="u-dot"></span></div>
+          <span class="u-area">120.00㎡</span>
+          <span class="u-name">待租</span>
+        </article>
+        <article class="u rented" style="flex: 280 1 0">
+          <div class="u-top"><span class="u-no">303-305</span><span class="u-dot"></span></div>
+          <span class="u-area">280.00㎡</span>
+          <span class="u-name">示例科技（上海）有限公司</span>
+        </article>
+        <div class="add">+</div>
+      </div>
+    </section>
+  </div>
+  <p class="note">方案 B：几乎无「硬边框盒子感」，靠斑马底与渐变卡片区分层次。</p>
+</body>
+</html>

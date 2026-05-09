@@ -53,3 +53,4 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+pocketbase/pb_public/

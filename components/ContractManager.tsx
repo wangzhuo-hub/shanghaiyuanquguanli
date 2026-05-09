@@ -5,10 +5,13 @@ import { Tenant, Building, ContractStatus, DepositStatus, RentFreePeriod, UnitSt
 import { Search, Plus, FileText, Filter, XCircle, AlertTriangle, AlertCircle, Calendar, DollarSign, Edit2, X, Trash2, Users, Save, Building as BuildingIcon, UserCheck, UserPlus, UserMinus, UserX, Info, ShieldAlert, WalletIcon, ArrowLeft, Trash, TrendingUp, TrendingDown, PieChart, Activity, BarChart3, Clock, LayoutDashboard, ArrowUpRight, ArrowDownRight, Sparkles, Briefcase, User, Smartphone, Gift, MapPin, Receipt, CreditCard } from 'lucide-react';
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, BarChart, Bar, Cell, PieChart as RechartsPieChart, Pie, Legend, ComposedChart, Line } from 'recharts';
 import { OccupancyTrendChart, UnitPriceTrendChart } from './Charts';
-import { generateBudgetedBills, computeEarlyTerminationFreeRentClawbackAmount } from '../services/billingService';
+import { generateBudgetedBills, computeEarlyTerminationFreeRentClawbackAmount, buildVacancyBudgetAlignmentNote } from '../services/billingService';
 import { AIContractRecognitionModal } from './AIContractRecognitionModal';
+import { NameChangeDialog } from './NameChangeDialog';
+import { PaymentCycleChangeDialog } from './PaymentCycleChangeDialog';
 import * as XLSX from 'xlsx';
 import { formatArea, formatCurrency, formatPercent } from '../services/numberFormat';
+import { paymentCycleLabelMap } from '../services/sharedUtils';
 
 interface ContractManagerProps {
   tenants: Tenant[];
@@ -17,6 +20,8 @@ interface ContractManagerProps {
   dashboardData?: DashboardData; // 新增：用于图表数据
   payments?: PaymentRecord[]; // 新增：用于关联实际收款
   onUpdatePayments?: (payments: PaymentRecord[]) => void; // 新增：用于更新收款记录
+  /** 手机窄屏：隐藏经营分析，默认进入在租列表便于录入合同 */
+  mobileEntryMode?: boolean;
 }
 
 const contractStatusTextMap: Record<ContractStatus, string> = {
@@ -37,21 +42,17 @@ const paymentCycleMonthMap: Record<Tenant['paymentCycle'], number> = {
   Custom: 3,
 };
 
-const paymentCycleLabelMap: Record<Tenant['paymentCycle'], string> = {
-  HalfMonthly: '半月付',
-  Monthly: '月付',
-  BiMonthly: '两月付',
-  Quarterly: '季付',
-  SemiAnnual: '半年付',
-  Annual: '年付',
-  Custom: '自定义',
-};
-
-export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, buildings, onUpdateTenants, dashboardData, payments = [], onUpdatePayments }) => {
+export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, buildings, onUpdateTenants, dashboardData, payments = [], onUpdatePayments, mobileEntryMode = false }) => {
   const currentCalendarYear = new Date().getFullYear();
-  // Default to Analysis tab as requested
-  const [activeTab, setActiveTab] = useState<'List' | 'Terminated' | 'Analysis'>('Analysis');
+  const [activeTab, setActiveTab] = useState<'List' | 'Terminated' | 'Analysis'>(() =>
+    mobileEntryMode ? 'List' : 'Analysis'
+  );
   const [analysisPeriod, setAnalysisPeriod] = useState<'Year' | 'Quarter' | 'Month'>('Year');
+
+  useEffect(() => {
+    if (!mobileEntryMode) return;
+    if (activeTab === 'Analysis') setActiveTab('List');
+  }, [mobileEntryMode, activeTab]);
   
   const [isEditing, setIsEditing] = useState(false);
   const [currentTenant, setCurrentTenant] = useState<Partial<Tenant>>({});
@@ -60,6 +61,7 @@ export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, build
   const [searchTerm, setSearchTerm] = useState('');
   const [filterBuilding, setFilterBuilding] = useState('all');
   const [filterStatus, setFilterStatus] = useState('all');
+  const [filterPaymentCycle, setFilterPaymentCycle] = useState('all');
   const [batchSelectedContractIds, setBatchSelectedContractIds] = useState<Set<string>>(() => new Set());
   // 应收明细预览：是否叠加预算假设/调整（与「预算管理 → 预算表」口径对齐）
   const [previewApplyBudget, setPreviewApplyBudget] = useState<boolean>(true);
@@ -73,6 +75,11 @@ export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, build
       depositDeduction: string;
       otherAdjustment: string;
   }>({ date: '', type: 'Normal', reason: '', frClawbackOverride: '', depositDeduction: '', otherAdjustment: '' });
+
+  // 名称变更 & 付款周期变更 对话框
+  const [showNameChange, setShowNameChange] = useState(false);
+  const [nameChangeTenantId, setNameChangeTenantId] = useState<string | null>(null);
+  const [showCycleChange, setShowCycleChange] = useState(false);
 
   const canBatchSelectTenant = (t: Tenant) =>
       !String(t.id || '').startsWith('virt_') && !String(t.name || '').includes('(预算)');
@@ -287,10 +294,71 @@ export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, build
     onUpdateTenants(updatedTenants); setIsEditing(false); setCurrentTenant({}); setRenewingFromId(null); setFormErrors({});
   };
 
+  // 退租回退
+  const handleRollback = (tenantId: string) => {
+    const t = tenants.find(x => x.id === tenantId);
+    if (!t) return;
+    if (!window.confirm(`确定将「${t.name}」回退为履约中状态吗？\n\n此操作将清除退租日期、退租类型、退租原因及提前退租结算数据。`)) return;
+    const updated = tenants.map(x =>
+      x.id === tenantId
+        ? {
+            ...x,
+            status: ContractStatus.Active,
+            terminationDate: undefined,
+            terminationType: undefined,
+            terminationReason: undefined,
+            earlyTerminationFreeRentClawbackOverride: undefined,
+            earlyTerminationDepositDeduction: undefined,
+            earlyTerminationOtherAdjustment: undefined,
+          }
+        : x
+    );
+    onUpdateTenants(updated);
+  };
+
   const handleEdit = (tenant: Tenant) => {
     const derivedPrice = tenant.unitPrice || (tenant.totalArea ? Number((tenant.monthlyRent / tenant.totalArea * 12 / 365).toFixed(2)) : 0);
     setCurrentTenant({ ...tenant, unitPrice: derivedPrice, unitTerms: tenant.unitTerms || tenant.paymentTerms || [] });
     setRenewingFromId(null); setFormErrors({}); setIsEditing(true);
+  };
+
+  // 名称变更
+  const handleNameChange = (tenant: Tenant) => {
+    setNameChangeTenantId(tenant.id);
+    setShowNameChange(true);
+  };
+  const handleNameChangeConfirm = (newName: string, record: import('../types').NameChangeRecord) => {
+    const updated = tenants.map(t =>
+      t.id === nameChangeTenantId
+        ? { ...t, name: newName, nameHistory: [...(t.nameHistory || []), record] }
+        : t
+    );
+    onUpdateTenants(updated);
+    setShowNameChange(false);
+    setNameChangeTenantId(null);
+  };
+
+  // 付款周期变更
+  const handleCycleChangeConfirm = (change: import('../types').PaymentCycleChange) => {
+    if (!currentTenant.id) return;
+    const updated = tenants.map(t =>
+      t.id === currentTenant.id
+        ? {
+            ...t,
+            paymentCycle: change.toCycle,
+            paymentCycleMonths: change.toCycleMonths,
+            paymentCycleChanges: [...(t.paymentCycleChanges || []), change],
+          }
+        : t
+    );
+    onUpdateTenants(updated);
+    setCurrentTenant(prev => ({
+      ...prev,
+      paymentCycle: change.toCycle,
+      paymentCycleMonths: change.toCycleMonths,
+      paymentCycleChanges: [...(prev.paymentCycleChanges || []), change],
+    }));
+    setShowCycleChange(false);
   };
 
   const handleRenewal = (tenant: Tenant) => {
@@ -439,10 +507,12 @@ export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, build
         const matchesBuilding = filterBuilding === 'all' || t.buildingId === filterBuilding;
         let matchesStatus = filterStatus === 'all' || t.status === filterStatus;
         if (filterStatus === 'risk') matchesStatus = t.isRisk === true;
+        if (filterStatus === 'special') matchesStatus = t.isSpecialBusiness === true;
+        const matchesPayment = filterPaymentCycle === 'all' || t.paymentCycle === filterPaymentCycle;
         
-        return matchesSearch && matchesBuilding && matchesStatus;
+        return matchesSearch && matchesBuilding && matchesStatus && matchesPayment;
     }).sort((a,b) => new Date(b.leaseStart).getTime() - new Date(a.leaseStart).getTime());
-  }, [tenants, searchTerm, filterBuilding, filterStatus, activeTab]);
+  }, [tenants, searchTerm, filterBuilding, filterStatus, filterPaymentCycle, activeTab]);
 
   const normalizeDate = (input: any): string => {
       const s = String(input ?? '').trim();
@@ -1199,7 +1269,7 @@ export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, build
                     <section className="bg-white p-6 rounded-xl border border-slate-100 shadow-sm space-y-4">
                         <div className="flex items-center gap-2 text-blue-600 font-bold mb-2"><FileText size={18}/> <span>核心签约信息</span></div>
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                            <div><label className="block text-sm font-medium mb-1.5 text-slate-600">企业名称 <span className="text-red-500">*</span></label><input type="text" className={`w-full border p-2.5 rounded-lg text-sm ${formErrors.name ? 'border-red-500 bg-red-50' : 'border-slate-300'}`} value={currentTenant.name || ''} onChange={e => setCurrentTenant({...currentTenant, name: e.target.value})} /></div>
+                            <div><label className="block text-sm font-medium mb-1.5 text-slate-600">企业名称 <span className="text-red-500">*</span></label><div className="flex gap-2"><input type="text" className={`flex-1 border p-2.5 rounded-lg text-sm ${formErrors.name ? 'border-red-500 bg-red-50' : 'border-slate-300'}`} value={currentTenant.name || ''} onChange={e => setCurrentTenant({...currentTenant, name: e.target.value})} />{currentTenant.id && <button type="button" onClick={() => handleNameChange(currentTenant as Tenant)} className="px-3 py-2 text-xs bg-amber-50 text-amber-700 border border-amber-200 rounded-lg hover:bg-amber-100 whitespace-nowrap">变更名称</button>}</div></div>
                             <div><label className="block text-sm font-medium mb-1.5 text-slate-600">所属资产 <span className="text-red-500">*</span></label><select className={`w-full border p-2.5 rounded-lg text-sm ${formErrors.buildingId ? 'border-red-500 bg-red-50' : 'border-slate-300'}`} value={currentTenant.buildingId || ''} onChange={e => setCurrentTenant({...currentTenant, buildingId: e.target.value, unitIds: [], unitTerms: [], paymentTerms: [], totalArea: 0, monthlyRent: 0})}>
                                 <option value="">选择资产...</option>{buildings.map(b => <option key={b.id} value={b.id}>{b.name} {b.type === 'Site' ? '(场地)' : ''}</option>)}
                             </select></div>
@@ -1389,10 +1459,10 @@ export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, build
                             }} /></div></div>
                             <div><label className="block text-sm font-medium mb-1.5 text-slate-600">月租金总额 (预估)</label><div className="relative"><span className="absolute left-3 top-2.5 text-slate-400 text-sm">¥</span><input type="number" className="w-full border border-slate-300 pl-7 pr-3 py-2.5 rounded-lg text-sm bg-slate-50 font-bold" value={currentTenant.monthlyRent || ''} onChange={e => setCurrentTenant({...currentTenant, monthlyRent: Number(e.target.value)})} /></div></div>
                             <div>
-                                <label className="block text-sm font-medium mb-1.5 text-slate-600">支付频率</label>
-                                <select 
-                                    className="w-full border border-slate-300 p-2.5 rounded-lg text-sm" 
-                                    value={currentTenant.paymentCycle || 'Quarterly'} 
+                                <label className="block text-sm font-medium mb-1.5 text-slate-600">支付频率 {currentTenant.id && <button type="button" onClick={() => setShowCycleChange(true)} className="ml-2 text-xs text-amber-600 hover:text-amber-700 underline">变更周期</button>}</label>
+                                <select
+                                    className="w-full border border-slate-300 p-2.5 rounded-lg text-sm"
+                                    value={currentTenant.paymentCycle || 'Quarterly'}
                                     onChange={e => {
                                         const cycle = e.target.value as Tenant['paymentCycle'];
                                         const months = cycle === 'Custom'
@@ -1453,7 +1523,7 @@ export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, build
                                     <Receipt size={18} /> <span>提前退租最后一期结算</span>
                                 </div>
                                 <p className="text-xs text-amber-900/80 leading-relaxed">
-                                    最后一期应收日期为<strong>退租日当天</strong>；金额=本期应收租金+押金+免租扣回+其它调整（可填负数抵扣水电物业等）。
+                                    <strong>本期租金</strong>仍按付款周期出现在<strong>原收款日</strong>（预览表中带覆盖周期的常规行）；<strong>免租扣回、押金扣款、其它调整</strong>单独生成一笔<strong>退租日当天</strong>的「提前退租结算」行，避免与季付/半月付提前收款节奏混淆。
                                 </p>
                                 <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                                     <div>
@@ -1624,32 +1694,53 @@ export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, build
                                      const previewStart = new Date(currentTenant.leaseStart!);
                                      const previewEnd = new Date(currentTenant.leaseEnd!);
 
-                                     // 仅当当前合同已存在（有 id）且开关打开时，才把预算假设/调整叠加进来。
-                                     // 新建中的合同（没 id）不会被任何 budgetAssumption / budgetAdjustment 命中，叠加后也无差异。
+                                     // 空置去化：按单元挂预算假设；合同起租与「预计签约日」一致时由计费层自动对齐收款计划（与财务报表应收核销一致）。
+                                     // 存量调优（Existing）仅当勾选开关时叠加。
                                      const allAssumptions = (dashboardData as any)?.budgetAssumptions || [];
                                      const allAdjustments = (dashboardData as any)?.budgetAdjustments || [];
-                                     const tenantAssumptions = currentTenant.id
+                                     const vacancyBudgetAssumptions =
+                                         (currentTenant.unitIds?.length ?? 0) > 0
+                                             ? allAssumptions.filter(
+                                                   (a: any) => a.targetType === 'Vacancy' && currentTenant.unitIds!.includes(a.targetId),
+                                               )
+                                             : [];
+                                     const existingTenantAssumptions = currentTenant.id
                                          ? allAssumptions.filter((a: any) => a.targetId === currentTenant.id && a.targetType === 'Existing')
                                          : [];
                                      const tenantAdjustments = currentTenant.id
                                          ? allAdjustments.filter((a: any) => a.tenantId === currentTenant.id)
                                          : [];
-                                     const hasAnyBudgetItems = tenantAssumptions.length > 0 || tenantAdjustments.length > 0;
-                                     const willApplyBudget = previewApplyBudget && hasAnyBudgetItems;
+                                     const hasExistingBudgetItems = existingTenantAssumptions.length > 0 || tenantAdjustments.length > 0;
+                                     const hasVacancyBudgetItems = vacancyBudgetAssumptions.length > 0;
+                                     const assumptionsForPreview = [
+                                         ...vacancyBudgetAssumptions,
+                                         ...(previewApplyBudget ? existingTenantAssumptions : []),
+                                     ];
+                                     const adjustmentsForPreview = previewApplyBudget ? tenantAdjustments : [];
+                                     const showBillingDiffOverlay =
+                                         assumptionsForPreview.length > 0 || adjustmentsForPreview.length > 0;
+                                     const willApplyBudget = previewApplyBudget && hasExistingBudgetItems;
 
                                      // 生成合同期内所有账单
                                      const bills = generateBudgetedBills(
                                          tenantForPreview,
-                                         willApplyBudget ? allAssumptions : [],
-                                         willApplyBudget ? allAdjustments : [],
+                                         assumptionsForPreview,
+                                         adjustmentsForPreview,
                                          previewStart,
                                          previewEnd
                                      ); // 不再限制期数
 
-                                     // 同时生成「纯合同口径」用于对照（仅在叠加生效时计算）
-                                     const billsRaw = willApplyBudget
+                                     // 同时生成「纯合同口径」用于对照（有预算层时计算）
+                                     const billsRaw = showBillingDiffOverlay
                                          ? generateBudgetedBills(tenantForPreview, [], [], previewStart, previewEnd)
                                          : bills;
+                                     const vacancyBudgetNote = buildVacancyBudgetAlignmentNote(
+                                         {
+                                             unitIds: currentTenant.unitIds || [],
+                                             leaseStart: currentTenant.leaseStart,
+                                         },
+                                         allAssumptions,
+                                     );
                                      const rawDateAmtSet = new Set(
                                          billsRaw.map(b => `${b.date.getFullYear()}-${b.date.getMonth()}-${b.date.getDate()}|${Math.round(b.amount)}`)
                                      );
@@ -1770,16 +1861,21 @@ export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, build
                                                          <span className="text-xs text-slate-500">（合同期内共{bills.length}期）</span>
                                                          {willApplyBudget && (
                                                              <span className="inline-flex items-center gap-1 text-[10px] font-bold bg-purple-100 text-purple-700 px-2 py-0.5 rounded">
-                                                                 <Sparkles size={10}/> 已叠加预算假设/调整
+                                                                 <Sparkles size={10}/> 已叠加存量调优假设/调整
                                                              </span>
                                                          )}
-                                                         {!willApplyBudget && hasAnyBudgetItems && (
+                                                         {hasVacancyBudgetItems && (
+                                                             <span className="inline-flex items-center gap-1 text-[10px] font-bold bg-rose-50 text-rose-700 px-2 py-0.5 rounded border border-rose-200">
+                                                                 <Sparkles size={10}/> 空置去化预算已参与推算
+                                                             </span>
+                                                         )}
+                                                         {!showBillingDiffOverlay && (
                                                              <span className="text-[10px] font-bold bg-slate-100 text-slate-500 px-2 py-0.5 rounded">
                                                                  纯合同口径
                                                              </span>
                                                          )}
                                                      </div>
-                                                     {hasAnyBudgetItems && (
+                                                     {hasExistingBudgetItems && (
                                                          <label className="inline-flex items-center gap-2 text-xs text-slate-600 cursor-pointer select-none">
                                                              <input
                                                                  type="checkbox"
@@ -1787,82 +1883,103 @@ export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, build
                                                                  checked={previewApplyBudget}
                                                                  onChange={(e) => setPreviewApplyBudget(e.target.checked)}
                                                              />
-                                                             <span>叠加预算管理中的假设/调整（与「预算表」口径一致）</span>
+                                                             <span>叠加预算管理中的存量假设/调整（与「预算表」口径一致）</span>
                                                          </label>
                                                      )}
                                                  </div>
 
                                                  {/* 叠加项摘要提示 */}
-                                                 {willApplyBudget && (() => {
-                                                     const items: { tag: string; color: string; text: string }[] = [];
-                                                     tenantAssumptions.forEach((a: any) => {
-                                                         if (a.priceAdjustment) {
-                                                             items.push({
-                                                                 tag: '调价',
-                                                                 color: 'amber',
-                                                                 text: `自 ${a.priceAdjustment.startDate} 起单价改为 ¥${a.priceAdjustment.newUnitPrice}/天/㎡`,
-                                                             });
-                                                         }
-                                                         if (a.billingCycleShiftMonths && a.billingCycleShiftMonths !== 0) {
-                                                             items.push({
-                                                                 tag: '账期偏移',
-                                                                 color: 'blue',
-                                                                 text: `所有收款日期整体${a.billingCycleShiftMonths > 0 ? '推后' : '提前'} ${Math.abs(a.billingCycleShiftMonths)} 个月`,
-                                                             });
-                                                         }
-                                                         if (a.paymentShift?.isActive) {
-                                                             items.push({
-                                                                 tag: '付款转移',
-                                                                 color: 'indigo',
-                                                                 text: `${a.paymentShift.fromYear}年${a.paymentShift.fromMonth + 1}月 → ${a.paymentShift.toYear}年${a.paymentShift.toMonth + 1}月，金额 ¥${a.paymentShift.amount.toLocaleString()}`,
-                                                             });
-                                                         }
-                                                     });
-                                                     tenantAdjustments.forEach((adj: any) => {
-                                                         const isAmt = adj.adjustmentKind === 'amount_delta' || (adj.originalYear === -1 && adj.originalMonth === -1);
-                                                         if (isAmt) {
-                                                             items.push({
-                                                                 tag: '金额调整',
-                                                                 color: 'teal',
-                                                                 text: `${adj.adjustedYear}年${adj.adjustedMonth + 1}月 ${adj.amount >= 0 ? '+' : ''}¥${adj.amount.toLocaleString()}${adj.reason ? `（${adj.reason}）` : ''}`,
-                                                             });
-                                                         } else {
-                                                             items.push({
-                                                                 tag: '账期调整',
-                                                                 color: 'purple',
-                                                                 text: `${adj.originalYear}年${adj.originalMonth + 1}月 → ${adj.adjustedYear}年${adj.adjustedMonth + 1}月${adj.reason ? `（${adj.reason}）` : ''}`,
-                                                             });
-                                                         }
-                                                     });
-                                                     if (items.length === 0) return null;
-                                                     const colorMap: Record<string, string> = {
-                                                         amber: 'bg-amber-50 text-amber-800 border-amber-200',
-                                                         blue: 'bg-blue-50 text-blue-800 border-blue-200',
-                                                         indigo: 'bg-indigo-50 text-indigo-800 border-indigo-200',
-                                                         teal: 'bg-teal-50 text-teal-800 border-teal-200',
-                                                         purple: 'bg-purple-50 text-purple-800 border-purple-200',
-                                                     };
-                                                     return (
-                                                         <div className="mb-3 p-3 rounded-lg bg-purple-50/60 border border-purple-200">
-                                                             <div className="flex items-center gap-2 mb-2">
-                                                                 <Info size={14} className="text-purple-600"/>
-                                                                 <span className="text-xs font-bold text-purple-800">本预览已叠加 {items.length} 项预算管理设置（与「预算管理 → 预算表」当年口径一致）</span>
+                                                 {hasVacancyBudgetItems && vacancyBudgetNote && (
+                                                     <div className="mb-3 p-3 rounded-lg bg-rose-50/70 border border-rose-200 text-xs text-rose-900 flex items-start gap-2">
+                                                         <Info size={14} className="text-rose-600 shrink-0 mt-0.5" />
+                                                         <span>{vacancyBudgetNote}</span>
+                                                     </div>
+                                                 )}
+                                                 {willApplyBudget &&
+                                                     (() => {
+                                                         const items: { tag: string; color: string; text: string }[] = [];
+                                                         existingTenantAssumptions.forEach((a: any) => {
+                                                             if (a.priceAdjustment) {
+                                                                 items.push({
+                                                                     tag: '调价',
+                                                                     color: 'amber',
+                                                                     text: `自 ${a.priceAdjustment.startDate} 起单价改为 ¥${a.priceAdjustment.newUnitPrice}/天/㎡`,
+                                                                 });
+                                                             }
+                                                             if (a.billingCycleShiftMonths && a.billingCycleShiftMonths !== 0) {
+                                                                 items.push({
+                                                                     tag: '账期偏移',
+                                                                     color: 'blue',
+                                                                     text: `所有收款日期整体${a.billingCycleShiftMonths > 0 ? '推后' : '提前'} ${Math.abs(a.billingCycleShiftMonths)} 个月`,
+                                                                 });
+                                                             }
+                                                             if (a.paymentShift?.isActive) {
+                                                                 items.push({
+                                                                     tag: '付款转移',
+                                                                     color: 'indigo',
+                                                                     text: `${a.paymentShift.fromYear}年${a.paymentShift.fromMonth + 1}月 → ${a.paymentShift.toYear}年${a.paymentShift.toMonth + 1}月，金额 ¥${a.paymentShift.amount.toLocaleString()}`,
+                                                                 });
+                                                             }
+                                                         });
+                                                         tenantAdjustments.forEach((adj: any) => {
+                                                             const isAmt =
+                                                                 adj.adjustmentKind === 'amount_delta' ||
+                                                                 (adj.originalYear === -1 && adj.originalMonth === -1);
+                                                             if (isAmt) {
+                                                                 items.push({
+                                                                     tag: '金额调整',
+                                                                     color: 'teal',
+                                                                     text: `${adj.adjustedYear}年${adj.adjustedMonth + 1}月 ${adj.amount >= 0 ? '+' : ''}¥${adj.amount.toLocaleString()}${adj.reason ? `（${adj.reason}）` : ''}`,
+                                                                 });
+                                                             } else {
+                                                                 items.push({
+                                                                     tag: '账期调整',
+                                                                     color: 'purple',
+                                                                     text: `${adj.originalYear}年${adj.originalMonth + 1}月 → ${adj.adjustedYear}年${adj.adjustedMonth + 1}月${adj.reason ? `（${adj.reason}）` : ''}`,
+                                                                 });
+                                                             }
+                                                         });
+                                                         if (items.length === 0) return null;
+                                                         const colorMap: Record<string, string> = {
+                                                             amber: 'bg-amber-50 text-amber-800 border-amber-200',
+                                                             blue: 'bg-blue-50 text-blue-800 border-blue-200',
+                                                             indigo: 'bg-indigo-50 text-indigo-800 border-indigo-200',
+                                                             teal: 'bg-teal-50 text-teal-800 border-teal-200',
+                                                             purple: 'bg-purple-50 text-purple-800 border-purple-200',
+                                                         };
+                                                         return (
+                                                             <div className="mb-3 p-3 rounded-lg bg-purple-50/60 border border-purple-200">
+                                                                 <div className="flex items-center gap-2 mb-2">
+                                                                     <Info size={14} className="text-purple-600" />
+                                                                     <span className="text-xs font-bold text-purple-800">
+                                                                         本预览已叠加 {items.length} 项存量调优设置（与「预算管理 → 预算表」当年口径一致）
+                                                                     </span>
+                                                                 </div>
+                                                                 <ul className="space-y-1">
+                                                                     {items.map((it, i) => (
+                                                                         <li key={i} className="text-xs flex items-start gap-2">
+                                                                             <span
+                                                                                 className={`inline-flex items-center px-1.5 py-0.5 rounded border text-[10px] font-bold flex-shrink-0 ${colorMap[it.color]}`}
+                                                                             >
+                                                                                 {it.tag}
+                                                                             </span>
+                                                                             <span className="text-slate-700">{it.text}</span>
+                                                                         </li>
+                                                                     ))}
+                                                                 </ul>
                                                              </div>
-                                                             <ul className="space-y-1">
-                                                                 {items.map((it, i) => (
-                                                                     <li key={i} className="text-xs flex items-start gap-2">
-                                                                         <span className={`inline-flex items-center px-1.5 py-0.5 rounded border text-[10px] font-bold flex-shrink-0 ${colorMap[it.color]}`}>{it.tag}</span>
-                                                                         <span className="text-slate-700">{it.text}</span>
-                                                                     </li>
-                                                                 ))}
-                                                             </ul>
-                                                         </div>
-                                                     );
-                                                 })()}
-                                                 {!willApplyBudget && hasAnyBudgetItems && (
+                                                         );
+                                                     })()}
+                                                 {!previewApplyBudget && hasExistingBudgetItems && (
                                                      <div className="mb-3 p-2 rounded-lg bg-slate-50 border border-slate-200 text-xs text-slate-600 flex items-center gap-2">
-                                                         <Info size={12} className="text-slate-500"/>
-                                                         <span>当前显示「纯合同口径」。检测到该客户在预算管理中有 <strong className="text-slate-800">{tenantAssumptions.length + tenantAdjustments.length}</strong> 项假设/调整未叠加，与「预算表」可能存在差异。</span>
+                                                         <Info size={12} className="text-slate-500" />
+                                                         <span>
+                                                             存量调优未勾选叠加：该客户有{' '}
+                                                             <strong className="text-slate-800">
+                                                                 {existingTenantAssumptions.length + tenantAdjustments.length}
+                                                             </strong>{' '}
+                                                             项存量假设/调整未计入下方预览；空置去化预算仍会自动参与推算（若房源上有预算卡片）。
+                                                         </span>
                                                      </div>
                                                  )}
                                                  <div className="overflow-x-auto max-h-96 overflow-y-auto border border-slate-200 rounded-lg">
@@ -1889,8 +2006,9 @@ export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, build
                                                          // 与「纯合同口径」对比，标注预算叠加效果
                                                          const dateKey = `${billDate.getFullYear()}-${billDate.getMonth()}-${billDate.getDate()}`;
                                                          const dateAmtKey = `${dateKey}|${Math.round(bill.amount)}`;
-                                                         const isBudgetNew = willApplyBudget && !rawDateSet.has(dateKey); // 新增账期（如调入、付款转移目标月）
-                                                         const isBudgetChanged = willApplyBudget && !isBudgetNew && !rawDateAmtSet.has(dateAmtKey); // 同日期但金额变化
+                                                         const isBudgetNew = showBillingDiffOverlay && !rawDateSet.has(dateKey); // 新增账期（如调入、付款转移目标月）
+                                                         const isBudgetChanged =
+                                                             showBillingDiffOverlay && !isBudgetNew && !rawDateAmtSet.has(dateAmtKey); // 同日期但金额变化
 
                                                          return (
                                                              <tr key={idx} className={`hover:bg-slate-50 ${isBudgetNew ? 'bg-purple-50/40' : isBudgetChanged ? 'bg-amber-50/40' : ''}`}>
@@ -1898,6 +2016,14 @@ export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, build
                                                                      第{idx + 1}期
                                                                      {idx === firstCustomBillIdx && (currentTenant.firstReceivableAmount ?? 0) > 0 && (
                                                                          <span className="ml-1 inline-flex items-center text-[10px] bg-amber-100 text-amber-900 px-1.5 py-0.5 rounded font-bold">首期自定义</span>
+                                                                     )}
+                                                                     {bill.earlyTerminationExtraDetail && (
+                                                                         <span
+                                                                             className="ml-1 inline-flex items-center text-[10px] bg-amber-100 text-amber-900 px-1.5 py-0.5 rounded font-bold border border-amber-200"
+                                                                             title="免租扣回、押金扣款、其它调整（不含当期租金）"
+                                                                         >
+                                                                             提前退租结算
+                                                                         </span>
                                                                      )}
                                                                      {isBudgetNew && (
                                                                          <span className="ml-1 inline-flex items-center text-[10px] bg-purple-100 text-purple-800 px-1.5 py-0.5 rounded font-bold" title="此账期由预算假设/调整新增">预算新增</span>
@@ -1918,12 +2044,16 @@ export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, build
                                                      </table>
                                                      <p className="text-xs text-slate-500 mt-2">
                                                          <span className="text-amber-600">ℹ️ 提示：</span>
-                                                         收款日期为当期租金的收取时间，覆盖周期为该笔款项对应的租期范围。
+                                                         收款日期为当期租金的收取时间，覆盖周期为该笔款项对应的租期范围。「财务报表 → 应收核销」按月筛选时：<strong className="text-slate-700">当期扣除</strong>模式按<strong className="text-slate-700">收款日期</strong>所在自然月归集；<strong className="text-slate-700">账期顺延</strong>（Defer）模式按<strong className="text-slate-700">覆盖期首月</strong>归集（与预算表、合同概要一致）。整笔应收仅在归属月出现一笔。
                                                          {(currentTenant.rentFreePeriods?.length || 0) > 0 && currentTenant.freeRentHandling === 'Defer' && '免租期采用账期顺延模式，收款时间会自动顺延。'}
                                                          {(currentTenant.rentFreePeriods?.length || 0) > 0 && currentTenant.freeRentHandling === 'Deduct' && '免租期采用当期扣除模式，应收金额会相应减少。'}
-                                                         {willApplyBudget && (
+                                                         {showBillingDiffOverlay && (
                                                              <>
-                                                                {' '}<span className="text-purple-700">紫色行</span>表示由预算调整<strong>新增</strong>的账期；<span className="text-amber-700">琥珀色行</span>表示同账期<strong>金额被调整</strong>。若某账期被「调出」到其它月份，原账期会从本表消失（与「预算表」一致）。
+                                                                 {' '}
+                                                                 <span className="text-purple-700">紫色行</span>
+                                                                 表示相对纯合同口径<strong>新增</strong>的账期；
+                                                                 <span className="text-amber-700">琥珀色行</span>
+                                                                 表示同收款日<strong>金额发生变化</strong>（含空置去化单价/免租与存量调优叠加）。若某账期被「调出」到其它月份，原账期会从本表消失（与「预算表」一致）。
                                                              </>
                                                          )}
                                                      </p>
@@ -1953,6 +2083,20 @@ export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, build
                                         <div className="text-xs text-rose-600/70">勾选后将在看板重点标记，建议加强租金催缴。</div>
                                     </label>
                                     <ShieldAlert className="text-rose-500" size={24}/>
+                                </div>
+                                <div className="flex items-center gap-3 p-4 bg-amber-50 border border-amber-100 rounded-xl">
+                                    <input
+                                        id="special_business_flag"
+                                        type="checkbox"
+                                        className="w-5 h-5 text-amber-600 border-amber-300 rounded focus:ring-amber-500"
+                                        checked={currentTenant.isSpecialBusiness || false}
+                                        onChange={(e) => setCurrentTenant({ ...currentTenant, isSpecialBusiness: e.target.checked })}
+                                    />
+                                    <label htmlFor="special_business_flag" className="flex-1 cursor-pointer">
+                                        <div className="font-bold text-amber-700 text-sm">特殊业态客户（按经营分成等结算）</div>
+                                        <div className="text-xs text-amber-600/80">勾选后系统不再依据合同自动生成应收，需在「财务报表 → 特殊业态收入录入」按月手工录入应收金额。</div>
+                                    </label>
+                                    <Sparkles className="text-amber-500" size={24} />
                                 </div>
                                 <div><label className="block text-sm font-medium mb-1.5 text-slate-600">特殊要求 / 备注信息</label><textarea className="w-full border border-slate-300 p-2.5 rounded-lg text-sm min-h-[100px]" placeholder="记录任何非标合同条款、装修要求、特殊配套需求等..." value={currentTenant.specialRequirements || ''} onChange={e => setCurrentTenant({...currentTenant, specialRequirements: e.target.value})} /></div>
                             </div>
@@ -2082,6 +2226,18 @@ export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, build
                     </div>
                  </div>
              )}
+
+             {/* 名称变更弹窗 — 编辑页 */}
+             {showNameChange && nameChangeTenantId && (() => {
+               const t = tenants.find(x => x.id === nameChangeTenantId);
+               if (!t) return null;
+               return <NameChangeDialog tenant={t} onConfirm={handleNameChangeConfirm} onClose={() => { setShowNameChange(false); setNameChangeTenantId(null); }} />;
+             })()}
+
+             {/* 付款周期变更弹窗 — 编辑页 */}
+             {showCycleChange && currentTenant.id && (
+               <PaymentCycleChangeDialog tenant={currentTenant as Tenant} onConfirm={handleCycleChangeConfirm} onClose={() => setShowCycleChange(false)} />
+             )}
          </div>
      )
   }
@@ -2089,12 +2245,17 @@ export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, build
   return (
     <div className="space-y-6">
       {/* ... keeping Analysis/List/Terminated navigation logic from previous version ... */}
-      <div className="flex justify-between items-center">
-           <h2 className="text-lg md:text-xl font-bold text-slate-800 flex items-center gap-2"><LayoutDashboard size={22} className="text-blue-600"/> 客户合同中心</h2>
-           <div className="flex bg-slate-200/60 p-1 rounded-xl shadow-inner">
-               <button onClick={() => setActiveTab('Analysis')} className={`px-5 py-1.5 rounded-lg text-sm font-bold transition-all ${activeTab === 'Analysis' ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>经营分析</button>
-               <button onClick={() => setActiveTab('List')} className={`px-5 py-1.5 rounded-lg text-sm font-bold transition-all ${activeTab === 'List' ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>在租明细</button>
-               <button onClick={() => setActiveTab('Terminated')} className={`px-5 py-1.5 rounded-lg text-sm font-bold transition-all ${activeTab === 'Terminated' ? 'bg-white text-rose-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>历史退租</button>
+      <div className={`flex justify-between items-center gap-3 ${mobileEntryMode ? 'flex-col sm:flex-row sm:items-center' : ''}`}>
+           <h2 className="text-lg md:text-xl font-bold text-slate-800 flex items-center gap-2 w-full sm:w-auto">
+             <LayoutDashboard size={22} className="text-blue-600 shrink-0"/>
+             {mobileEntryMode ? '合同录入' : '客户合同中心'}
+           </h2>
+           <div className={`flex bg-slate-200/60 p-1 rounded-xl shadow-inner w-full sm:w-auto ${mobileEntryMode ? 'justify-stretch' : ''}`}>
+               {!mobileEntryMode && (
+               <button type="button" onClick={() => setActiveTab('Analysis')} className={`flex-1 sm:flex-none px-4 sm:px-5 py-1.5 rounded-lg text-sm font-bold transition-all ${activeTab === 'Analysis' ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>经营分析</button>
+               )}
+               <button type="button" onClick={() => setActiveTab('List')} className={`flex-1 sm:flex-none px-4 sm:px-5 py-1.5 rounded-lg text-sm font-bold transition-all ${activeTab === 'List' ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>在租明细</button>
+               <button type="button" onClick={() => setActiveTab('Terminated')} className={`flex-1 sm:flex-none px-4 sm:px-5 py-1.5 rounded-lg text-sm font-bold transition-all ${activeTab === 'Terminated' ? 'bg-white text-rose-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>历史退租</button>
            </div>
       </div>
 
@@ -2344,13 +2505,17 @@ export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, build
                 <div className="flex gap-2 w-full md:w-auto">
                     <div className="flex items-center gap-2 bg-white border border-slate-200 rounded-lg px-3 py-2 text-sm"><Filter size={16} className="text-slate-400" /><select value={filterBuilding} onChange={e => setFilterBuilding(e.target.value)} className="bg-transparent focus:outline-none text-slate-600 font-medium"><option value="all">所有楼宇</option>{buildings.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}</select></div>
                     {activeTab === 'List' && (
-                        <div className="flex items-center gap-2 bg-white border border-slate-200 rounded-lg px-3 py-2 text-sm"><select value={filterStatus} onChange={e => setFilterStatus(e.target.value)} className="bg-transparent focus:outline-none text-slate-600 font-medium"><option value="all">合同状态</option><option value={ContractStatus.Active}>履约中</option><option value={ContractStatus.Expiring}>即将到期</option><option value="risk">⚠️ 高风险</option></select></div>
+                        <div className="flex items-center gap-2 bg-white border border-slate-200 rounded-lg px-3 py-2 text-sm"><select value={filterStatus} onChange={e => setFilterStatus(e.target.value)} className="bg-transparent focus:outline-none text-slate-600 font-medium"><option value="all">合同状态</option><option value={ContractStatus.Active}>履约中</option><option value={ContractStatus.Expiring}>即将到期</option><option value="risk">⚠️ 高风险</option><option value="special">✨ 特殊业态</option></select></div>
                     )}
+                    <div className="flex items-center gap-2 bg-white border border-slate-200 rounded-lg px-3 py-2 text-sm"><select value={filterPaymentCycle} onChange={e => setFilterPaymentCycle(e.target.value)} className="bg-transparent focus:outline-none text-slate-600 font-medium"><option value="all">付款方式</option><option value="HalfMonthly">半月付</option><option value="Monthly">月付</option><option value="BiMonthly">两月付</option><option value="Quarterly">季付</option><option value="SemiAnnual">半年付</option><option value="Annual">年付</option><option value="Custom">自定义</option></select></div>
                 </div>
-                <div className="flex gap-2 w-full md:w-auto items-center md:ml-auto">
-                    <div className="relative flex-1 md:w-64"><Search className="absolute left-3 top-2.5 text-slate-400 w-4 h-4" /><input type="text" placeholder="搜索企业名称..." value={searchTerm} onChange={e => setSearchTerm(e.target.value)} className="w-full pl-9 pr-4 py-2 bg-white border border-slate-200 rounded-lg text-sm focus:ring-2 focus:ring-blue-100 outline-none"/></div>
+                <div className="flex flex-wrap gap-2 w-full md:w-auto items-center md:ml-auto justify-end">
+                    <div className={`relative flex-1 min-w-0 md:max-w-none ${activeTab === 'List' ? 'hidden md:block md:w-64' : 'w-full md:w-64'}`}>
+                        <Search className="absolute left-3 top-2.5 text-slate-400 w-4 h-4" />
+                        <input type="text" placeholder="搜索企业名称..." value={searchTerm} onChange={e => setSearchTerm(e.target.value)} className="w-full pl-9 pr-4 py-2 bg-white border border-slate-200 rounded-lg text-sm focus:ring-2 focus:ring-blue-100 outline-none"/>
+                    </div>
                     {activeTab === 'List' && (
-                        <>
+                        <div className="hidden md:flex flex-wrap gap-2 items-center justify-end">
                             <button
                                 type="button"
                                 onClick={handleBatchDeleteContracts}
@@ -2390,18 +2555,26 @@ export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, build
                                     }}
                                 />
                             </label>
+                        </div>
+                    )}
+                    {activeTab === 'List' && (
+                        <>
                             <button
                                 type="button"
                                 onClick={() => setShowAIContractImport(true)}
-                                className="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 shadow-md font-bold text-sm flex items-center gap-2"
+                                className="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 shadow-md font-bold text-sm inline-flex items-center gap-2 shrink-0"
                                 title="上传截图/文本/Excel，由 AI 识别并生成合同草稿"
                             >
                                 <Sparkles size={16} /> AI识别导入
                             </button>
+                            <button
+                                type="button"
+                                onClick={() => { setCurrentTenant({ signingDate: new Date().toISOString().split('T')[0], status: ContractStatus.Active, depositStatus: DepositStatus.Unpaid, rentFreePeriods: [], paymentCycle: 'Quarterly', paymentCycleMonths: 3, firstPaymentMonths: 3 }); setIsEditing(true); }}
+                                className="px-4 py-2 sm:px-5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 shadow-md font-bold inline-flex items-center gap-2 transition-all shrink-0"
+                            >
+                                <Plus size={18} /><span>新签客户</span>
+                            </button>
                         </>
-                    )}
-                    {activeTab === 'List' && (
-                        <button onClick={() => { setCurrentTenant({ signingDate: new Date().toISOString().split('T')[0], status: ContractStatus.Active, depositStatus: DepositStatus.Unpaid, rentFreePeriods: [], paymentCycle: 'Quarterly', paymentCycleMonths: 3, firstPaymentMonths: 3 }); setIsEditing(true); }} className="px-5 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 shadow-md font-bold flex items-center gap-2 transition-all"><Plus size={18} /><span>新签客户</span></button>
                     )}
                 </div>
             </div>
@@ -2412,19 +2585,19 @@ export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, build
                     <thead className="bg-slate-50 text-slate-500 font-bold border-b border-slate-200">
                         <tr>
                             {activeTab === 'List' && <th className="px-3 py-4 w-10 text-center">选</th>}
-                            <th className="px-6 py-4">客户名称</th><th className="px-6 py-4">租赁位置</th><th className="px-6 py-4">{activeTab === 'Terminated' ? '退租日期' : '起租日期'}</th><th className="px-6 py-4">实际入驻</th><th className="px-6 py-4">合同期 & 单价</th><th className="px-6 py-4 text-right">操作</th>
+                            <th className="px-6 py-4">客户名称</th><th className="px-6 py-4">租赁位置</th><th className="px-6 py-4">{activeTab === 'Terminated' ? '退租日期' : '起租日期'}</th><th className="px-6 py-4">实际入驻</th><th className="px-6 py-4">合同期 & 单价</th><th className="px-6 py-4">付款周期</th><th className="px-6 py-4 text-right">操作</th>
                         </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100">
                         {activeTab === 'List' ? buildingFloorGroups.map(group => (
                             <React.Fragment key={group.buildingId}>
                                 <tr className="bg-blue-50/40 border-y border-slate-100">
-                                    <td colSpan={activeTab === 'List' ? 7 : 6} className="px-6 py-2 font-bold text-xs text-blue-800">{group.buildingName} ({group.floors.reduce((acc, f) => acc + f.tenants.length, 0)}家)</td>
+                                    <td colSpan={activeTab === 'List' ? 8 : 7} className="px-6 py-2 font-bold text-xs text-blue-800">{group.buildingName} ({group.floors.reduce((acc, f) => acc + f.tenants.length, 0)}家)</td>
                                 </tr>
                                 {group.floors.map(fg => (
                                     <React.Fragment key={`${group.buildingId}_${fg.floorLabel}`}>
                                         <tr className="bg-slate-50/60 border-y border-slate-100">
-                                            <td colSpan={activeTab === 'List' ? 7 : 6} className="px-6 py-2 font-semibold text-[11px] text-slate-600">{fg.floorLabel} ({fg.tenants.length}家)</td>
+                                            <td colSpan={activeTab === 'List' ? 8 : 7} className="px-6 py-2 font-semibold text-[11px] text-slate-600">{fg.floorLabel} ({fg.tenants.length}家)</td>
                                         </tr>
                                         {fg.tenants.map(t => {
                                             const building = buildings.find(b => b.id === t.buildingId);
@@ -2448,7 +2621,7 @@ export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, build
                                                         )}
                                                     </td>
                                                     <td className="px-6 py-4">
-                                                        <div className="flex items-center gap-2">
+                                                        <div className="flex items-center gap-2 flex-wrap">
                                                             <span className="font-bold text-slate-800">{t.name}</span>
                                                             {isThisYearContract && (
                                                                 <span className={`text-[10px] px-2 py-0.5 rounded-md border font-bold ${isRenewalContract ? 'bg-violet-50 text-violet-700 border-violet-200' : 'bg-cyan-50 text-cyan-700 border-cyan-200'}`}>
@@ -2456,6 +2629,11 @@ export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, build
                                                                 </span>
                                                             )}
                                                             {t.isRisk && <ShieldAlert size={14} className="text-red-500" />}
+                                                            {t.isSpecialBusiness && (
+                                                                <span className="text-[10px] bg-amber-50 text-amber-700 px-2 py-0.5 rounded-md border border-amber-200 font-bold inline-flex items-center gap-1">
+                                                                    <Sparkles size={10} /> 特殊业态
+                                                                </span>
+                                                            )}
                                                             {t.rentFreePeriods && t.rentFreePeriods.length > 0 && t.freeRentHandling === 'Defer' && (
                                                                 <span className="text-[10px] bg-indigo-50 text-indigo-700 px-2 py-0.5 rounded-md border border-indigo-200 font-bold">账期顺延</span>
                                                             )}
@@ -2468,6 +2646,7 @@ export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, build
                                                     <td className="px-6 py-4"><div className="text-slate-700 font-bold">{t.leaseStart}</div></td>
                                                     <td className="px-6 py-4 text-slate-600 text-xs">{t.moveInDate ? <span className="font-medium text-slate-800">{t.moveInDate}</span> : <span className="text-slate-400">同起租</span>}</td>
                                                     <td className="px-6 py-4"><div className="text-slate-500 text-xs">{t.leaseStart} ~ {t.leaseEnd}</div><div className="text-blue-600 font-bold">{formatCurrency(displayPrice)}</div></td>
+                                                    <td className="px-6 py-4 text-slate-600 text-sm">{paymentCycleLabelMap[t.paymentCycle] || t.paymentCycle}</td>
                                                     <td className="px-6 py-4 text-right space-x-3"><button onClick={() => handleEdit(t)} className="text-blue-600 font-bold text-xs hover:underline">详情</button>{(t.status === ContractStatus.Expiring || t.status === ContractStatus.Active) && <button onClick={() => handleRenewal(t)} className="text-emerald-600 font-bold text-xs hover:underline">续签</button>}{t.status !== ContractStatus.Terminated && <button onClick={() => initiateTermination(t.id)} className="text-amber-600 font-bold text-xs hover:underline">退租</button>}</td>
                                                 </tr>
                                             );
@@ -2477,7 +2656,7 @@ export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, build
                             </React.Fragment>
                         )) : sortedYears.map(group => (
                             <React.Fragment key={group.year}>
-                                <tr className={`${activeTab === 'Terminated' ? 'bg-rose-50/30' : 'bg-blue-50/30'} border-y border-slate-100`}><td colSpan={6} className={`px-6 py-2 font-bold text-xs ${activeTab === 'Terminated' ? 'text-rose-800' : 'text-blue-800'}`}>{group.year}年度{activeTab === 'Terminated' ? '退租' : '起租'} ({group.tenants.length}家)</td></tr>
+                                <tr className={`${activeTab === 'Terminated' ? 'bg-rose-50/30' : 'bg-blue-50/30'} border-y border-slate-100`}><td colSpan={7} className={`px-6 py-2 font-bold text-xs ${activeTab === 'Terminated' ? 'text-rose-800' : 'text-blue-800'}`}>{group.year}年度{activeTab === 'Terminated' ? '退租' : '起租'} ({group.tenants.length}家)</td></tr>
                                 {group.tenants.map(t => {
                                     const building = buildings.find(b => b.id === t.buildingId);
                                     const unitNames = t.unitIds.map(uid => building?.units.find(u => u.id === uid)?.name || uid).join(', ');
@@ -2485,10 +2664,14 @@ export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, build
                                     return (
                                         <tr key={t.id} className="hover:bg-slate-50 transition-colors">
                                             <td className="px-6 py-4">
-                                                <div className="flex items-center gap-2">
+                                                <div className="flex items-center gap-2 flex-wrap">
                                                     <span className="font-bold text-slate-800">{t.name}</span>
                                                     {t.isRisk && <ShieldAlert size={14} className="text-red-500" />}
-                                                    {/* 免租期处理方式标识 */}
+                                                    {t.isSpecialBusiness && (
+                                                        <span className="text-[10px] bg-amber-50 text-amber-700 px-2 py-0.5 rounded-md border border-amber-200 font-bold inline-flex items-center gap-1">
+                                                            <Sparkles size={10} /> 特殊业态
+                                                        </span>
+                                                    )}
                                                     {t.rentFreePeriods && t.rentFreePeriods.length > 0 && t.freeRentHandling === 'Defer' && (
                                                         <span className="text-[10px] bg-indigo-50 text-indigo-700 px-2 py-0.5 rounded-md border border-indigo-200 font-bold">
                                                             账期顺延
@@ -2505,7 +2688,8 @@ export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, build
                                             <td className="px-6 py-4">{activeTab === 'Terminated' ? <div className="text-rose-600 font-bold">{t.terminationDate || t.leaseEnd}</div> : <div className="text-slate-700 font-bold">{t.leaseStart}</div>}</td>
                                             <td className="px-6 py-4 text-slate-600 text-xs">{t.moveInDate ? <span className="font-medium text-slate-800">{t.moveInDate}</span> : <span className="text-slate-400">同起租</span>}</td>
                                             <td className="px-6 py-4"><div className="text-slate-500 text-xs">{t.leaseStart} ~ {t.leaseEnd}</div><div className="text-blue-600 font-bold">{formatCurrency(displayPrice)}</div></td>
-                                            <td className="px-6 py-4 text-right space-x-3"><button onClick={() => handleEdit(t)} className="text-blue-600 font-bold text-xs hover:underline">详情</button></td>
+                                            <td className="px-6 py-4 text-slate-600 text-sm">{paymentCycleLabelMap[t.paymentCycle] || t.paymentCycle}</td>
+                                            <td className="px-6 py-4 text-right space-x-3"><button onClick={() => handleEdit(t)} className="text-blue-600 font-bold text-xs hover:underline">详情</button><button onClick={() => handleRollback(t.id)} className="text-emerald-600 font-bold text-xs hover:underline">回退</button></td>
                                         </tr>
                                     );
                                 })}
@@ -2513,6 +2697,170 @@ export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, build
                         ))}
                     </tbody>
                     </table>
+                </div>
+                <div className="md:hidden">
+                    {activeTab === 'List' ? (
+                        buildingFloorGroups.length === 0 ? (
+                            <div className="p-8 text-center text-slate-400 text-sm">暂无在租客户</div>
+                        ) : (
+                            buildingFloorGroups.map((group) => (
+                                <div key={group.buildingId}>
+                                    <div className="bg-blue-50/80 px-4 py-2 text-xs font-bold text-blue-800 border-b border-blue-100">
+                                        {group.buildingName} ({group.floors.reduce((acc, f) => acc + f.tenants.length, 0)}家)
+                                    </div>
+                                    {group.floors.map((fg) => (
+                                        <div key={`${group.buildingId}_${fg.floorLabel}`}>
+                                            <div className="bg-slate-50 px-4 py-1.5 text-[11px] font-semibold text-slate-600 border-b border-slate-100">
+                                                {fg.floorLabel} ({fg.tenants.length}家)
+                                            </div>
+                                            {fg.tenants.map((t) => {
+                                                const building = buildings.find((b) => b.id === t.buildingId);
+                                                const unitNames = t.unitIds.map((uid) => building?.units.find((u) => u.id === uid)?.name || uid).join(', ');
+                                                const displayPrice = t.unitPrice || (t.totalArea ? (t.monthlyRent / t.totalArea * 12 / 365) : 0);
+                                                const contractYear = Number((t.signingDate || t.leaseStart || '').slice(0, 4));
+                                                const isThisYearContract = contractYear === currentCalendarYear;
+                                                const isRenewalContract = Boolean(t.rootId);
+                                                return (
+                                                    <div key={t.id} className="px-4 py-3 border-b border-slate-100 bg-white">
+                                                        <div className="flex flex-wrap items-center gap-2">
+                                                            <span className="font-bold text-slate-800">{t.name}</span>
+                                                            {isThisYearContract && (
+                                                                <span className={`text-[10px] px-2 py-0.5 rounded-md border font-bold ${isRenewalContract ? 'bg-violet-50 text-violet-700 border-violet-200' : 'bg-cyan-50 text-cyan-700 border-cyan-200'}`}>
+                                                                    {isRenewalContract ? '本年续租' : '本年新签'}
+                                                                </span>
+                                                            )}
+                                                            {t.isRisk && <ShieldAlert size={14} className="text-red-500" />}
+                                                            {t.isSpecialBusiness && (
+                                                                <span className="text-[10px] bg-amber-50 text-amber-700 px-2 py-0.5 rounded-md border border-amber-200 font-bold inline-flex items-center gap-1">
+                                                                    <Sparkles size={10} /> 特殊业态
+                                                                </span>
+                                                            )}
+                                                            {t.rentFreePeriods && t.rentFreePeriods.length > 0 && t.freeRentHandling === 'Defer' && (
+                                                                <span className="text-[10px] bg-indigo-50 text-indigo-700 px-2 py-0.5 rounded-md border border-indigo-200 font-bold">账期顺延</span>
+                                                            )}
+                                                            {t.rentFreePeriods && t.rentFreePeriods.length > 0 && t.freeRentHandling === 'Deduct' && (
+                                                                <span className="text-[10px] bg-green-50 text-green-700 px-2 py-0.5 rounded-md border border-green-200 font-bold">当期扣除</span>
+                                                            )}
+                                                        </div>
+                                                        <div className="text-xs text-slate-600 mt-1">
+                                                            {building?.name}{' '}
+                                                            <span className="bg-slate-100 px-1 rounded font-medium">{unitNames}</span>
+                                                        </div>
+                                                        <div className="grid grid-cols-2 gap-x-2 gap-y-1 mt-2 text-[11px] text-slate-600">
+                                                            <span>
+                                                                <span className="text-slate-400">起租 </span>
+                                                                <span className="font-semibold text-slate-800">{t.leaseStart}</span>
+                                                            </span>
+                                                            <span>
+                                                                <span className="text-slate-400">入驻 </span>
+                                                                {t.moveInDate ? <span className="font-medium text-slate-800">{t.moveInDate}</span> : <span className="text-slate-400">同起租</span>}
+                                                            </span>
+                                                            <span className="col-span-2">
+                                                                <span className="text-slate-400">合同期 </span>
+                                                                {t.leaseStart} ~ {t.leaseEnd}
+                                                            </span>
+                                                            <span>
+                                                                <span className="text-slate-400">单价 </span>
+                                                                <span className="text-blue-600 font-bold">{formatCurrency(displayPrice)}</span>
+                                                            </span>
+                                                            <span>
+                                                                <span className="text-slate-400">付款 </span>
+                                                                {paymentCycleLabelMap[t.paymentCycle] || t.paymentCycle}
+                                                            </span>
+                                                        </div>
+                                                        <div className="flex flex-wrap gap-3 mt-3">
+                                                            <button type="button" onClick={() => handleEdit(t)} className="text-blue-600 font-bold text-xs">
+                                                                详情
+                                                            </button>
+                                                            {(t.status === ContractStatus.Expiring || t.status === ContractStatus.Active) && (
+                                                                <button type="button" onClick={() => handleRenewal(t)} className="text-emerald-600 font-bold text-xs">
+                                                                    续签
+                                                                </button>
+                                                            )}
+                                                            {t.status !== ContractStatus.Terminated && (
+                                                                <button type="button" onClick={() => initiateTermination(t.id)} className="text-amber-600 font-bold text-xs">
+                                                                    退租
+                                                                </button>
+                                                            )}
+                                                        </div>
+                                                    </div>
+                                                );
+                                            })}
+                                        </div>
+                                    ))}
+                                </div>
+                            ))
+                        )
+                    ) : sortedYears.length === 0 ? (
+                        <div className="p-8 text-center text-slate-400 text-sm">暂无历史退租记录</div>
+                    ) : (
+                        sortedYears.map((group) => (
+                            <div key={group.year}>
+                                <div className="bg-rose-50/80 px-4 py-2 text-xs font-bold text-rose-800 border-b border-rose-100">
+                                    {group.year}年度退租 ({group.tenants.length}家)
+                                </div>
+                                {group.tenants.map((t) => {
+                                    const building = buildings.find((b) => b.id === t.buildingId);
+                                    const unitNames = t.unitIds.map((uid) => building?.units.find((u) => u.id === uid)?.name || uid).join(', ');
+                                    const displayPrice = t.unitPrice || (t.totalArea ? (t.monthlyRent / t.totalArea * 12 / 365) : 0);
+                                    return (
+                                        <div key={t.id} className="px-4 py-3 border-b border-slate-100 bg-white">
+                                            <div className="flex flex-wrap items-center gap-2">
+                                                <span className="font-bold text-slate-800">{t.name}</span>
+                                                {t.isRisk && <ShieldAlert size={14} className="text-red-500" />}
+                                                {t.isSpecialBusiness && (
+                                                    <span className="text-[10px] bg-amber-50 text-amber-700 px-2 py-0.5 rounded-md border border-amber-200 font-bold inline-flex items-center gap-1">
+                                                        <Sparkles size={10} /> 特殊业态
+                                                    </span>
+                                                )}
+                                                {t.rentFreePeriods && t.rentFreePeriods.length > 0 && t.freeRentHandling === 'Defer' && (
+                                                    <span className="text-[10px] bg-indigo-50 text-indigo-700 px-2 py-0.5 rounded-md border border-indigo-200 font-bold">账期顺延</span>
+                                                )}
+                                                {t.rentFreePeriods && t.rentFreePeriods.length > 0 && t.freeRentHandling === 'Deduct' && (
+                                                    <span className="text-[10px] bg-green-50 text-green-700 px-2 py-0.5 rounded-md border border-green-200 font-bold">当期扣除</span>
+                                                )}
+                                            </div>
+                                            <div className="text-xs text-slate-600 mt-1">
+                                                {building?.name}{' '}
+                                                <span className="bg-slate-100 px-1 rounded font-medium">{unitNames}</span>
+                                            </div>
+                                            <div className="grid grid-cols-2 gap-x-2 gap-y-1 mt-2 text-[11px] text-slate-600">
+                                                <span className="col-span-2">
+                                                    <span className="text-slate-400">退租日 </span>
+                                                    <span className="font-bold text-rose-600">{t.terminationDate || t.leaseEnd}</span>
+                                                </span>
+                                                <span>
+                                                    <span className="text-slate-400">起租 </span>
+                                                    <span className="font-semibold text-slate-800">{t.leaseStart}</span>
+                                                </span>
+                                                <span>
+                                                    <span className="text-slate-400">入驻 </span>
+                                                    {t.moveInDate ? <span className="font-medium text-slate-800">{t.moveInDate}</span> : <span className="text-slate-400">同起租</span>}
+                                                </span>
+                                                <span className="col-span-2">
+                                                    <span className="text-slate-400">合同期 </span>
+                                                    {t.leaseStart} ~ {t.leaseEnd}
+                                                </span>
+                                                <span>
+                                                    <span className="text-slate-400">单价 </span>
+                                                    <span className="text-blue-600 font-bold">{formatCurrency(displayPrice)}</span>
+                                                </span>
+                                                <span>
+                                                    <span className="text-slate-400">付款 </span>
+                                                    {paymentCycleLabelMap[t.paymentCycle] || t.paymentCycle}
+                                                </span>
+                                            </div>
+                                            <div className="mt-3">
+                                                <button type="button" onClick={() => handleEdit(t)} className="text-blue-600 font-bold text-xs">
+                                                    详情
+                                                </button>
+                                            </div>
+                                        </div>
+                                    );
+                                })}
+                            </div>
+                        ))
+                    )}
                 </div>
             </div>
           </>
@@ -2539,7 +2887,9 @@ export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, build
                             Number.isFinite(Number(terminateData.frClawbackOverride));
                         return (
                             <div className="space-y-2 pt-2 border-t border-slate-100">
-                                <p className="text-xs font-bold text-slate-700">提前退租 — 最后一期应收（日期=退租日当天）</p>
+                                <p className="text-xs font-bold text-slate-700">
+                                    提前退租 — 租金按原收款计划；免租扣回/押金/其它调整在退租日单独一行
+                                </p>
                                 <div className="grid grid-cols-1 gap-2">
                                     <div>
                                         <label className="block text-[11px] text-slate-500 mb-0.5">免租扣回覆盖（元，可选）</label>
@@ -2710,6 +3060,18 @@ export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, build
                   </div>
               </div>
           </div>
+      )}
+
+      {/* 名称变更弹窗 */}
+      {showNameChange && nameChangeTenantId && (() => {
+        const t = tenants.find(x => x.id === nameChangeTenantId);
+        if (!t) return null;
+        return <NameChangeDialog tenant={t} onConfirm={handleNameChangeConfirm} onClose={() => { setShowNameChange(false); setNameChangeTenantId(null); }} />;
+      })()}
+
+      {/* 付款周期变更弹窗 */}
+      {showCycleChange && currentTenant.id && (
+        <PaymentCycleChangeDialog tenant={currentTenant as Tenant} onConfirm={handleCycleChangeConfirm} onClose={() => setShowCycleChange(false)} />
       )}
     </div>
   );

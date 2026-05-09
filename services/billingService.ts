@@ -1,5 +1,59 @@
 
-import { Tenant, BudgetAssumption, BudgetAdjustment, RentFreePeriod, Building, DepositStatus, ContractStatus } from '../types';
+import {
+    Tenant,
+    BudgetAssumption,
+    BudgetAdjustment,
+    RentFreePeriod,
+    LeaseUnitTerm,
+    Building,
+    DepositStatus,
+    ContractStatus,
+    PaymentCycle,
+} from '../types';
+
+const rentFreePeriodKey = (r: RentFreePeriod) => `${r.start}|${r.end}`;
+
+/** 分房源计费时合并合同级免租与房源级免租，避免合同级免租被忽略。 */
+const mergeRentFreeForUnitTerm = (tenant: Tenant, term: Pick<LeaseUnitTerm, 'rentFreePeriods'>): RentFreePeriod[] => {
+    const base = tenant.rentFreePeriods || [];
+    const extra = term.rentFreePeriods || [];
+    if (extra.length === 0) return [...base];
+    if (base.length === 0) return [...extra];
+    const seen = new Set(base.map(rentFreePeriodKey));
+    return [...base, ...extra.filter((r) => !seen.has(rentFreePeriodKey(r)))];
+};
+
+/** 多单元合并后付款转移只应执行一次，内层递归需暂时关闭 isActive。 */
+const assumptionsForUnitInnerCalls = (
+    assumptions: BudgetAssumption[],
+    tenantId: string,
+    suppressPaymentShift: boolean,
+): BudgetAssumption[] => {
+    if (!suppressPaymentShift) return assumptions;
+    return assumptions.map((a) => {
+        if (a.targetId !== tenantId || a.targetType !== 'Existing' || !a.paymentShift?.isActive) return a;
+        return { ...a, paymentShift: { ...a.paymentShift, isActive: false } };
+    });
+};
+
+/** 合并账单后一次性应用「付款转移」（与单合同循环内逻辑一致）。 */
+const applyExistingPaymentShiftToMergedBills = (bills: BudgetedBill[], ps: NonNullable<BudgetAssumption['paymentShift']>): void => {
+    if (!ps.isActive) return;
+    const sourceBill = bills.find(
+        (b) => b.date.getFullYear() === ps.fromYear && b.date.getMonth() === ps.fromMonth,
+    );
+    if (!sourceBill) return;
+    sourceBill.amount -= ps.amount;
+    if (sourceBill.amount < 0) sourceBill.amount = 0;
+    const shiftedDate = new Date(ps.toYear, ps.toMonth, 1);
+    bills.push({
+        date: shiftedDate,
+        amount: Math.round(ps.amount),
+        originalDate: new Date(sourceBill.date),
+        coverageStart: sourceBill.coverageStart ? new Date(sourceBill.coverageStart) : undefined,
+        coverageEnd: sourceBill.coverageEnd ? new Date(sourceBill.coverageEnd) : undefined,
+    });
+};
 
 export interface BudgetedBill {
     date: Date;
@@ -7,7 +61,10 @@ export interface BudgetedBill {
     originalDate?: Date;
     coverageStart?: Date;
     coverageEnd?: Date;
-    /** 提前退租结算附加（免租扣回+押金+其它），已并入 amount */
+    /**
+     * 提前退租：**单独一行**落在退租日，`amount` 仅为免租扣回+押金扣款+其它调整之和；
+     * 当期租金仍在原收款日的账单行上（由计费循环生成）。
+     */
     earlyTerminationExtraAmount?: number;
     earlyTerminationExtraDetail?: { clawback: number; deposit: number; other: number };
 }
@@ -111,12 +168,6 @@ export const calculateRentForDuration = (start: Date, end: Date, monthlyRent: nu
     return total;
 };
 
-const addWholeMonths = (date: Date, months: number): Date => {
-    const next = new Date(date.getFullYear(), date.getMonth(), date.getDate());
-    next.setMonth(next.getMonth() + months);
-    return next;
-};
-
 export const calculateRentFreeDeduction = (start: Date, end: Date, monthlyRent: number): number => {
     const normalizedStart = new Date(start.getFullYear(), start.getMonth(), start.getDate());
     const endExclusive = new Date(end.getFullYear(), end.getMonth(), end.getDate());
@@ -124,7 +175,7 @@ export const calculateRentFreeDeduction = (start: Date, end: Date, monthlyRent: 
 
     const monthDiff = (endExclusive.getFullYear() - normalizedStart.getFullYear()) * 12
         + (endExclusive.getMonth() - normalizedStart.getMonth());
-    if (monthDiff > 0 && addWholeMonths(normalizedStart, monthDiff).getTime() === endExclusive.getTime()) {
+    if (monthDiff > 0 && addCalendarMonths(normalizedStart, monthDiff).getTime() === endExclusive.getTime()) {
         return monthDiff * monthlyRent;
     }
 
@@ -196,6 +247,7 @@ const applyEarlyTerminationExtrasToBills = (tenant: Tenant, bills: BudgetedBill[
     const termTime = term.getTime();
     const withCoverage = bills.filter(
         (b) =>
+            !b.earlyTerminationExtraDetail &&
             b.coverageStart &&
             b.coverageEnd &&
             b.coverageStart.getTime() <= termTime &&
@@ -207,83 +259,143 @@ const applyEarlyTerminationExtrasToBills = (tenant: Tenant, bills: BudgetedBill[
                   (a.coverageStart!.getTime() >= b.coverageStart!.getTime() ? a : b)
               )
             : bills
-                  .filter((b) => (b.coverageEnd ? b.coverageEnd.getTime() <= termTime : b.date.getTime() <= termTime))
+                  .filter(
+                      (b) =>
+                          !b.earlyTerminationExtraDetail &&
+                          (b.coverageEnd ? b.coverageEnd.getTime() <= termTime : b.date.getTime() <= termTime)
+                  )
                   .reduce((a, b) => (a.date.getTime() >= b.date.getTime() ? a : b), bills[0]);
 
     const currentPeriodRent = Math.max(0, Math.round(target.amount));
-    target.date = new Date(term.getFullYear(), term.getMonth(), term.getDate());
-    target.amount = Math.round(currentPeriodRent + extra);
-    if (target.amount < 0) target.amount = 0;
-    target.earlyTerminationExtraAmount = extra;
-    target.earlyTerminationExtraDetail = { clawback, deposit, other };
+    target.amount = currentPeriodRent;
+    delete target.earlyTerminationExtraAmount;
+    delete target.earlyTerminationExtraDetail;
+
+    if (Math.abs(extra) <= 0.005) return;
+
+    const settlementAmount = Math.round(extra);
+    bills.push({
+        date: new Date(term.getFullYear(), term.getMonth(), term.getDate()),
+        amount: settlementAmount,
+        coverageStart: new Date(term.getFullYear(), term.getMonth(), term.getDate()),
+        coverageEnd: new Date(term.getFullYear(), term.getMonth(), term.getDate()),
+        earlyTerminationExtraAmount: settlementAmount,
+        earlyTerminationExtraDetail: { clawback, deposit, other },
+    });
+    bills.sort((a, b) => a.date.getTime() - b.date.getTime());
 };
 
+/** 当前租户房源上挂接的空置去化预算假设（按单元 targetId） */
+export const pickVacancyAssumptionsForTenant = (
+    tenant: Pick<Tenant, 'unitIds'>,
+    assumptions: BudgetAssumption[],
+): BudgetAssumption[] => {
+    const uids = tenant.unitIds || [];
+    return assumptions.filter(
+        (a) => a.targetType === 'Vacancy' && !!a.projectedSignDate && uids.includes(a.targetId),
+    );
+};
+
+/**
+ * 当合同起租日与预算「预计签约日」一致时，用空置去化卡片的单价与免租参数推算收款计划，
+ * 使合同预览 / 财务报表应收核销与预算管理口径一致。
+ */
+export const applyVacancyBudgetOverlayToTenant = (tenant: Tenant, assumptions: BudgetAssumption[]): Tenant => {
+    if (!tenant.leaseStart || tenant.id?.startsWith('virt_')) return tenant;
+    const matching = pickVacancyAssumptionsForTenant(tenant, assumptions);
+    if (matching.length === 0) return tenant;
+
+    const sig = (a: BudgetAssumption) =>
+        `${a.projectedSignDate}|${Number(a.projectedUnitPrice ?? 0)}|${Number(a.projectedRentFreeMonths ?? 0)}`;
+    if (new Set(matching.map(sig)).size !== 1) return tenant;
+
+    const vac = matching[0];
+    if (tenant.leaseStart !== vac.projectedSignDate) return tenant;
+
+    const uids = tenant.unitIds || [];
+    if (uids.length > 1 && matching.length !== uids.length) return tenant;
+
+    const start = parseDateLocal(vac.projectedSignDate);
+    const rfMonths = vac.projectedRentFreeMonths || 0;
+    const rfEndStr =
+        rfMonths > 0
+            ? new Date(new Date(start).setMonth(start.getMonth() + rfMonths)).toISOString().split('T')[0]
+            : undefined;
+
+    const addMonthsStr = (dateStr: string, months: number): string => {
+        const d = parseDateLocal(dateStr);
+        d.setMonth(d.getMonth() + months);
+        return d.toISOString().split('T')[0];
+    };
+    const firstPayDate = addMonthsStr(vac.projectedSignDate, rfMonths);
+
+    const unitPrice = vac.projectedUnitPrice ?? tenant.unitPrice;
+    let monthlyRent = tenant.monthlyRent || 0;
+    if (unitPrice != null && tenant.totalArea) {
+        monthlyRent = (unitPrice * tenant.totalArea * 365) / 12;
+    }
+
+    const rentFreePeriods =
+        rfMonths > 0 && rfEndStr
+            ? [{ start: vac.projectedSignDate, end: rfEndStr, description: '预算空置去化（免租）' }]
+            : tenant.rentFreePeriods || [];
+
+    return {
+        ...tenant,
+        unitPrice: unitPrice ?? tenant.unitPrice,
+        monthlyRent,
+        rentFreePeriods,
+        firstPaymentDate: firstPayDate,
+        freeRentHandling: 'Defer',
+    };
+};
+
+/** 给客户合同 / 核销界面展示的预算对齐说明文案 */
+export function buildVacancyBudgetAlignmentNote(
+    tenant: Pick<Tenant, 'unitIds' | 'leaseStart'> | undefined,
+    assumptions: BudgetAssumption[],
+): string | undefined {
+    if (!tenant?.unitIds?.length) return undefined;
+    const matching = pickVacancyAssumptionsForTenant(tenant, assumptions);
+    if (matching.length === 0) return undefined;
+
+    const sig = (a: BudgetAssumption) =>
+        `${a.projectedSignDate}|${Number(a.projectedUnitPrice ?? 0)}|${Number(a.projectedRentFreeMonths ?? 0)}`;
+    const sigSet = new Set(matching.map(sig));
+    if (sigSet.size !== 1) {
+        return '预算空置去化：多套房源对应的预算参数不一致，系统未自动合并至收款计划，请在预算管理中统一参数或拆分合同。';
+    }
+
+    const vac = matching[0];
+    const aligned = tenant.leaseStart === vac.projectedSignDate;
+    const base = `预算空置去化：预计签约 ${vac.projectedSignDate}，单价 ${vac.projectedUnitPrice} 元/㎡·天，免租 ${vac.projectedRentFreeMonths || 0} 月`;
+    if (aligned) {
+        const multiPartial =
+            (tenant.unitIds?.length || 0) > 1 && matching.length !== (tenant.unitIds?.length || 0)
+                ? '（多房源合同：仅部分单元配置了空置预算的，不在合同层自动对齐）'
+                : '';
+        return `${base}。合同起租日与预算一致，收款推算已与预算参数对齐（与财务报表应收核销一致）。${multiPartial}`;
+    }
+    return `${base}。当前合同起租为 ${tenant.leaseStart || '—'}，与预算不一致 → 应收按合同字段推算；可调整预算「预计签约日」或修正合同起租以保持一致。`;
+}
+
 export const generateBudgetedBills = (
-    tenant: Tenant,
+    tenantInput: Tenant,
     assumptions: BudgetAssumption[],
     adjustments: BudgetAdjustment[],
     startDateConstraint: Date,
     endDateConstraint: Date,
     options?: GenerateBudgetedBillsOptions
 ): BudgetedBill[] => {
-    const bills: BudgetedBill[] = [];
+    let tenant = applyVacancyBudgetOverlayToTenant(tenantInput, assumptions);
+    let bills: BudgetedBill[] = [];
 
     if (!tenant.leaseStart) return [];
 
-    const unitTerms = Array.isArray(tenant.unitTerms) && tenant.unitTerms.length > 0
-        ? tenant.unitTerms
-        : (Array.isArray(tenant.paymentTerms) ? tenant.paymentTerms : []);
-    const applyEarlyTerm = options?.applyEarlyTerminationSettlement !== false;
-    const validUnitTerms = unitTerms.filter(term => (term.monthlyRent || term.unitPrice) && term.area > 0);
-    if (validUnitTerms.length > 0) {
-        const billsByDate = new Map<string, BudgetedBill>();
-        validUnitTerms.forEach((term) => {
-            const monthlyRent = term.monthlyRent && term.monthlyRent > 0
-                ? term.monthlyRent
-                : ((term.unitPrice || 0) * term.area * 365) / 12;
-            const termBills = generateBudgetedBills(
-                {
-                    ...tenant,
-                    unitTerms: undefined,
-                    paymentTerms: undefined,
-                    unitIds: [term.unitId],
-                    totalArea: term.area,
-                    unitPrice: term.unitPrice,
-                    monthlyRent,
-                    rentFreePeriods: term.rentFreePeriods || [],
-                },
-                [],
-                [],
-                startDateConstraint,
-                endDateConstraint,
-                { applyEarlyTerminationSettlement: false },
-            );
-            termBills.forEach((bill) => {
-                const key = [
-                    bill.date.getFullYear(),
-                    bill.date.getMonth(),
-                    bill.date.getDate(),
-                    bill.originalDate ? bill.originalDate.toISOString().slice(0, 10) : '',
-                    bill.coverageStart ? bill.coverageStart.toISOString().slice(0, 10) : '',
-                    bill.coverageEnd ? bill.coverageEnd.toISOString().slice(0, 10) : '',
-                ].join('-');
-                const existing = billsByDate.get(key);
-                if (existing) {
-                    existing.amount += bill.amount;
-                } else {
-                    billsByDate.set(key, { ...bill });
-                }
-            });
-        });
-        const merged = Array.from(billsByDate.values()).sort((a, b) => a.date.getTime() - b.date.getTime());
-        if (applyEarlyTerm) applyEarlyTerminationExtrasToBills(tenant, merged);
-        return merged;
-    }
-
-    // Parse lease dates strictly as Local Time to avoid timezone shifts
+    // Parse lease dates strictly as Local Time to avoid timezone shifts（首期自定义后处理依赖）
     const leaseStart = parseDateLocal(tenant.leaseStart);
     const leaseEnd = tenant.leaseEnd ? parseDateLocal(tenant.leaseEnd) : new Date('2099-12-31');
-    
+
     const terminationDate = tenant.terminationDate ? parseDateLocal(tenant.terminationDate) : null;
     const effectiveLeaseEnd = terminationDate && terminationDate < leaseEnd ? terminationDate : leaseEnd;
 
@@ -292,8 +404,72 @@ export const generateBudgetedBills = (
         monthlyRent = (tenant.unitPrice * tenant.totalArea * 365) / 12;
     }
 
-    const existingAssumption = assumptions.find(a => a.targetId === tenant.id && a.targetType === 'Existing');
-    const billingShift = existingAssumption?.billingCycleShiftMonths || 0;
+    const applyEarlyTerm = options?.applyEarlyTerminationSettlement !== false;
+
+    // 付款周期变更：将租期按变更点拆分为多个时间段，每段用对应周期独立生成账单
+    const cycleChanges = tenant.paymentCycleChanges && tenant.paymentCycleChanges.length > 0
+        ? [...tenant.paymentCycleChanges].sort((a, b) => a.effectiveDate.localeCompare(b.effectiveDate))
+        : [];
+    if (cycleChanges.length > 0 && applyEarlyTerm) {
+        // 构建时间段：[(leaseStart 或上次变更日期), 变更日期, ...变更日期, leaseEnd]
+        const segments: { cycle: PaymentCycle; cycleMonths?: number; start: Date; end: Date }[] = [];
+        let segStart = new Date(leaseStart);
+        let currentCycle = tenant.paymentCycle;
+        let currentCycleMonths = tenant.paymentCycleMonths;
+
+        for (const ch of cycleChanges) {
+            const effDate = parseDateLocal(ch.effectiveDate);
+            if (effDate > segStart && effDate < effectiveLeaseEnd) {
+                segments.push({
+                    cycle: currentCycle,
+                    cycleMonths: currentCycle === 'Custom' ? currentCycleMonths : undefined,
+                    start: new Date(segStart),
+                    end: new Date(effDate),
+                });
+                segStart = new Date(effDate);
+                currentCycle = ch.toCycle;
+                currentCycleMonths = ch.toCycleMonths;
+            }
+        }
+        // 最后一段
+        if (segStart < effectiveLeaseEnd) {
+            segments.push({
+                cycle: currentCycle,
+                cycleMonths: currentCycle === 'Custom' ? currentCycleMonths : undefined,
+                start: new Date(segStart),
+                end: new Date(effectiveLeaseEnd),
+            });
+        }
+
+        if (segments.length > 1) {
+            for (const seg of segments) {
+                const segTenant: Tenant = {
+                    ...tenant,
+                    paymentCycle: seg.cycle,
+                    paymentCycleMonths: seg.cycleMonths,
+                    paymentCycleChanges: [], // 防止递归再次拆分
+                    firstPaymentMonths: undefined, // 仅首段适用首期逻辑
+                    firstReceivableAmount: undefined,
+                };
+                const segBills = generateBudgetedBills(
+                    segTenant, assumptions, adjustments,
+                    seg.start, seg.end,
+                    { applyEarlyTerminationSettlement: false },
+                );
+                bills.push(...segBills);
+            }
+            // 提前退租结算在最后一段之后处理
+            if (terminationDate) {
+                applyEarlyTerminationExtrasToBills(tenant, bills);
+            }
+            // 对合并账单应用 Existing payment shifts
+            const existingAsm = assumptions.find((a) => a.targetId === tenant.id && a.targetType === 'Existing');
+            if (existingAsm?.paymentShift?.isActive) {
+                applyExistingPaymentShiftToMergedBills(bills, existingAsm.paymentShift);
+            }
+            return bills;
+        }
+    }
 
     const resolveCycleMonths = (): number => {
         if (tenant.paymentCycle === 'HalfMonthly') return 0.5;
@@ -315,10 +491,94 @@ export const generateBudgetedBills = (
     };
 
     const regularCycleMonths = resolveCycleMonths();
+    const firstCycleMonths =
+        tenant.firstPaymentMonths && tenant.firstPaymentMonths > 0 ? tenant.firstPaymentMonths : regularCycleMonths;
 
-    const firstCycleMonths = tenant.firstPaymentMonths && tenant.firstPaymentMonths > 0 ? tenant.firstPaymentMonths : regularCycleMonths;
+    const unitTerms =
+        Array.isArray(tenant.unitTerms) && tenant.unitTerms.length > 0
+            ? tenant.unitTerms
+            : Array.isArray(tenant.paymentTerms)
+              ? tenant.paymentTerms
+              : [];
+    const validUnitTerms = unitTerms.filter((term) => (term.monthlyRent || term.unitPrice) && term.area > 0);
 
-    if (monthlyRent > 0) {
+    let filledFromUnitMerge = false;
+    if (validUnitTerms.length > 0) {
+        const innerAssumptions = assumptionsForUnitInnerCalls(
+            assumptions,
+            tenant.id,
+            validUnitTerms.length > 1,
+        );
+        const billsByDate = new Map<string, BudgetedBill>();
+        validUnitTerms.forEach((term) => {
+            const termMonthly =
+                term.monthlyRent && term.monthlyRent > 0
+                    ? term.monthlyRent
+                    : ((term.unitPrice || 0) * term.area * 365) / 12;
+            const termBills = generateBudgetedBills(
+                {
+                    ...tenant,
+                    unitTerms: undefined,
+                    paymentTerms: undefined,
+                    unitIds: [term.unitId],
+                    totalArea: term.area,
+                    unitPrice: term.unitPrice,
+                    monthlyRent: termMonthly,
+                    rentFreePeriods: mergeRentFreeForUnitTerm(tenant, term),
+                    // 首期自定义仅能在合并后的账单上执行一次，不能随 ...tenant 传入子房源递归
+                    firstReceivableAmount: undefined,
+                    firstReceivableStartDate: undefined,
+                    firstReceivableEndDate: undefined,
+                },
+                innerAssumptions,
+                [],
+                startDateConstraint,
+                endDateConstraint,
+                { applyEarlyTerminationSettlement: false },
+            );
+            termBills.forEach((bill) => {
+                // 同一客户同一收款日应合并为一笔；覆盖期各房源不同时不应拆成多行。
+                const key = [
+                    bill.date.getFullYear(),
+                    bill.date.getMonth(),
+                    bill.date.getDate(),
+                    bill.originalDate ? bill.originalDate.toISOString().slice(0, 10) : '',
+                ].join('-');
+                const existing = billsByDate.get(key);
+                if (existing) {
+                    existing.amount += bill.amount;
+                    if (bill.coverageStart && existing.coverageStart) {
+                        if (bill.coverageStart.getTime() < existing.coverageStart.getTime()) {
+                            existing.coverageStart = new Date(bill.coverageStart);
+                        }
+                    } else if (bill.coverageStart && !existing.coverageStart) {
+                        existing.coverageStart = new Date(bill.coverageStart);
+                    }
+                    if (bill.coverageEnd && existing.coverageEnd) {
+                        if (bill.coverageEnd.getTime() > existing.coverageEnd.getTime()) {
+                            existing.coverageEnd = new Date(bill.coverageEnd);
+                        }
+                    } else if (bill.coverageEnd && !existing.coverageEnd) {
+                        existing.coverageEnd = new Date(bill.coverageEnd);
+                    }
+                } else {
+                    billsByDate.set(key, { ...bill });
+                }
+            });
+        });
+        const merged = Array.from(billsByDate.values()).sort((a, b) => a.date.getTime() - b.date.getTime());
+        const existingAsm = assumptions.find((a) => a.targetId === tenant.id && a.targetType === 'Existing');
+        if (validUnitTerms.length > 1 && existingAsm?.paymentShift?.isActive) {
+            applyExistingPaymentShiftToMergedBills(merged, existingAsm.paymentShift);
+        }
+        bills = merged;
+        filledFromUnitMerge = true;
+    }
+
+    if (!filledFromUnitMerge && monthlyRent > 0) {
+        const existingAssumption = assumptions.find((a) => a.targetId === tenant.id && a.targetType === 'Existing');
+        const billingShift = existingAssumption?.billingCycleShiftMonths || 0;
+
         // 支持新的 freeRentHandling 字段
         const isDeferMode = tenant.freeRentHandling === 'Defer';
         
@@ -567,6 +827,16 @@ export const generateBudgetedBills = (
 
     // 首期应收自定义（优先按日期最早的账单覆盖金额与覆盖期）
     const fra = tenant.firstReceivableAmount;
+    const unitTermRowsForFirstRec =
+        (Array.isArray(tenant.unitTerms) && tenant.unitTerms.length > 0
+            ? tenant.unitTerms
+            : Array.isArray(tenant.paymentTerms)
+              ? tenant.paymentTerms
+              : []
+        ).filter((term) => (term.monthlyRent || term.unitPrice) && term.area > 0);
+    /** 分房源合并后的覆盖期非单一租金流，顺延重算会与合并结果不一致，仅覆盖首期金额/区间。 */
+    const skipFirstReceivableShiftRecalc = unitTermRowsForFirstRec.length > 0;
+
     if (fra != null && fra > 0 && bills.length > 0) {
         let minIdx = 0;
         for (let i = 1; i < bills.length; i++) {
@@ -580,64 +850,66 @@ export const generateBudgetedBills = (
             bills[minIdx].coverageEnd = parseDateLocal(tenant.firstReceivableEndDate);
         }
 
-        // 当首期应收自定义覆盖月数与合同默认首期月数不一致时，后续账期按差值整体顺延/提前。
-        const firstCycleMonthsDefault = tenant.firstPaymentMonths && tenant.firstPaymentMonths > 0
-            ? tenant.firstPaymentMonths
-            : regularCycleMonths;
-        const hasCustomCoverageRange = !!tenant.firstReceivableStartDate && !!tenant.firstReceivableEndDate;
-        let customFirstCycleMonths = firstCycleMonthsDefault;
-        if (hasCustomCoverageRange) {
-            const s = parseDateLocal(tenant.firstReceivableStartDate);
-            const e = parseDateLocal(tenant.firstReceivableEndDate);
-            const days = getDaysDiff(s, e);
-            customFirstCycleMonths = Number((days / 30).toFixed(2));
-        } else if (monthlyRent > 0) {
-            customFirstCycleMonths = Number((fra / monthlyRent).toFixed(2));
-        }
-        const shiftMonths = Number((customFirstCycleMonths - firstCycleMonthsDefault).toFixed(2));
-        if (Math.abs(shiftMonths) >= 0.01) {
-            const order = bills
-                .map((bill, idx) => ({ idx, time: bill.date.getTime() }))
-                .sort((a, b) => a.time - b.time);
-            for (let i = 1; i < order.length; i++) {
-                const idx = order[i].idx;
-                bills[idx].date = addCycleMonths(bills[idx].date, shiftMonths);
-                if (bills[idx].coverageStart) {
-                    bills[idx].coverageStart = addCycleMonths(bills[idx].coverageStart, shiftMonths);
-                }
-                if (bills[idx].coverageEnd) {
-                    bills[idx].coverageEnd = addCycleMonths(bills[idx].coverageEnd, shiftMonths);
-                }
-
-                // 顺延后需要继续受合同有效期约束，超期账单裁剪/剔除并重算金额。
-                if (bills[idx].coverageStart && bills[idx].coverageStart > effectiveLeaseEnd) {
-                    bills[idx].amount = 0;
-                    continue;
-                }
-                if (bills[idx].coverageStart && bills[idx].coverageEnd) {
-                    const adjustedCoverageEnd = bills[idx].coverageEnd > effectiveLeaseEnd
-                        ? new Date(effectiveLeaseEnd)
-                        : bills[idx].coverageEnd;
-                    bills[idx].coverageEnd = adjustedCoverageEnd;
-
-                    let adjustedAmount = calculateRentForDuration(
-                        bills[idx].coverageStart,
-                        adjustedCoverageEnd,
-                        monthlyRent
-                    );
-                    let adjustedDeduction = 0;
-                    if (tenant.rentFreePeriods) {
-                        tenant.rentFreePeriods.forEach(rf => {
-                            const rfStart = parseDateLocal(rf.start);
-                            const rfEnd = parseDateLocal(rf.end);
-                            const overlapStart = rfStart > bills[idx].coverageStart! ? rfStart : bills[idx].coverageStart!;
-                            const overlapEnd = rfEnd < adjustedCoverageEnd ? rfEnd : adjustedCoverageEnd;
-                            if (overlapStart <= overlapEnd) {
-                                adjustedDeduction += calculateRentFreeDeduction(overlapStart, overlapEnd, monthlyRent);
-                            }
-                        });
+        // 当首期应收自定义覆盖月数与合同默认首期月数不一致时，后续账期按差值整体顺延/提前（仅单体/无分房源合并时安全）。
+        if (!skipFirstReceivableShiftRecalc) {
+            const firstCycleMonthsDefault = tenant.firstPaymentMonths && tenant.firstPaymentMonths > 0
+                ? tenant.firstPaymentMonths
+                : regularCycleMonths;
+            const hasCustomCoverageRange = !!tenant.firstReceivableStartDate && !!tenant.firstReceivableEndDate;
+            let customFirstCycleMonths = firstCycleMonthsDefault;
+            if (hasCustomCoverageRange) {
+                const s = parseDateLocal(tenant.firstReceivableStartDate);
+                const e = parseDateLocal(tenant.firstReceivableEndDate);
+                const days = getDaysDiff(s, e);
+                customFirstCycleMonths = Number((days / 30).toFixed(2));
+            } else if (monthlyRent > 0) {
+                customFirstCycleMonths = Number((fra / monthlyRent).toFixed(2));
+            }
+            const shiftMonths = Number((customFirstCycleMonths - firstCycleMonthsDefault).toFixed(2));
+            if (Math.abs(shiftMonths) >= 0.01) {
+                const order = bills
+                    .map((bill, idx) => ({ idx, time: bill.date.getTime() }))
+                    .sort((a, b) => a.time - b.time);
+                for (let i = 1; i < order.length; i++) {
+                    const idx = order[i].idx;
+                    bills[idx].date = addCycleMonths(bills[idx].date, shiftMonths);
+                    if (bills[idx].coverageStart) {
+                        bills[idx].coverageStart = addCycleMonths(bills[idx].coverageStart, shiftMonths);
                     }
-                    bills[idx].amount = Math.max(0, Math.round(adjustedAmount - adjustedDeduction));
+                    if (bills[idx].coverageEnd) {
+                        bills[idx].coverageEnd = addCycleMonths(bills[idx].coverageEnd, shiftMonths);
+                    }
+
+                    // 顺延后需要继续受合同有效期约束，超期账单裁剪/剔除并重算金额。
+                    if (bills[idx].coverageStart && bills[idx].coverageStart > effectiveLeaseEnd) {
+                        bills[idx].amount = 0;
+                        continue;
+                    }
+                    if (bills[idx].coverageStart && bills[idx].coverageEnd) {
+                        const adjustedCoverageEnd = bills[idx].coverageEnd > effectiveLeaseEnd
+                            ? new Date(effectiveLeaseEnd)
+                            : bills[idx].coverageEnd;
+                        bills[idx].coverageEnd = adjustedCoverageEnd;
+
+                        let adjustedAmount = calculateRentForDuration(
+                            bills[idx].coverageStart,
+                            adjustedCoverageEnd,
+                            monthlyRent
+                        );
+                        let adjustedDeduction = 0;
+                        if (tenant.rentFreePeriods) {
+                            tenant.rentFreePeriods.forEach(rf => {
+                                const rfStart = parseDateLocal(rf.start);
+                                const rfEnd = parseDateLocal(rf.end);
+                                const overlapStart = rfStart > bills[idx].coverageStart! ? rfStart : bills[idx].coverageStart!;
+                                const overlapEnd = rfEnd < adjustedCoverageEnd ? rfEnd : adjustedCoverageEnd;
+                                if (overlapStart <= overlapEnd) {
+                                    adjustedDeduction += calculateRentFreeDeduction(overlapStart, overlapEnd, monthlyRent);
+                                }
+                            });
+                        }
+                        bills[idx].amount = Math.max(0, Math.round(adjustedAmount - adjustedDeduction));
+                    }
                 }
             }
         }
@@ -647,7 +919,11 @@ export const generateBudgetedBills = (
         applyEarlyTerminationExtrasToBills(tenant, bills);
     }
 
-    return bills.filter(b => b.amount > 0.01);
+    return bills.filter((b) => {
+        if (Math.abs(b.amount) <= 0.005) return false;
+        if (b.amount < 0 && !b.earlyTerminationExtraDetail) return false;
+        return true;
+    });
 };
 
 // Helper to generate virtual tenants from assumptions for Budget Calculation

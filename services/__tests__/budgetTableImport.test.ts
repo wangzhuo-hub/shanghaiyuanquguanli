@@ -7,6 +7,10 @@ import {
     writeImportedBudgetTable,
     clearImportedBudgetTable,
     importedBudgetTableKey,
+    importedBudgetRowKey,
+    listImportedBudgetYears,
+    readBudgetCustomerNameLinks,
+    writeBudgetCustomerNameLinks,
     normalizeEffectiveBudgetTableFromBackup,
     type BudgetTableSnapshot,
 } from '../budgetTableImport';
@@ -77,9 +81,21 @@ describe('imported budget table snapshot helpers', () => {
         expect(read?.annualTotal).toBe(66);
         expect(read?.sourceSheet).toBe('2026年');
 
-        const cleared = clearImportedBudgetTable(wrote, 2026);
+        const withLinks = writeBudgetCustomerNameLinks(wrote, 2026, [
+            { importKey: importedBudgetRowKey('A', '1F', '3号楼'), tenantId: 't99' },
+        ]);
+        expect(readBudgetCustomerNameLinks(withLinks, 2026)).toHaveLength(1);
+
+        const cleared = clearImportedBudgetTable(withLinks, 2026);
         expect(Object.keys(cleared)).not.toContain(importedBudgetTableKey(2026));
+        expect(readBudgetCustomerNameLinks(cleared, 2026)).toHaveLength(0);
         expect(cleared['__rent_remark__t1__202601__']).toBe('foo');
+    });
+
+    it('listImportedBudgetYears collects years from snapshot keys', () => {
+        const notes = writeImportedBudgetTable({}, 2025, sampleSnapshot);
+        const notes2 = writeImportedBudgetTable(notes, 2027, { ...sampleSnapshot, annualTotal: 1 });
+        expect(listImportedBudgetYears(notes2)).toEqual([2025, 2027]);
     });
 
     it('readImportedBudgetTable returns null for missing/invalid entries', () => {

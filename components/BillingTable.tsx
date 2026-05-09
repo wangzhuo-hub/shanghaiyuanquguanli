@@ -61,6 +61,11 @@ const BillingCard: React.FC<{
                 {hasDeferIn && (
                     <div className="mt-1 ml-8 text-[10px] font-semibold text-sky-800 leading-snug">缓入 ← {item.deferredInFromSummary}（{formatCurrency(item.deferredInAmount ?? 0)}）</div>
                 )}
+                {item.budgetAlignmentNote && (
+                    <div className="mt-1.5 ml-8 text-[10px] text-rose-800 leading-snug bg-rose-50/90 border border-rose-100 rounded px-1.5 py-1">
+                        {item.budgetAlignmentNote}
+                    </div>
+                )}
             </div>
             <div className={`text-xs font-medium px-2 py-0.5 rounded border flex items-center gap-1 ${writeOffBadgeClass(writeOffLabel)}`}>
                 {writeOffLabel === WRITEOFF_LABELS.settled ? <CheckCircle2 size={12} /> : <AlertCircle size={12} />}
@@ -147,6 +152,11 @@ export const BillingTable: React.FC<BillingTableProps> = ({ data, selectedMonth,
                           {hasDeferIn && (
                               <div className="mt-0.5 text-[10px] font-semibold text-sky-800">缓入 ← {item.deferredInFromSummary}（{formatCurrency(item.deferredInAmount ?? 0)}）</div>
                           )}
+                          {item.budgetAlignmentNote && (
+                              <div className="mt-1 text-[10px] text-rose-800 leading-snug bg-rose-50/90 border border-rose-100 rounded px-1.5 py-1 max-w-[280px]">
+                                  {item.budgetAlignmentNote}
+                              </div>
+                          )}
                       </div>
                   </div>
               </td>
@@ -222,9 +232,9 @@ export const BillingTable: React.FC<BillingTableProps> = ({ data, selectedMonth,
 
   return (
     <div className="bg-white rounded-xl shadow-sm border border-slate-100 overflow-hidden">
-      <div className="p-4 md:p-6 border-b border-slate-100 flex flex-col md:flex-row justify-between items-start md:items-center bg-gradient-to-r from-slate-50 to-white gap-4">
-        <div className="flex items-center gap-4 w-full md:w-auto justify-between md:justify-start">
-             <div className="flex items-center gap-4">
+      <div className="p-4 md:p-6 border-b border-slate-100 flex flex-col md:flex-row justify-between items-start md:items-center bg-gradient-to-r from-slate-50 to-white gap-4 min-w-0">
+        <div className="flex flex-wrap items-center gap-3 w-full md:w-auto justify-between md:justify-start min-w-0">
+             <div className="flex items-center gap-3 sm:gap-4 min-w-0">
                  <div className="bg-blue-100 p-2 rounded-lg text-blue-600">
                     <Wallet size={20} />
                  </div>

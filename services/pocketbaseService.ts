@@ -970,10 +970,13 @@ export const saveToPocketBase = async (
             early_termination_other_adjustment: t.earlyTerminationOtherAdjustment ?? null,
             special_requirements: t.specialRequirements || '',
             is_risk: !!t.isRisk,
+            is_special_business: !!t.isSpecialBusiness,
             contract_parking_spaces: t.contractParkingSpaces ?? t.parkingSpaces ?? 0,
             actual_parking_spaces: t.actualParkingSpaces ?? t.parkingSpaces ?? 0,
             parking_unit_price: t.parkingUnitPrice || 0,
             key_moments: t.keyMoments || [],
+            name_history: t.nameHistory || [],
+            payment_cycle_changes: t.paymentCycleChanges || [],
             project_id: projectId,
         }));
         const payments = ensureArray<any>(data.payments).map((p) => ({
@@ -1031,19 +1034,24 @@ export const saveToPocketBase = async (
             payment_shift: a.paymentShift || null,
             project_id: projectId,
         }));
-        const budgetAdjustments = ensureArray<any>(data.budgetAdjustments).map((a) => ({
-            original_id: a.id,
-            tenant_id: a.tenantId,
-            tenant_name: a.tenantName || '',
-            original_year: a.originalYear,
-            original_month: a.originalMonth,
-            adjusted_year: a.adjustedYear,
-            adjusted_month: a.adjustedMonth,
-            amount: a.amount || 0,
-            reason: a.reason || '',
-            adjustment_kind: a.adjustmentKind || ((a.originalYear === -1 && a.originalMonth === -1) ? 'amount_delta' : 'period_shift'),
-            project_id: projectId,
-        }));
+        const budgetAdjustments = ensureArray<any>(data.budgetAdjustments).map((a) => {
+            const isAmountDelta =
+                a.adjustmentKind === 'amount_delta' ||
+                (a.originalYear === -1 && a.originalMonth === -1);
+            return {
+                original_id: a.id,
+                tenant_id: a.tenantId,
+                tenant_name: a.tenantName || '',
+                original_year: isAmountDelta ? null : a.originalYear,
+                original_month: isAmountDelta ? null : a.originalMonth,
+                adjusted_year: a.adjustedYear,
+                adjusted_month: a.adjustedMonth,
+                amount: a.amount || 0,
+                reason: a.reason || '',
+                adjustment_kind: isAmountDelta ? 'amount_delta' : a.adjustmentKind || 'period_shift',
+                project_id: projectId,
+            };
+        });
         const budgetScenarios = ensureArray<any>(data.budgetScenarios).map((s) => ({
             original_id: s.id,
             name: s.name,
@@ -1233,10 +1241,13 @@ export const fetchPocketBaseBackup = async (
                         : undefined,
                 specialRequirements: t.special_requirements || '',
                 isRisk: !!t.is_risk,
+                isSpecialBusiness: !!t.is_special_business,
                 contractParkingSpaces: t.contract_parking_spaces ?? 0,
                 actualParkingSpaces: t.actual_parking_spaces ?? 0,
                 parkingUnitPrice: t.parking_unit_price || 0,
                 keyMoments: Array.isArray(t.key_moments) ? t.key_moments : [],
+                nameHistory: Array.isArray(t.name_history) ? t.name_history : [],
+                paymentCycleChanges: Array.isArray(t.payment_cycle_changes) ? t.payment_cycle_changes : [],
             })),
             payments: paymentsRows.map((p: any) => ({
                 id: p.original_id,
@@ -1290,18 +1301,23 @@ export const fetchPocketBaseBackup = async (
                 priceAdjustment: a.price_adjustment || undefined,
                 paymentShift: a.payment_shift || undefined,
             })),
-            budgetAdjustments: adjustmentRows.map((a: any) => ({
-                id: a.original_id,
-                tenantId: a.tenant_id,
-                tenantName: a.tenant_name || '',
-                originalYear: a.original_year,
-                originalMonth: a.original_month,
-                adjustedYear: a.adjusted_year,
-                adjustedMonth: a.adjusted_month,
-                amount: a.amount || 0,
-                reason: a.reason || '',
-                adjustmentKind: a.adjustment_kind || undefined,
-            })),
+            budgetAdjustments: adjustmentRows.map((a: any) => {
+                const isAmountDelta =
+                    a.adjustment_kind === 'amount_delta' ||
+                    (a.original_year == null && a.original_month == null);
+                return {
+                    id: a.original_id,
+                    tenantId: a.tenant_id,
+                    tenantName: a.tenant_name || '',
+                    originalYear: isAmountDelta ? -1 : a.original_year,
+                    originalMonth: isAmountDelta ? -1 : a.original_month,
+                    adjustedYear: a.adjusted_year,
+                    adjustedMonth: a.adjusted_month,
+                    amount: a.amount || 0,
+                    reason: a.reason || '',
+                    adjustmentKind: a.adjustment_kind || undefined,
+                };
+            }),
             budgetScenarios: scenarioRows.map((s: any) => ({
                 id: s.original_id,
                 name: s.name,

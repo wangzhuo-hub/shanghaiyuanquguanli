@@ -1,0 +1,291 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>方案 C · 深色顶栏 · 楼宇管理</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background: #0b1220;
+      font-family: ui-sans-serif, system-ui, "PingFang SC", "Microsoft YaHei", sans-serif;
+      padding: 28px 16px 40px;
+      color: #e2e8f0;
+    }
+    .note {
+      max-width: 1140px;
+      margin: 0 auto 12px;
+      font-size: 0.8125rem;
+      color: #64748b;
+    }
+    a.back { color: #38bdf8; }
+    .frame {
+      max-width: 1140px;
+      margin: 0 auto;
+      border-radius: 20px;
+      overflow: hidden;
+      border: 1px solid rgba(148, 163, 184, 0.15);
+      box-shadow: 0 40px 100px rgba(0, 0, 0, 0.45);
+    }
+    .mast {
+      background: linear-gradient(120deg, #0f172a 0%, #1e293b 45%, #172554 100%);
+      padding: 26px 28px 30px;
+      border-bottom: 1px solid rgba(51, 65, 85, 0.6);
+    }
+    .mast-row {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: space-between;
+      gap: 16px;
+      align-items: center;
+    }
+    .mast h1 {
+      margin: 0;
+      font-size: 1.6rem;
+      font-weight: 800;
+      letter-spacing: -0.03em;
+      color: #f8fafc;
+    }
+    .mast-meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px 20px;
+      margin-top: 14px;
+      font-size: 0.8125rem;
+      color: #94a3b8;
+    }
+    .mast-meta strong { color: #e2e8f0; font-weight: 600; }
+    .mast-meta em { color: #38bdf8; font-style: normal; font-weight: 700; }
+    .mast-actions { display: flex; gap: 10px; }
+    .btn {
+      padding: 9px 16px;
+      border-radius: 10px;
+      font-size: 0.8125rem;
+      font-weight: 600;
+      border: 1px solid rgba(148, 163, 184, 0.35);
+      background: rgba(15, 23, 42, 0.4);
+      color: #e2e8f0;
+      cursor: pointer;
+    }
+    .btn-glow {
+      background: linear-gradient(135deg, #38bdf8, #6366f1);
+      border: none;
+      color: #fff;
+    }
+    .btn-danger {
+      background: transparent;
+      color: #fca5a5;
+      border-color: rgba(248, 113, 113, 0.35);
+    }
+
+    .body {
+      background: linear-gradient(180deg, #111827 0%, #0f172a 100%);
+      padding: 20px 0 28px;
+    }
+    .legend {
+      padding: 0 24px 16px;
+      display: flex;
+      gap: 16px;
+      flex-wrap: wrap;
+      font-size: 0.75rem;
+      color: #94a3b8;
+    }
+    .lg { display: flex; align-items: center; gap: 8px; }
+    .lg i {
+      width: 10px; height: 10px;
+      border-radius: 3px;
+      display: inline-block;
+    }
+    .lg.rented i { background: #38bdf8; }
+    .lg.vacant i { background: #475569; }
+    .lg.self i { background: #94a3b8; }
+
+    .floor-wrap {
+      padding: 12px 24px 20px;
+      display: grid;
+      grid-template-columns: 48px 1fr;
+      gap: 0 12px;
+      align-items: start;
+    }
+    .floor-tag {
+      position: sticky;
+      top: 12px;
+      writing-mode: vertical-rl;
+      transform: rotate(180deg);
+      text-align: center;
+      font-size: 0.75rem;
+      font-weight: 800;
+      letter-spacing: 0.15em;
+      color: #475569;
+      padding: 12px 0;
+      border-radius: 10px;
+      background: rgba(30, 41, 59, 0.8);
+      border: 1px solid rgba(71, 85, 105, 0.5);
+    }
+    .track {
+      position: relative;
+      padding-left: 14px;
+      border-left: 2px solid rgba(51, 65, 85, 0.9);
+    }
+    .track::before {
+      content: "";
+      position: absolute;
+      left: -5px;
+      top: 18px;
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #334155;
+      box-shadow: 0 0 0 4px rgba(15, 23, 42, 0.9);
+    }
+    .row {
+      display: flex;
+      gap: 10px;
+      align-items: stretch;
+      min-height: 100px;
+      margin-bottom: 4px;
+    }
+    .tile {
+      border-radius: 14px;
+      padding: 12px 14px;
+      min-width: 72px;
+      position: relative;
+      overflow: hidden;
+      border: 1px solid rgba(51, 65, 85, 0.6);
+      background: rgba(30, 41, 59, 0.65);
+    }
+    .tile.rented {
+      border-color: rgba(56, 189, 248, 0.35);
+      background: linear-gradient(160deg, rgba(14, 116, 144, 0.25) 0%, rgba(30, 41, 59, 0.9) 100%);
+    }
+    .tile.vacant {
+      border-color: rgba(71, 85, 105, 0.7);
+    }
+    .tile.self {
+      border-color: rgba(148, 163, 184, 0.3);
+      background: rgba(51, 65, 85, 0.45);
+    }
+    .tile::after {
+      content: "";
+      position: absolute;
+      inset: 0;
+      background: radial-gradient(800px 80px at 10% 0%, rgba(56, 189, 248, 0.12), transparent 55%);
+      pointer-events: none;
+      opacity: 0;
+    }
+    .tile.rented::after { opacity: 1; }
+    .t-no { font-weight: 800; font-size: 0.875rem; color: #f1f5f9; }
+    .t-ar { font-size: 0.6875rem; color: #94a3b8; margin-top: 2px; }
+    .t-name {
+      margin-top: 8px;
+      font-size: 0.75rem;
+      color: #cbd5e1;
+      line-height: 1.45;
+      display: -webkit-box;
+      -webkit-line-clamp: 2;
+      -webkit-box-orient: vertical;
+      overflow: hidden;
+    }
+    .add {
+      flex: 0 0 48px;
+      border-radius: 14px;
+      border: 1px dashed rgba(100, 116, 139, 0.6);
+      display: grid;
+      place-items: center;
+      color: #64748b;
+      font-size: 1.35rem;
+      background: rgba(15, 23, 42, 0.5);
+    }
+  </style>
+</head>
+<body>
+  <p class="note"><a class="back" href="index.html">← 返回方案列表</a> · 方案 C（暗色）</p>
+  <div class="frame">
+    <header class="mast">
+      <div class="mast-row">
+        <div>
+          <h1>1号楼</h1>
+          <div class="mast-meta">
+            <span>总面积 <strong>13,697.96㎡</strong></span>
+            <span>可租 <strong>8,038.91㎡</strong></span>
+            <span>自用 <strong>5,659.05㎡</strong></span>
+            <span>出租率 <em>74.48%</em></span>
+          </div>
+        </div>
+        <div class="mast-actions">
+          <button type="button" class="btn btn-glow">+ 指定类型新增</button>
+          <button type="button" class="btn btn-danger">删除楼宇</button>
+        </div>
+      </div>
+    </header>
+    <div class="body">
+      <div class="legend">
+        <span class="lg vacant"><i></i>待租</span>
+        <span class="lg rented"><i></i>已租</span>
+        <span class="lg self"><i></i>自用</span>
+      </div>
+
+      <div class="floor-wrap">
+        <div class="floor-tag">4F</div>
+        <div class="track">
+          <div class="row">
+            <article class="tile rented" style="flex: 44 1 0">
+              <div class="t-no">401-1</div>
+              <div class="t-ar">44.00㎡</div>
+              <div class="t-name">上海将广房地产有限公司</div>
+            </article>
+            <article class="tile rented" style="flex: 360.76 1 0">
+              <div class="t-no">403</div>
+              <div class="t-ar">360.76㎡</div>
+              <div class="t-name">上海脉科医疗科技有限公司</div>
+            </article>
+            <article class="tile rented" style="flex: 101.8 1 0">
+              <div class="t-no">406</div>
+              <div class="t-ar">101.80㎡</div>
+              <div class="t-name">上海润景晖科技有限公司</div>
+            </article>
+            <article class="tile rented" style="flex: 507.45 1 0">
+              <div class="t-no">407-409</div>
+              <div class="t-ar">507.45㎡</div>
+              <div class="t-name">上海游牛信息科技有限公司</div>
+            </article>
+            <article class="tile vacant" style="flex: 248 1 0">
+              <div class="t-no">408-410</div>
+              <div class="t-ar">248.00㎡</div>
+              <div class="t-name">待租</div>
+            </article>
+            <div class="add">+</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="floor-wrap">
+        <div class="floor-tag">3F</div>
+        <div class="track">
+          <div class="row">
+            <article class="tile self" style="flex: 200 1 0">
+              <div class="t-no">301</div>
+              <div class="t-ar">200.00㎡</div>
+              <div class="t-name">园区自用办公</div>
+            </article>
+            <article class="tile vacant" style="flex: 120 1 0">
+              <div class="t-no">302</div>
+              <div class="t-ar">120.00㎡</div>
+              <div class="t-name">待租</div>
+            </article>
+            <article class="tile rented" style="flex: 280 1 0">
+              <div class="t-no">303-305</div>
+              <div class="t-ar">280.00㎡</div>
+              <div class="t-name">示例科技（上海）有限公司</div>
+            </article>
+            <div class="add">+</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <p class="note">方案 C：适合大屏或「展示模式」；若产品整体为浅色后台，可只借鉴「轨道 + 竖排楼层」结构。</p>
+</body>
+</html>

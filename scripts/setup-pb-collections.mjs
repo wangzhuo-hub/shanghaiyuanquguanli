@@ -93,6 +93,7 @@ const COLLECTIONS = [
       { name: 'early_termination_other_adjustment', type: 'number', required: false, options: { min: null, max: null, noDecimal: false } },
       { name: 'special_requirements', type: 'text', required: false, options: { min: null, max: null, pattern: '' } },
       { name: 'is_risk', type: 'bool', required: false, options: {} },
+      { name: 'is_special_business', type: 'bool', required: false, options: {} },
       { name: 'contract_parking_spaces', type: 'number', required: false, options: { min: null, max: null, noDecimal: true } },
       { name: 'actual_parking_spaces', type: 'number', required: false, options: { min: null, max: null, noDecimal: true } },
       { name: 'parking_unit_price', type: 'number', required: false, options: { min: null, max: null, noDecimal: false } },

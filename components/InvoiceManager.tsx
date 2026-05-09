@@ -63,6 +63,10 @@ export const InvoiceManager: React.FC<InvoiceManagerProps> = ({
             const isSelfUse = t.unitIds.some(uid => selfUseUnitIds.has(uid));
             if (isSelfUse) return;
 
+            // 特殊业态：合同不滚动账单，应收金额由「财务报表 → 特殊业态收入录入」按月手工录入，
+            // 因此也不应在「开票管理」中滚动出潜在发票。
+            if (t.isSpecialBusiness) return;
+
             // Use all assumptions for billing generation
             const bills = generateBudgetedBills(t, budgetAssumptions, budgetAdjustments, startDate, endDate);
             

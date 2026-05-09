@@ -178,21 +178,21 @@ export const StatsCards: React.FC<StatsCardsProps> = ({ data, onEditTargets, sel
             {/* Monthly Breakdown Table - Integrated Budget Execution */}
             <div className="grid grid-cols-1 lg:grid-cols-[2fr,1fr] gap-4">
                 {/* Left: Table */}
-                <div className="bg-white rounded-2xl shadow-lg border border-slate-200 overflow-hidden">
-                    <div className="bg-gradient-to-r from-emerald-50 to-emerald-100 px-6 py-4 border-b border-emerald-200">
-                        <div className="flex items-center justify-between">
-                            <div className="flex items-center gap-2 text-emerald-800">
-                                <CalendarRange size={18} />
-                                <h3 className="font-bold text-base">预算执行 (Budget vs Actual)</h3>
-                                <span className="text-xs font-semibold bg-emerald-600 text-white px-2 py-1 rounded">实时监控</span>
+                <div className="bg-white rounded-2xl shadow-lg border border-slate-200 overflow-hidden min-w-0">
+                    <div className="bg-gradient-to-r from-emerald-50 to-emerald-100 px-4 sm:px-6 py-4 border-b border-emerald-200">
+                        <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                            <div className="flex flex-wrap items-center gap-2 text-emerald-800 min-w-0">
+                                <CalendarRange size={18} className="shrink-0" />
+                                <h3 className="font-bold text-sm sm:text-base">预算执行 (Budget vs Actual)</h3>
+                                <span className="text-xs font-semibold bg-emerald-600 text-white px-2 py-1 rounded shrink-0">实时监控</span>
                             </div>
                         </div>
-                        <div className="mt-1 text-[11px] text-emerald-700/80">
+                        <div className="mt-1 text-[11px] text-emerald-700/80 break-words">
                             数据源：初始化月度应收（有值则优先）+ 预算表/生效方案 + 财务报表收款明细
                         </div>
                     </div>
-                    <div className="overflow-x-auto">
-                        <table className="w-full text-sm">
+                    <div className="overflow-x-auto min-w-0">
+                        <table className="w-full text-sm min-w-[600px]">
                             <thead>
                                 <tr className="bg-slate-50 border-b border-slate-200">
                                     <th className="px-4 py-3 text-center font-semibold text-slate-700">月份</th>
@@ -201,7 +201,7 @@ export const StatsCards: React.FC<StatsCardsProps> = ({ data, onEditTargets, sel
                                     <th className="px-4 py-3 text-right font-semibold text-slate-700 hidden sm:table-cell">去年同期(万元)</th>
                                     <th className="px-4 py-3 text-right font-semibold text-slate-700">同比</th>
                                     <th className="px-4 py-3 text-center font-semibold text-slate-700">当月完成率</th>
-                                    <th className="px-4 py-3 text-right font-semibold text-slate-700 border-l border-slate-200 hidden md:table-cell">累计达成率</th>
+                                    <th className="px-4 py-3 text-right font-semibold text-slate-700 border-l border-slate-200 hidden sm:table-cell">累计达成率</th>
                                 </tr>
                             </thead>
                             <tbody>
@@ -291,7 +291,7 @@ export const StatsCards: React.FC<StatsCardsProps> = ({ data, onEditTargets, sel
                 </div>
 
                 {/* Right: Annual Completion Visualization */}
-                <div className="bg-white rounded-2xl shadow-lg border border-slate-200 overflow-hidden group flex flex-col">
+                <div className="bg-white rounded-2xl shadow-lg border border-slate-200 overflow-hidden group flex flex-col min-w-0">
                     <div className="bg-gradient-to-r from-blue-50 to-blue-100 px-4 py-3 border-b border-blue-200">
                         <h3 className="font-bold text-sm text-blue-800">年度指标完成率</h3>
                     </div>
@@ -393,7 +393,7 @@ export const StatsCards: React.FC<StatsCardsProps> = ({ data, onEditTargets, sel
                                     </span>
                                 </div>
                                 <div className="text-[10px] text-slate-400 mt-1">
-                                    含2025年初始化欠款 + 所有未核销账单
+                                    2026年1月1日起所有未核销账单
                                 </div>
                             </div>
 

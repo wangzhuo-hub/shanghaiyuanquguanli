@@ -12,6 +12,7 @@ import { BuildingManager } from './components/BuildingManager';
 import { ContractManager } from './components/ContractManager';
 import { FinanceManager } from './components/FinanceManager';
 import { BudgetManager } from './components/BudgetManager';
+import { TenantBudgetNameLinkTool } from './components/TenantMergeTool';
 import { TenantInsights } from './components/TenantInsights';
 import { DashboardAlerts } from './components/DashboardAlerts';
 import { ConflictDialog } from './components/ConflictDialog';
@@ -47,7 +48,17 @@ import type { ManagedUserAccount } from './services/cloudService';
 import type { SignupRequestRecord } from './services/cloudService';
 import { buildIntegrationFullSnapshotV1 } from './services/integrationSnapshot';
 import { generateBudgetedBills, getVirtualTenants } from './services/billingService';
-import { rentCollectionRemarkKey } from './services/receivableListHelpers';
+import {
+    DEFER_BILLING_NOTE_PREFIX,
+    removeDeferBillingNoteByKey,
+    applyBillingPeriodDeferNotes,
+    partitionPaymentsRemovingAutoReceivableWriteOffs,
+    parseSpecialBusinessReceivablesFromNotes,
+    removeDeferBillingNotesFromNotes,
+    rentCollectionRemarkKey,
+    specialBusinessArDisplayTenantId,
+} from './services/receivableListHelpers';
+import type { DeferBillingNote } from './services/receivableListHelpers';
 import {
     buildBillingDetailsForPeriod as buildBillingDetailsForPeriodService,
     calculateDashboardMetrics as calculateDashboardMetricsService,
@@ -142,6 +153,7 @@ const calculateBudgetedReceivableInPeriod = (
     tenants.forEach(t => {
         const isSelfUse = t.unitIds.some(uid => selfUseUnitIds.has(uid));
         if (isSelfUse) return;
+        if (t.isSpecialBusiness) return;
 
         const bills = generateBudgetedBills(t, assumptions, adjustments, genStart, genEnd);
         
@@ -155,128 +167,68 @@ const calculateBudgetedReceivableInPeriod = (
     return Math.round(total);
 };
 
-const DEFER_NOTE_PREFIX = '__defer__';
-
-type DeferBillingNote = {
-    tenantId: string;
-    fromYear: number;
-    fromMonth: number;
-    toYear: number;
-    toMonth: number;
-    amount: number;
-};
-
-const parsePeriodLabel = (value: unknown): { year: number; month: number } | null => {
-    if (typeof value !== 'string') return null;
-    const m = value.trim().match(/^(\d{4})-(\d{2})$/);
-    if (!m) return null;
-    const year = Number(m[1]);
-    const month1 = Number(m[2]);
-    if (!Number.isFinite(year) || !Number.isFinite(month1) || month1 < 1 || month1 > 12) return null;
-    return { year, month: month1 - 1 };
-};
-
-const parseDeferBillingNotes = (notes: Record<string, string> | undefined): DeferBillingNote[] => {
-    if (!notes) return [];
-    const out: DeferBillingNote[] = [];
-    for (const [k, v] of Object.entries(notes)) {
-        if (!k.startsWith(DEFER_NOTE_PREFIX)) continue;
-        try {
-            const j = JSON.parse(v) as DeferBillingNote & { fromPeriod?: string; toPeriod?: string };
-            if (!j?.tenantId || typeof j.amount !== 'number' || j.amount <= 0) continue;
-            if (
-                Number.isFinite(j.fromYear) &&
-                Number.isFinite(j.fromMonth) &&
-                Number.isFinite(j.toYear) &&
-                Number.isFinite(j.toMonth)
-            ) {
-                out.push(j);
-                continue;
-            }
-            const from = parsePeriodLabel(j.fromPeriod);
-            const to = parsePeriodLabel(j.toPeriod);
-            if (!from || !to) continue;
-            out.push({
-                tenantId: j.tenantId,
-                fromYear: from.year,
-                fromMonth: from.month,
-                toYear: to.year,
-                toMonth: to.month,
-                amount: j.amount,
-            });
-        } catch {
-            /* ignore */
-        }
-    }
-    return out;
-};
-
-const applyBillingPeriodDeferNotes = (
+/**
+ * 把「特殊业态收入录入」的月度金额注入应收明细（与 services/dashboardMetrics.ts 中口径保持一致）。
+ * - 显示行使用 `sbiz_ar_${tenantId}__${period}` 作为 tenantId，防止与系统账单/手工应收冲突；
+ * - amountPaid 同时识别真实 tenantId 与 sbiz 显示 tenantId 的关联收款。
+ */
+const applySpecialBusinessReceivablesLocal = (
     details: BillingDetail[],
     year: number,
     month: number,
     notes: Record<string, string> | undefined,
-    allTenants: Tenant[]
+    allTenants: Tenant[],
+    payments: PaymentRecord[]
 ): BillingDetail[] => {
-    const entries = parseDeferBillingNotes(notes);
-    if (entries.length === 0) return details;
-
-    const copy = details.map((d) => ({ ...d }));
-    const idx = new Map(copy.map((d, i) => [d.tenantId, i] as const));
-
-    const ensureRow = (tenantId: string) => {
-        const existing = idx.get(tenantId);
-        if (existing !== undefined) return existing;
-        const t = allTenants.find((x) => x.id === tenantId);
-        copy.push({
-            tenantId,
-            tenantName: t?.name || '',
-            unitIds: t?.unitIds || [],
-            amountDue: 0,
-            amountPaid: 0,
-            status: 'Unpaid',
-        });
-        idx.set(tenantId, copy.length - 1);
-        return copy.length - 1;
-    };
-
-    for (const e of entries) {
-        const toPeriodLabel = `${e.toYear}-${String(e.toMonth + 1).padStart(2, '0')}`;
-        const fromPeriodLabel = `${e.fromYear}-${String(e.fromMonth + 1).padStart(2, '0')}`;
-        if (e.fromYear === year && e.fromMonth === month) {
-            const i = idx.get(e.tenantId);
-            if (i !== undefined) {
-                copy[i].amountDue = Math.max(0, copy[i].amountDue - e.amount);
-                copy[i].deferredAmount = (copy[i].deferredAmount || 0) + e.amount;
-                copy[i].deferredToPeriod = toPeriodLabel;
-                copy[i].deferredFromPeriod = fromPeriodLabel;
-            }
-        }
-        if (e.toYear === year && e.toMonth === month) {
-            const i = ensureRow(e.tenantId);
-            copy[i].amountDue += e.amount;
-            copy[i].deferredInAmount = (copy[i].deferredInAmount || 0) + e.amount;
-            const fromLbl = `${e.fromYear}-${String(e.fromMonth + 1).padStart(2, '0')}`;
-            copy[i].deferredInFromSummary = copy[i].deferredInFromSummary
-                ? `${copy[i].deferredInFromSummary}、${fromLbl}`
-                : fromLbl;
-        }
-    }
-
-    for (const d of copy) {
+    const periodPrefix = `${year}-${String(month + 1).padStart(2, '0')}`;
+    const all = parseSpecialBusinessReceivablesFromNotes(notes);
+    const forPeriod = all.filter((r) => r.periodYYYYMM === periodPrefix);
+    if (forPeriod.length === 0) return details;
+    const tenantById = new Map(allTenants.map((t) => [t.id, t]));
+    const out = [...details];
+    for (const row of forPeriod) {
+        const tenant = tenantById.get(row.tenantId);
+        if (!tenant || !tenant.isSpecialBusiness) continue;
+        const displayTenantId = specialBusinessArDisplayTenantId(row.tenantId, periodPrefix);
+        const amountDue = Math.round(Number(row.amount) * 100) / 100;
+        if (!Number.isFinite(amountDue) || amountDue <= 0.005) continue;
+        const matchesTenant = (paymentTenantId: string): boolean => {
+            if (!paymentTenantId) return false;
+            return paymentTenantId === displayTenantId || paymentTenantId === row.tenantId;
+        };
+        const matchesPeriod = (p: PaymentRecord): boolean => {
+            const list = (p.period || '')
+                .split(/[,\n;，；\s]+/)
+                .map((s) => s.trim())
+                .filter(Boolean)
+                .filter((s) => /^\d{4}-\d{2}$/.test(s));
+            if (list.length > 0) return list.includes(periodPrefix);
+            return p.date.startsWith(periodPrefix);
+        };
+        const amountPaid = Math.round(
+            payments
+                .filter(
+                    (p) =>
+                        (p.type === 'Rent' || p.type === 'DepositToRent') &&
+                        matchesTenant(p.tenantId) &&
+                        matchesPeriod(p)
+                )
+                .reduce((sum, p) => sum + (p.amount || 0), 0) * 100
+        ) / 100;
         let status: BillingDetail['status'] = 'Unpaid';
-        if (d.amountPaid >= d.amountDue && d.amountDue > 0) status = 'Paid';
-        else if (d.amountPaid > 0 && d.amountPaid < d.amountDue) status = 'Partial';
-        else if (d.amountDue === 0 && d.amountPaid > 0) status = 'Paid';
-        d.status = status;
+        if (amountPaid >= amountDue && amountDue > 0) status = 'Paid';
+        else if (amountPaid > 0 && amountPaid < amountDue) status = 'Partial';
+        else if (amountDue === 0 && amountPaid > 0) status = 'Paid';
+        out.push({
+            tenantId: displayTenantId,
+            tenantName: tenant.name,
+            unitIds: tenant.unitIds || [],
+            amountDue,
+            amountPaid,
+            status,
+        });
     }
-
-    return copy.filter(
-        (d) =>
-            d.amountDue > 0.005 ||
-            d.amountPaid > 0.005 ||
-            ((d.deferredAmount ?? 0) > 0.005 && !!(d.deferredToPeriod && String(d.deferredToPeriod).trim()))
-    );
+    return out;
 };
 
 const getActiveScenarioForBudgetYear = (scenarios: BudgetScenario[] | undefined, year: number): BudgetScenario | undefined => {
@@ -463,6 +415,21 @@ const SidebarItem: React.FC<SidebarItemProps> = ({ icon, label, isOpen, active, 
   </button>
 );
 
+/** 与侧栏 `lg:` 断点一致：窄屏仅保留工作台 / 合同录入 / 收款核销 */
+function useMobileNavLayout(): boolean {
+  const [narrow, setNarrow] = useState(() =>
+    typeof window !== 'undefined' ? window.matchMedia('(max-width: 1023px)').matches : false
+  );
+  useEffect(() => {
+    const mq = window.matchMedia('(max-width: 1023px)');
+    const sync = () => setNarrow(mq.matches);
+    sync();
+    mq.addEventListener('change', sync);
+    return () => mq.removeEventListener('change', sync);
+  }, []);
+  return narrow;
+}
+
 const App: React.FC = () => {
   const [data, setData] = useState<DashboardData | null>(null);
   const [cloudConfig, setCloudConfig] = useState<CloudConfig>(() => ({
@@ -516,6 +483,7 @@ const App: React.FC = () => {
   const [isTargetModalOpen, setIsTargetModalOpen] = useState(false);
   const [targetModalType, setTargetModalType] = useState<'revenue' | 'occupancy'>('revenue');
   const [activeTab, setActiveTab] = useState<'dashboard' | 'buildings' | 'contracts' | 'finance' | 'budget' | 'initData' | 'settings'>('dashboard');
+  const mobileNavLayout = useMobileNavLayout();
   const [lastSaved, setLastSaved] = useState<string>('');
   const currentYear = new Date().getFullYear();
   const [selectedYear, setSelectedYear] = useState(currentYear);
@@ -1055,6 +1023,27 @@ const App: React.FC = () => {
               console.warn('[refreshAfterSave] 快照构建失败（可忽略）', e);
           }
       }
+
+      // 通知服务端重算 KPI 快照（Gateway compute/refresh），使 OpenClaw 等外部系统看到与前端一致的数据
+      triggerServerComputeRefresh(cloudConfig, selectedYear);
+  };
+
+  /** 通知集成网关重新计算并回写 KPI 快照（fire-and-forget，不阻塞保存流程） */
+  const triggerServerComputeRefresh = (config: CloudConfig, year: number) => {
+      const baseUrl = config.pocketbaseUrl || '';
+      if (!baseUrl) return;
+      // 集成网关默认与 PocketBase 同主部署，端口 8787
+      const gatewayUrl = baseUrl.replace(/\/api\/pb$/, '').replace(/:\d+/, '') + ':8787';
+      const body = JSON.stringify({ project_id: config.projectId, year });
+      fetch(`${gatewayUrl}/api/integration/compute/refresh`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body,
+      }).then(() => {
+          // 成功：静默
+      }).catch(() => {
+          // 网关不可用时静默失败，不影响前端正常使用
+      });
   };
 
   /**
@@ -1528,6 +1517,8 @@ const App: React.FC = () => {
         const isSelfUse = t.unitIds.some(uid => selfUseUnitIds.has(uid));
         // Note: For actual collection rate, virtual tenants represent potential income that should be billed
         if (isSelfUse || (t.status === 'Terminated' && !t.id.startsWith('virt_'))) return;
+        // 特殊业态：合同不滚动账单，应收由「财务报表 → 特殊业态收入录入」按月手工录入
+        if (t.isSpecialBusiness) return;
 
         const amountDue = calculateBudgetedReceivableInPeriod([t], periodStart, periodEnd, selfUseUnitIds, assumptions, adjustments);
         
@@ -1572,6 +1563,9 @@ const App: React.FC = () => {
           snapshot.leaseStart !== live.leaseStart ||
           snapshot.leaseEnd !== live.leaseEnd ||
           snapshot.monthlyRent !== live.monthlyRent ||
+          snapshot.unitPrice !== live.unitPrice ||
+          snapshot.freeRentHandling !== live.freeRentHandling ||
+          JSON.stringify(snapshot.rentFreePeriods || []) !== JSON.stringify(live.rentFreePeriods || []) ||
           JSON.stringify(snapshot.unitTerms || snapshot.paymentTerms || []) !== JSON.stringify(live.unitTerms || live.paymentTerms || []);
       const inferContractChangeDate = (snapshot: Tenant, live: Tenant): Date | null => {
           const candidates: string[] = [];
@@ -1579,23 +1573,34 @@ const App: React.FC = () => {
           if (snapshot.firstPaymentDate !== live.firstPaymentDate && live.firstPaymentDate) candidates.push(live.firstPaymentDate);
           if (snapshot.signingDate !== live.signingDate && live.signingDate) candidates.push(live.signingDate);
           if (snapshot.leaseStart !== live.leaseStart && live.leaseStart) candidates.push(live.leaseStart);
+          if (JSON.stringify(snapshot.rentFreePeriods || []) !== JSON.stringify(live.rentFreePeriods || [])) {
+              for (const r of live.rentFreePeriods || []) {
+                  if (r?.start) candidates.push(r.start);
+              }
+          }
+          let best: Date | null = null;
           for (const c of candidates) {
               const d = new Date(c);
-              if (!Number.isNaN(d.getTime())) return d;
+              if (Number.isNaN(d.getTime())) continue;
+              if (!best || d.getTime() < best.getTime()) best = d;
           }
-          return null;
+          return best;
       };
 
-      // 存量客户默认走应收专用方案终态数据；合同变化后，变化时点起切换到实时合同口径
+      // 存量客户默认走应收专用方案终态数据；合同变化后，变化时点起切换到实时合同口径。
+      // 「特殊业态」是 UI 层的标注（非合同条款变更），始终覆盖为最新值，
+      // 否则在合同中心刚勾选完该客户也仍会被按快照滚动出应收。
       const mergedTenants = (scenarioTenants || []).map((snapshot) => {
           const live = liveTenantMap.get(snapshot.id);
+          const overlaySpecial = (t: Tenant): Tenant =>
+              live ? { ...t, isSpecialBusiness: !!live.isSpecialBusiness } : t;
           if (!live) return snapshot;
-          if (!hasContractChanged(snapshot, live)) return snapshot;
+          if (!hasContractChanged(snapshot, live)) return overlaySpecial(snapshot);
           const changeDate = inferContractChangeDate(snapshot, live);
           if (changeDate && periodStart < new Date(changeDate.getFullYear(), changeDate.getMonth(), 1)) {
-              return snapshot;
+              return overlaySpecial(snapshot);
           }
-          return live;
+          return overlaySpecial(live);
       });
       const scenarioTenantIds = new Set(mergedTenants.map((t) => t.id));
 
@@ -1625,7 +1630,8 @@ const App: React.FC = () => {
           receivableAdjustments,
           ctx.payments
       );
-      return applyBillingPeriodDeferNotes(internal, year, month, ctx.billingPeriodNotes, ctx.tenants);
+      const withDefer = applyBillingPeriodDeferNotes(internal, year, month, ctx.billingPeriodNotes, ctx.tenants);
+      return applySpecialBusinessReceivablesLocal(withDefer, year, month, ctx.billingPeriodNotes, ctx.tenants, ctx.payments || []);
   };
 
   const getBillingDetailsForPeriod = (year: number, month: number): BillingDetail[] => {
@@ -1766,14 +1772,10 @@ const App: React.FC = () => {
     
     const collectionRate = annualRevenueTarget > 0 ? Math.min(100, Math.round((annualRevenueCollected / annualRevenueTarget) * 100)) : 0;
 
-    // 计算累计欠款：基于月度账单明细中未核销的金额总和，跨年累计
+    // 计算累计欠款：仅统计2026年1月1日起（应用启用日期）的未核销金额
     let accumulatedArrears = 0;
-    
-    // 1. 获取初始化数据中的2025年累计欠款（2026年1月作为起始年度）
-    const init2025 = initData.find(d => d.year === 2025 && d.month === 12); // 使用25年12月的初始化数据
-    const initialArrears = init2025?.accumulatedArrears || 0;
-    
-    // 2. 计算所有2026年及之后的所有月份账单的未核销金额
+
+    // 计算所有2026年及之后的所有月份账单的未核销金额
     const nowYear = now.getFullYear();
     const nowMonth = now.getMonth(); // 0-11
     
@@ -1807,9 +1809,6 @@ const App: React.FC = () => {
             });
         }
     }
-    
-    // 3. 加上初始化欠款（2025年及之前）
-    accumulatedArrears += initialArrears;
 
     let leasedArea = 0;
     tenants.forEach(t => {
@@ -2044,7 +2043,7 @@ const App: React.FC = () => {
           alert('该月份无可缓缴应收（已结清、已暂缓或待收余额为 0）。');
           return;
       }
-      const key = `${DEFER_NOTE_PREFIX}${tenantId}_${fromYear}_${fromMonth}_${toYear}_${toMonth}_${Date.now()}`;
+      const key = `${DEFER_BILLING_NOTE_PREFIX}${tenantId}_${fromYear}_${fromMonth}_${toYear}_${toMonth}_${Date.now()}`;
       const note: DeferBillingNote = {
           tenantId,
           fromYear,
@@ -2062,11 +2061,71 @@ const App: React.FC = () => {
       );
   };
 
+  /** 撤销单条缓缴（调入行消失，金额回到原账期应收） */
+  const handleRevokeDeferBillingNote = (noteKey: string) => {
+      if (!data) return;
+      const cur = data.billingPeriodNotes?.[noteKey];
+      let summary = '';
+      try {
+          const j = JSON.parse(cur || '{}') as { tenantId?: string; fromYear?: number; fromMonth?: number; toYear?: number; toMonth?: number; amount?: number };
+          if (j?.tenantId != null && Number.isFinite(j.fromYear) && Number.isFinite(j.fromMonth)) {
+              const fromL = `${j.fromYear}-${String((j.fromMonth ?? 0) + 1).padStart(2, '0')}`;
+              const toL =
+                  Number.isFinite(j.toYear) && Number.isFinite(j.toMonth)
+                      ? `${j.toYear}-${String((j.toMonth ?? 0) + 1).padStart(2, '0')}`
+                      : '';
+              summary = `\n原账期: ${fromL}${toL ? `\n调入: ${toL}` : ''}\n金额: ${typeof j.amount === 'number' ? formatCurrency(j.amount) : '—'}`;
+          }
+      } catch {
+          /* ignore */
+      }
+      if (
+          !window.confirm(
+              `确定撤销该笔缓缴？调入账期行将删除，金额回到原账期（不影响收款明细已有流水；若曾核销本调入行，请核对关联账期）。${summary}`,
+          )
+      ) {
+          return;
+      }
+      const { next, removed } = removeDeferBillingNoteByKey(data.billingPeriodNotes, noteKey);
+      if (!removed) {
+          alert('未找到对应的缓缴记录，可能已被撤销或键无效。');
+          return;
+      }
+      recalculateMetrics({ ...data, billingPeriodNotes: next });
+  };
+
+  /** 应收核销：一键撤回全部缓缴 + 本界面生成的核销流水（不误删收款明细手工记账） */
+  const handleResetReceivableApplications = () => {
+      if (!data) return;
+      const { next: nextNotes, removed: deferRemoved } = removeDeferBillingNotesFromNotes(data.billingPeriodNotes || {});
+      const { kept: nextPayments, removedCount: payRemoved } = partitionPaymentsRemovingAutoReceivableWriteOffs(
+          data.payments || [],
+      );
+      if (deferRemoved === 0 && payRemoved === 0) {
+          alert(
+              '当前没有可撤回的缓缴记录，也没有通过「应收核销」收款或批量核销生成的租金流水（「收款明细」中的手工记账不受影响）。',
+          );
+          return;
+      }
+      if (
+          !window.confirm(
+              `确定一键撤回以下操作？此操作不可撤销。\n\n` +
+                  `· 清除全部缓缴申请：${deferRemoved} 条（所有账期）\n` +
+                  `· 删除应收核销自动生成的收款流水：${payRemoved} 笔（单笔收款、批量核销）\n\n` +
+                  `不含「收款明细」手工录入的流水；跟进备注、预算与合同数据不会改变。`,
+          )
+      ) {
+          return;
+      }
+      recalculateMetrics({ ...data, billingPeriodNotes: nextNotes, payments: nextPayments });
+  };
+
   const updateBudgetScenarios = (newScenarios: BudgetScenario[]) => {
       if (!data) return;
-      setData({
+      // 必须走重算：应收专用方案、工作台账单、财务报表与本页根级 budgetAssumptions 均依赖 normalize + 生效方案假设
+      recalculateMetrics({
           ...data,
-          budgetScenarios: normalizeScenarioForReceivableService(newScenarios, data.tenants || [], data.buildings || []),
+          budgetScenarios: newScenarios,
       });
   };
 
@@ -2480,11 +2539,8 @@ const App: React.FC = () => {
               const parks = authorizedParks.filter(park => park.enabled);
               const metrics: AdminParkMetric[] = [];
               for (const park of parks) {
-                  if (park.projectId === cloudConfig.projectId && data && hasMeaningfulDashboardPayload(data)) {
-                      metrics.push(buildParkMetric(park, data));
-                      continue;
-                  }
-
+                  // 所有园区统一数据源：优先 PocketBase KPI 快照，回落至全量备份，再回落 localStorage。
+                  // 不再对「当前园区」特殊处理——避免汇总口径随当前园区切换而变化。
                   const config = { ...cloudConfig, projectId: park.projectId };
                   const snapshotRes = await fetchCloudKpiSnapshot(config, selectedYear);
                   if (snapshotRes.success && snapshotRes.snapshot) {
@@ -2504,12 +2560,15 @@ const App: React.FC = () => {
                       : null;
                   if (cloudData && hasMeaningfulDashboardPayload(cloudData)) {
                       metrics.push(buildParkMetric(park, cloudData));
-                  } else {
-                      const cached = localStorage.getItem(getParkStorageKey(park.projectId));
-                      const cachedData = cached
-                          ? { ...generateInitialData(), ...JSON.parse(cached) }
-                          : null;
-                      metrics.push(buildParkMetric(park, cachedData || generateInitialData()));
+                      continue;
+                  }
+
+                  const cached = localStorage.getItem(getParkStorageKey(park.projectId));
+                  const cachedData = cached
+                      ? { ...generateInitialData(), ...JSON.parse(cached) }
+                      : null;
+                  if (cachedData && hasMeaningfulDashboardPayload(cachedData)) {
+                      metrics.push(buildParkMetric(park, cachedData));
                   }
               }
               if (!cancelled) setAdminParkMetrics(metrics);
@@ -2525,13 +2584,25 @@ const App: React.FC = () => {
           cancelled = true;
           window.clearTimeout(timer);
       };
-  }, [authUser, authorizedParks, cloudConfig.pocketbaseUrl, cloudConfig.projectId, selectedYear, data]);
+  }, [authUser, authorizedParks, cloudConfig.pocketbaseUrl, selectedYear]);
 
   useEffect(() => {
       if (!canAccessSystemSettings && activeTab === 'settings') {
           setActiveTab('dashboard');
       }
   }, [canAccessSystemSettings, activeTab]);
+
+  useEffect(() => {
+      if (!mobileNavLayout) return;
+      if (
+          activeTab === 'buildings' ||
+          activeTab === 'budget' ||
+          activeTab === 'initData' ||
+          activeTab === 'settings'
+      ) {
+          setActiveTab('dashboard');
+      }
+  }, [mobileNavLayout, activeTab]);
 
   useEffect(() => {
       if (activeTab === 'settings' && isPlatformAdmin()) {
@@ -2667,14 +2738,8 @@ const App: React.FC = () => {
       return (
           <div className="min-h-screen bg-slate-100 flex items-center justify-center p-4">
               <form onSubmit={authMode === 'login' ? handleLogin : handleSignupSubmit} className="w-full max-w-md bg-white rounded-2xl shadow-xl border border-slate-200 p-6 space-y-5">
-                  <div className="flex items-center gap-3">
-                      <div className="p-3 rounded-xl bg-sky-50 text-sky-600 border border-sky-100">
-                          <User size={24} />
-                      </div>
-                      <div>
-                          <h1 className="text-xl font-bold text-slate-800">{authMode === 'login' ? '多园区登录' : '账号注册申请'}</h1>
-                          <p className="text-sm text-slate-500 mt-1">{authMode === 'login' ? '输入账号密码即可进入。管理员可查看并切换所有授权园区。' : '填写姓名、邮箱、密码并选择园区，管理员审批后即可登录。'}</p>
-                      </div>
+                  <div>
+                      <h1 className="text-xl font-bold text-slate-800 text-center">金蝶招商管理系统</h1>
                   </div>
 
                   <div className="grid grid-cols-2 rounded-lg bg-slate-100 p-1">
@@ -2768,9 +2833,6 @@ const App: React.FC = () => {
                       {(authMode === 'login' ? isLoggingIn : isSubmittingSignup) ? <Loader2 size={16} className="animate-spin" /> : <Cloud size={16} />}
                       {authMode === 'login' ? '登录并加载园区数据' : '提交注册申请'}
                   </button>
-                  <p className="text-xs text-slate-400 leading-relaxed">
-                      {authMode === 'login' ? '普通账号会自动进入已分配园区；如需调整后端地址，请由管理员在部署配置中统一维护。' : '提交后等待管理员审批；审批通过后管理员可在「系统与备份」中按园区查看已通过人员名单。'}
-                  </p>
               </form>
           </div>
       );
@@ -2797,25 +2859,34 @@ const App: React.FC = () => {
 
         <nav className="flex-1 py-3 space-y-0.5 overflow-y-auto scrollbar-hide">
           <SidebarItem icon={<LayoutDashboard size={22} />} label="工作台" isOpen={true} active={activeTab === 'dashboard'} onClick={() => { setActiveTab('dashboard'); if(window.innerWidth < 1024) setSidebarOpen(false); }} />
-          <SidebarItem icon={<Building2 size={22} />} label="楼宇资管" isOpen={true} active={activeTab === 'buildings'} onClick={() => { setActiveTab('buildings'); if(window.innerWidth < 1024) setSidebarOpen(false); }} />
-          <SidebarItem icon={<Users size={22} />} label="客户管理" isOpen={true} active={activeTab === 'contracts'} onClick={() => { setActiveTab('contracts'); if(window.innerWidth < 1024) setSidebarOpen(false); }} />
-          <SidebarItem icon={<PieChart size={22} />} label="财务报表" isOpen={true} active={activeTab === 'finance'} onClick={() => { setActiveTab('finance'); if(window.innerWidth < 1024) setSidebarOpen(false); }} />
-          <SidebarItem icon={<Calculator size={22} />} label="预算管理" isOpen={true} active={activeTab === 'budget'} onClick={() => { setActiveTab('budget'); if(window.innerWidth < 1024) setSidebarOpen(false); }} />
-          <SidebarItem icon={<TableIcon size={22} />} label="初始化数据" isOpen={true} active={activeTab === 'initData'} onClick={() => { setActiveTab('initData'); if(window.innerWidth < 1024) setSidebarOpen(false); }} />
-          <div className="my-2 h-px bg-slate-100 mx-4" />
-          {canAccessSystemSettings && (
-            <SidebarItem icon={<Settings size={22} />} label="系统与备份" isOpen={true} active={activeTab === 'settings'} onClick={() => { setActiveTab('settings'); if(window.innerWidth < 1024) setSidebarOpen(false); }} />
+          {mobileNavLayout ? (
+            <>
+              <SidebarItem icon={<Users size={22} />} label="合同录入" isOpen={true} active={activeTab === 'contracts'} onClick={() => { setActiveTab('contracts'); if(window.innerWidth < 1024) setSidebarOpen(false); }} />
+              <SidebarItem icon={<PieChart size={22} />} label="收款核销" isOpen={true} active={activeTab === 'finance'} onClick={() => { setActiveTab('finance'); if(window.innerWidth < 1024) setSidebarOpen(false); }} />
+            </>
+          ) : (
+            <>
+              <SidebarItem icon={<Building2 size={22} />} label="楼宇资管" isOpen={true} active={activeTab === 'buildings'} onClick={() => { setActiveTab('buildings'); if(window.innerWidth < 1024) setSidebarOpen(false); }} />
+              <SidebarItem icon={<Users size={22} />} label="客户管理" isOpen={true} active={activeTab === 'contracts'} onClick={() => { setActiveTab('contracts'); if(window.innerWidth < 1024) setSidebarOpen(false); }} />
+              <SidebarItem icon={<PieChart size={22} />} label="财务报表" isOpen={true} active={activeTab === 'finance'} onClick={() => { setActiveTab('finance'); if(window.innerWidth < 1024) setSidebarOpen(false); }} />
+              <SidebarItem icon={<Calculator size={22} />} label="预算管理" isOpen={true} active={activeTab === 'budget'} onClick={() => { setActiveTab('budget'); if(window.innerWidth < 1024) setSidebarOpen(false); }} />
+              <SidebarItem icon={<TableIcon size={22} />} label="初始化数据" isOpen={true} active={activeTab === 'initData'} onClick={() => { setActiveTab('initData'); if(window.innerWidth < 1024) setSidebarOpen(false); }} />
+              <div className="my-2 h-px bg-slate-100 mx-4" />
+              {canAccessSystemSettings && (
+                <SidebarItem icon={<Settings size={22} />} label="系统与备份" isOpen={true} active={activeTab === 'settings'} onClick={() => { setActiveTab('settings'); if(window.innerWidth < 1024) setSidebarOpen(false); }} />
+              )}
+            </>
           )}
         </nav>
       </aside>
 
-      <main className="flex-1 transition-all duration-300 w-full overflow-hidden flex flex-col lg:pl-64">
-        <header className="h-14 lg:h-16 bg-white border-b border-slate-200 sticky top-0 z-20 px-4 flex items-center justify-between shadow-sm">
-          <div className="flex items-center gap-3">
-            <button onClick={() => setSidebarOpen(true)} className="p-2 -ml-2 hover:bg-slate-100 rounded-lg text-slate-600 lg:hidden"><Menu size={20} /></button>
-            <h1 className="text-base lg:text-xl font-bold text-slate-800 truncate">{activeTab === 'dashboard' ? '金蝶地产——招商管理系统' : activeTab === 'buildings' ? '楼宇资产管理' : activeTab === 'contracts' ? '客户合同中心' : activeTab === 'finance' ? '财务收款报表' : activeTab === 'budget' ? '招商预算管理' : activeTab === 'initData' ? '初始化数据' : '系统设置'}</h1>
+      <main className="flex-1 transition-all duration-300 w-full min-w-0 flex flex-col lg:pl-64">
+        <header className="min-h-14 lg:min-h-16 bg-white border-b border-slate-200 sticky top-0 z-20 px-3 sm:px-4 py-2 lg:py-0 flex items-center justify-between gap-2 shadow-sm">
+          <div className="flex items-center gap-2 sm:gap-3 min-w-0 flex-1">
+            <button onClick={() => setSidebarOpen(true)} className="p-2 -ml-2 hover:bg-slate-100 rounded-lg text-slate-600 lg:hidden shrink-0"><Menu size={20} /></button>
+            <h1 className="text-sm sm:text-base lg:text-xl font-bold text-slate-800 truncate min-w-0">{activeTab === 'dashboard' ? '金蝶地产——招商管理系统' : activeTab === 'buildings' ? '楼宇资产管理' : activeTab === 'contracts' ? (mobileNavLayout ? '合同录入' : '客户合同中心') : activeTab === 'finance' ? (mobileNavLayout ? '收款核销' : '财务收款报表') : activeTab === 'budget' ? '招商预算管理' : activeTab === 'initData' ? '初始化数据' : '系统设置'}</h1>
           </div>
-          <div className="flex items-center gap-2 flex-shrink-0">
+          <div className="flex items-center gap-1.5 sm:gap-2 flex-shrink-0 flex-wrap justify-end">
              <div className="hidden md:flex items-center gap-2 text-xs bg-slate-50 border border-slate-200 rounded-lg px-2 py-1.5">
                  <User size={14} className="text-slate-400" />
                  <span className="text-slate-600 max-w-[120px] truncate">{authUser.email}</span>
@@ -2877,7 +2948,7 @@ const App: React.FC = () => {
           </div>
         </header>
 
-        <div className="p-3 md:p-6 max-w-7xl mx-auto w-full overflow-hidden">
+        <div className="p-3 md:p-6 max-w-7xl mx-auto w-full min-w-0">
           {activeTab === 'dashboard' && (
             <div className="space-y-4 md:space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
                {isGlobalAdmin() && (
@@ -2892,31 +2963,26 @@ const App: React.FC = () => {
                      </div>
                    </div>
                    <div className="p-4 md:p-6 space-y-4">
-                     <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
-                       <div className="bg-white/10 rounded-xl p-3 border border-white/10">
+                     <div className="grid grid-cols-2 lg:grid-cols-4 gap-2 sm:gap-3">
+                       <div className="bg-white/10 rounded-xl p-3 border border-white/10 min-w-0">
                          <div className="text-xs text-slate-300">年度营收目标</div>
                          <div className="text-xl font-bold mt-1">{formatWan(adminSummaryTotals.annualRevenueTarget, 0)}</div>
                          <div className="text-xs text-slate-400 mt-1">实收 {formatWan(adminSummaryTotals.annualRevenueCollected, 0)}</div>
                        </div>
-                       <div className="bg-white/10 rounded-xl p-3 border border-white/10">
+                       <div className="bg-white/10 rounded-xl p-3 border border-white/10 min-w-0">
                          <div className="text-xs text-slate-300">年度指标完成率</div>
                          <div className="text-xl font-bold mt-1 text-emerald-300">{formatPct(adminSummaryTotals.annualGoalCompletion, 0)}</div>
                          <div className="text-xs text-slate-400 mt-1">按年度营收目标</div>
                        </div>
-                       <div className="bg-white/10 rounded-xl p-3 border border-white/10">
+                       <div className="bg-white/10 rounded-xl p-3 border border-white/10 min-w-0">
                          <div className="text-xs text-slate-300">预算执行完成率</div>
                          <div className="text-xl font-bold mt-1 text-sky-300">{formatPct(adminSummaryTotals.annualBudgetCompletion, 0)}</div>
                          <div className="text-xs text-slate-400 mt-1">预算 {formatWan(adminSummaryTotals.annualBudgetTarget, 0)}</div>
                        </div>
-                       <div className="bg-white/10 rounded-xl p-3 border border-white/10">
+                       <div className="bg-white/10 rounded-xl p-3 border border-white/10 min-w-0">
                          <div className="text-xs text-slate-300">综合出租率</div>
                          <div className="text-xl font-bold mt-1 text-amber-300">{formatPct(adminSummaryTotals.occupancyRate, 0)}</div>
                          <div className="text-xs text-slate-400 mt-1">目标 {formatPct(adminSummaryTotals.annualOccupancyTarget, 0)}</div>
-                       </div>
-                       <div className="bg-white/10 rounded-xl p-3 border border-white/10">
-                         <div className="text-xs text-slate-300">租户 / 可租面积</div>
-                         <div className="text-xl font-bold mt-1">{adminSummaryTotals.tenantCount.toLocaleString()}户</div>
-                         <div className="text-xs text-slate-400 mt-1">{formatArea(adminSummaryTotals.totalArea, 0)}</div>
                        </div>
                      </div>
                      {adminParkMetrics.length > 0 && (
@@ -2929,7 +2995,6 @@ const App: React.FC = () => {
                                <th className="text-right px-3 py-2">实收</th>
                                <th className="text-right px-3 py-2">年度完成</th>
                                <th className="text-right px-3 py-2">出租率</th>
-                               <th className="text-right px-3 py-2">租户</th>
                              </tr>
                            </thead>
                            <tbody className="divide-y divide-white/10">
@@ -2940,7 +3005,6 @@ const App: React.FC = () => {
                                  <td className="px-3 py-2 text-right tabular-nums">{formatWan(item.annualRevenueCollected, 0)}</td>
                                  <td className="px-3 py-2 text-right tabular-nums">{formatPct(item.annualGoalCompletion, 0)}</td>
                                  <td className="px-3 py-2 text-right tabular-nums">{formatPct(item.occupancyRate, 0)}</td>
-                                 <td className="px-3 py-2 text-right tabular-nums">{item.tenantCount}</td>
                                </tr>
                              ))}
                            </tbody>
@@ -2951,12 +3015,12 @@ const App: React.FC = () => {
                  </div>
                )}
                <DashboardAlerts tenants={data.tenants} invoices={data.invoices} />
-               <div className="flex items-center justify-between bg-white p-3 rounded-xl border border-slate-100 shadow-sm">
-                   <div className="flex items-center gap-2">
-                       <Calendar className="text-blue-500" size={18}/>
-                       <span className="font-bold text-slate-700 text-sm md:text-base">统计年度: {selectedYear}</span>
+               <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between bg-white p-3 rounded-xl border border-slate-100 shadow-sm min-w-0">
+                   <div className="flex items-center gap-2 min-w-0">
+                       <Calendar className="text-blue-500 shrink-0" size={18}/>
+                       <span className="font-bold text-slate-700 text-sm md:text-base truncate">统计年度: {selectedYear}</span>
                    </div>
-                   <div className="flex items-center bg-slate-50 rounded-lg p-1 border border-slate-200">
+                   <div className="flex items-center justify-center sm:justify-end bg-slate-50 rounded-lg p-1 border border-slate-200 shrink-0 self-stretch sm:self-auto">
                        <button onClick={() => handleYearChange(selectedYear - 1)} className="p-1.5 hover:bg-white hover:shadow-sm rounded transition-all text-slate-600"><ChevronLeft size={16}/></button>
                        <span className="px-3 font-mono font-medium text-slate-800">{selectedYear}</span>
                        <button onClick={() => handleYearChange(selectedYear + 1)} className="p-1.5 hover:bg-white hover:shadow-sm rounded transition-all text-slate-600"><ChevronRight size={16}/></button>
@@ -2976,7 +3040,7 @@ const App: React.FC = () => {
           )}
 
           {activeTab === 'buildings' && (<div className="animate-in fade-in zoom-in-50 duration-300"><BuildingManager buildings={data.buildings} tenants={data.tenants} onUpdateBuildings={updateBuildings} onCommitBuildingsTenants={commitBuildingsTenants} /></div>)}
-          {activeTab === 'contracts' && (<div className="animate-in fade-in zoom-in-50 duration-300"><ContractManager tenants={data.tenants} buildings={data.buildings} onUpdateTenants={updateTenants} dashboardData={data} payments={data.payments} onUpdatePayments={updatePayments} /></div>)}
+          {activeTab === 'contracts' && (<div className="animate-in fade-in zoom-in-50 duration-300"><ContractManager tenants={data.tenants} buildings={data.buildings} onUpdateTenants={updateTenants} dashboardData={data} payments={data.payments} onUpdatePayments={updatePayments} mobileEntryMode={mobileNavLayout} /></div>)}
           {activeTab === 'finance' && (
               <div className="animate-in fade-in zoom-in-50 duration-300">
                   <FinanceManager
@@ -2990,7 +3054,13 @@ const App: React.FC = () => {
                       onBatchUpdate={handleBatchUpdate}
                       getBillingDetails={getBillingDetailsForPeriod}
                       onDeferPayment={handleDeferPayment}
+                      onRevokeDeferBillingNote={handleRevokeDeferBillingNote}
+                      onResetReceivableApplications={handleResetReceivableApplications}
                       onUpdateRentRemark={updateRentCollectionRemark}
+                      buildings={data.buildings}
+                      budgetAssumptions={data.budgetAssumptions}
+                      budgetAdjustments={data.budgetAdjustments}
+                      mobileReceivableOnly={mobileNavLayout}
                   />
               </div>
           )}
@@ -3013,6 +3083,11 @@ const App: React.FC = () => {
                             </button>
                         </div>
                     </div>
+                    <TenantBudgetNameLinkTool
+                        tenants={data.tenants}
+                        billingPeriodNotes={data.billingPeriodNotes}
+                        onBatchUpdate={handleBatchUpdate}
+                    />
                 </div>
             </div>
           )}

@@ -17,7 +17,7 @@ NC='\033[0m' # No Color
 # 服务配置
 FRONTEND_PORT=1001
 BACKEND_PORT=1002
-AI_PROXY_PORT=3010
+GATEWAY_PORT=8787
 
 # 实际 Vite 运行端口（与 vite.config.ts 中 VITE_DEV_PORT / 默认 1001 一致）
 VITE_PORT=1001
@@ -32,7 +32,7 @@ else
   DETECT_IP="$(hostname -I 2>/dev/null | awk '{print $1}' || echo "127.0.0.1")"
 fi
 
-# 加载本地环境变量（优先 .env.local，其次 .env；用于 QWEN_API_KEY 等）
+# 加载本地环境变量（优先 .env.local，其次 .env；供 Vite / 其它工具使用）
 if [ -f "${SCRIPT_DIR}/.env.local" ]; then
   set -a
   source "${SCRIPT_DIR}/.env.local"
@@ -92,24 +92,24 @@ stop_all_services() {
         echo "$frontend_pids" | xargs kill -9 2>/dev/null
     fi
     
-    # 停止 AI 代理服务
-    local ai_proxy_pids=$(pgrep -f "ai-proxy.mjs" | xargs)
-    if [ -n "$ai_proxy_pids" ]; then
-        echo -e "${YELLOW}  停止 AI 代理服务...${NC}"
-        echo "$ai_proxy_pids" | xargs kill -9 2>/dev/null
-    fi
-    
     # 停止 PocketBase
     local pb_pids=$(pgrep -f "pocketbase serve" | xargs)
     if [ -n "$pb_pids" ]; then
         echo -e "${YELLOW}  停止 PocketBase 服务...${NC}"
         echo "$pb_pids" | xargs kill -9 2>/dev/null
     fi
-    
+
+    # 停止集成网关
+    local gw_pids=$(pgrep -f "integration-gateway" | xargs)
+    if [ -n "$gw_pids" ]; then
+        echo -e "${YELLOW}  停止集成网关...${NC}"
+        echo "$gw_pids" | xargs kill -9 2>/dev/null
+    fi
+
     # 清理端口
     cleanup_port $VITE_PORT "前端"
     cleanup_port $BACKEND_PORT "后端"
-    cleanup_port $AI_PROXY_PORT "AI代理"
+    cleanup_port $GATEWAY_PORT "集成网关"
     
     echo -e "${GREEN}✓ 所有服务已停止${NC}"
     exit 0
@@ -121,7 +121,6 @@ trap stop_all_services SIGINT SIGTERM
 echo -e "${BLUE}▶ 步骤 1/3: 清理端口残留...${NC}"
 echo "────────────────────────────────────────"
 cleanup_port $BACKEND_PORT "PocketBase后端"
-cleanup_port $AI_PROXY_PORT "AI代理服务"
 cleanup_port $VITE_PORT "前端开发服务器"
 echo ""
 
@@ -145,23 +144,24 @@ echo -e "${GREEN}✓ PocketBase 已启动 (PID: ${PB_PID})${NC}"
 echo -e "${CYAN}  管理后台: http://${DETECT_IP}:${BACKEND_PORT}/_/${NC}"
 echo ""
 
-# 启动 AI 代理服务
-echo -e "${YELLOW}▶ 启动 AI 代理服务 (端口 ${AI_PROXY_PORT})...${NC}"
+echo -e "${BLUE}▶ 步骤 3/4: 启动集成网关...${NC}"
+echo "────────────────────────────────────────"
 cd "${SCRIPT_DIR}"
-nohup node "${SCRIPT_DIR}/ai-proxy.mjs" > "${SCRIPT_DIR}/ai-proxy.log" 2>&1 &
-AI_PID=$!
+echo -e "${YELLOW}▶ 启动 Integration Gateway (端口 ${GATEWAY_PORT})...${NC}"
+nohup npx tsx scripts/integration-gateway.ts > "${SCRIPT_DIR}/gateway.log" 2>&1 &
+GATEWAY_PID=$!
 sleep 2
 
-# 检查 AI 代理是否成功启动
-if ! lsof -ti :${AI_PROXY_PORT} > /dev/null 2>&1; then
-    echo -e "${RED}✗ AI 代理服务启动失败，请检查日志: ${SCRIPT_DIR}/ai-proxy.log${NC}"
-    kill ${PB_PID} 2>/dev/null
-    exit 1
+if ! lsof -ti :${GATEWAY_PORT} > /dev/null 2>&1; then
+    echo -e "${YELLOW}⚠ 集成网关启动可能失败，请检查日志: ${SCRIPT_DIR}/gateway.log${NC}"
+    echo -e "${YELLOW}  前端仍可正常使用，但 OpenClaw 计算 API 不可用${NC}"
+else
+    echo -e "${GREEN}✓ 集成网关已启动 (PID: ${GATEWAY_PID})${NC}"
+    echo -e "${CYAN}  OpenClaw API: http://${DETECT_IP}:${GATEWAY_PORT}/api/integration/${NC}"
 fi
-echo -e "${GREEN}✓ AI 代理服务已启动 (PID: ${AI_PID})${NC}"
 echo ""
 
-echo -e "${BLUE}▶ 步骤 3/3: 启动前端服务...${NC}"
+echo -e "${BLUE}▶ 步骤 4/4: 启动前端服务...${NC}"
 echo "────────────────────────────────────────"
 cd "${SCRIPT_DIR}"
 echo -e "${YELLOW}▶ 启动 Vite 开发服务器 (端口 ${FRONTEND_PORT})...${NC}"
@@ -173,7 +173,6 @@ sleep 3
 if ! lsof -ti :${VITE_PORT} > /dev/null 2>&1; then
     echo -e "${RED}✗ 前端服务启动失败，请检查日志: ${SCRIPT_DIR}/frontend.log${NC}"
     kill ${PB_PID} 2>/dev/null
-    kill ${AI_PID} 2>/dev/null
     exit 1
 fi
 echo -e "${GREEN}✓ 前端服务已启动 (PID: ${FRONTEND_PID})${NC}"
@@ -185,6 +184,7 @@ echo -e "${GREEN}║                    所有服务启动成功！             
 echo -e "${GREEN}╠══════════════════════════════════════════════════════════════╣${NC}"
 echo -e "${GREEN}║  🌐 前端页面: http://${DETECT_IP}:${VITE_PORT}                       ║${NC}"
 echo -e "${GREEN}║  ⚙️  后端管理: http://${DETECT_IP}:${BACKEND_PORT}/_/                    ║${NC}"
+echo -e "${GREEN}║  🔗 集成网关: http://${DETECT_IP}:${GATEWAY_PORT}                       ║${NC}"
 echo -e "${GREEN}╠══════════════════════════════════════════════════════════════╣${NC}"
 echo -e "${GREEN}║  提示: 按 Ctrl+C 可一键停止所有服务                          ║${NC}"
 echo -e "${GREEN}╚══════════════════════════════════════════════════════════════╝${NC}"

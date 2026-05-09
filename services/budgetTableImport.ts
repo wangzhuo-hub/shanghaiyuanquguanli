@@ -19,7 +19,89 @@
  * 注意：本服务不直接修改业务状态，只负责 **解析 + 合并提示**；最终写库由调用方决定。
  */
 import type ExcelJS from 'exceljs';
-import type { MonthlyInitData } from '../types';
+import type { Building, MonthlyInitData } from '../types';
+
+/** 与 `importedBudgetTableKey` 一致的前缀，供列举已导入年度等使用 */
+export const IMPORTED_BUDGET_TABLE_PREFIX = '__budget_table_';
+
+/** 与预算表 Excel、合同侧展示对齐：去空白、统一小写，用于「客户+房号+楼宇」匹配键 */
+export const normalizeBudgetRowKeyPart = (value: string | undefined | null): string =>
+    String(value || '')
+        .trim()
+        .replace(/\s+/g, '')
+        .toLowerCase();
+
+/** 导入预算表一行与合同行共用的匹配键（客户名|房号|楼宇） */
+export const importedBudgetRowKey = (customer: string, unit: string, building: string): string =>
+    `${normalizeBudgetRowKeyPart(customer)}|${normalizeBudgetRowKeyPart(unit)}|${normalizeBudgetRowKeyPart(building)}`;
+
+/** 由当前合同客户与楼宇资料生成与导入表对齐的匹配键 */
+export const tenantImportedBudgetRowKey = (
+    tenant: { name: string; buildingId: string; unitIds: string[] },
+    buildingById: Map<string, Building>
+): string => {
+    const building = buildingById.get(tenant.buildingId);
+    const unitNames = tenant.unitIds.map((uid) => building?.units.find((u) => u.id === uid)?.name || uid).join(', ');
+    return importedBudgetRowKey(tenant.name, unitNames, building?.name || '未知楼宇');
+};
+
+/** 预算表「导入行」与合同 tenantId 的手动关联（解决导入后客户改名导致键对不上的问题） */
+export interface BudgetCustomerNameLink {
+    /** `importedBudgetRowKey(客户, 房号, 楼宇)`，与导入快照中该行一致 */
+    importKey: string;
+    tenantId: string;
+}
+
+const BUDGET_CUSTOMER_LINKS_PREFIX = '__budget_customer_links_';
+
+export const budgetCustomerNameLinksKey = (year: number): string => `${BUDGET_CUSTOMER_LINKS_PREFIX}${year}__`;
+
+export function listImportedBudgetYears(notes: Record<string, string> | undefined): number[] {
+    if (!notes) return [];
+    const prefix = IMPORTED_BUDGET_TABLE_PREFIX;
+    const years: number[] = [];
+    for (const k of Object.keys(notes)) {
+        if (!k.startsWith(prefix) || !k.endsWith('__')) continue;
+        const inner = k.slice(prefix.length, -2);
+        const y = Number(inner);
+        if (Number.isFinite(y) && y >= 2000 && y <= 2100) years.push(y);
+    }
+    return Array.from(new Set(years)).sort((a, b) => a - b);
+}
+
+export function readBudgetCustomerNameLinks(
+    notes: Record<string, string> | undefined,
+    year: number
+): BudgetCustomerNameLink[] {
+    if (!notes) return [];
+    const raw = notes[budgetCustomerNameLinksKey(year)];
+    if (!raw || typeof raw !== 'string') return [];
+    try {
+        const parsed = JSON.parse(raw) as { links?: unknown };
+        const arr = Array.isArray(parsed?.links) ? parsed.links : [];
+        const out: BudgetCustomerNameLink[] = [];
+        for (const item of arr) {
+            if (!item || typeof item !== 'object') continue;
+            const importKey = String((item as any).importKey || '').trim();
+            const tenantId = String((item as any).tenantId || '').trim();
+            if (importKey && tenantId) out.push({ importKey, tenantId });
+        }
+        return out;
+    } catch {
+        return [];
+    }
+}
+
+export function writeBudgetCustomerNameLinks(
+    notes: Record<string, string> | undefined,
+    year: number,
+    links: BudgetCustomerNameLink[]
+): Record<string, string> {
+    return {
+        ...(notes || {}),
+        [budgetCustomerNameLinksKey(year)]: JSON.stringify({ links }),
+    };
+}
 
 export interface BudgetTableRow {
     customer: string;
@@ -243,8 +325,6 @@ export async function parseBudgetTableExcel(
  *  这样导入的整张预算表会随 saveIncrementalToCloud 自动落库到 pb_billing_period_notes，
  *  跨设备/重新登录都可见，BudgetManager 顶部也能感知并展示「已导入 / 清除」状态条。
  */
-export const IMPORTED_BUDGET_TABLE_PREFIX = '__budget_table_';
-
 export interface BudgetTableSnapshot {
     /** 数据导入时间，便于审计 */
     importedAt: string;
@@ -265,6 +345,15 @@ export interface RestoredBudgetTableSnapshot {
 
 export const importedBudgetTableKey = (year: number): string =>
     `${IMPORTED_BUDGET_TABLE_PREFIX}${year}__`;
+
+/** 在已导入快照中解析某 importKey 对应的一行（不存在则 undefined） */
+export function findImportedRowByKey(
+    snapshot: BudgetTableSnapshot | null | undefined,
+    importKey: string
+): BudgetTableRow | undefined {
+    if (!snapshot?.rows?.length) return undefined;
+    return snapshot.rows.find((r) => importedBudgetRowKey(r.customer, r.unit, r.building) === importKey);
+}
 
 const normalizeBackupBudgetMonths = (row: any): number[] => {
     const explicitMonths = Array.isArray(row?.months) ? row.months : null;
@@ -375,9 +464,11 @@ export function clearImportedBudgetTable(
 ): Record<string, string> {
     if (!notes) return {};
     const key = importedBudgetTableKey(year);
-    if (!(key in notes)) return notes;
+    const linksKey = budgetCustomerNameLinksKey(year);
+    if (!(key in notes) && !(linksKey in notes)) return notes;
     const next = { ...notes };
     delete next[key];
+    delete next[linksKey];
     return next;
 }
 

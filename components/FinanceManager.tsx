@@ -1,20 +1,45 @@
 
 import React, { useState, useMemo, useRef, useEffect } from 'react';
-import { PaymentRecord, Tenant, ContractStatus, DepositStatus, BillingDetail, InvoiceRecord, ManualReceivableLine } from '../types';
-import { BadgeCheck, Plus, ArrowRightLeft, Check, X, AlertCircle, Banknote, Wallet, TrendingUp, ArrowDownRight, CreditCard, Trash2, Edit2, Download, Upload, FileSpreadsheet, Calendar, CheckSquare, Square, ListChecks, Clock, Receipt, RefreshCcw, RotateCcw, ChevronDown, ChevronUp, ChevronLeft, ChevronRight, FileText, CheckCircle } from 'lucide-react';
+import {
+    PaymentRecord,
+    Tenant,
+    ContractStatus,
+    DepositStatus,
+    BillingDetail,
+    InvoiceRecord,
+    SpecialBusinessReceivable,
+    Building,
+    BudgetAssumption,
+    BudgetAdjustment,
+} from '../types';
+import { BadgeCheck, Plus, ArrowRightLeft, Check, X, AlertCircle, Banknote, Wallet, TrendingUp, ArrowDownRight, CreditCard, Trash2, Edit2, Download, Upload, FileSpreadsheet, Calendar, ListChecks, Clock, Receipt, RotateCcw, ChevronDown, ChevronUp, ChevronLeft, ChevronRight, FileText, Sparkles, Save, Undo2 } from 'lucide-react';
 import {
     getRentCollectionRemark,
     deferReceivableShellClass,
     receivableBudgetDisplay,
     classifyReceivableRow,
-    MANUAL_RECEIVABLE_LINES_NOTE_KEY,
     parseManualReceivableLinesFromNotes,
     sumBudgetReceivableForFinance,
     sumSystemBudgetReceivable,
     sumManualArReceivable,
     isManualArTenantId,
+    SPECIAL_BUSINESS_RECEIVABLES_NOTE_KEY,
+    parseSpecialBusinessReceivablesFromNotes,
+    upsertSpecialBusinessReceivable,
+    removeSpecialBusinessReceivable,
+    stringifySpecialBusinessReceivables,
+    isSpecialBusinessArTenantId,
+    realTenantIdFromSpecialBusinessAr,
+    countReceivableTabResetImpact,
+    isFullDeferOutSourceRow,
+    resolveRentWriteOffPaymentPeriod,
+    realTenantIdFromDeferInDisplayTenantId,
+    isDeferInDisplayTenantId,
+    deferBillingNoteKeyFromDeferInDisplayTenantId,
+    paymentTenantMatchesBillingTenant,
 } from '../services/receivableListHelpers';
 import { formatCurrency, roundMoney2 } from '../services/numberFormat';
+import { ContractSummaryModal, type ContractSummaryContent, resolveTenantAssetLabels } from './ContractSummaryModal';
 
 /** 核销展示：待核销 → 已缓缴（原账期调出）→ 已核销和收款 */
 const WRITEOFF_LABELS = {
@@ -22,13 +47,6 @@ const WRITEOFF_LABELS = {
   settled: '已核销和收款',
   deferred: '已缓缴',
 } as const;
-
-function writeOffBadgeClass(label: string) {
-  if (label === WRITEOFF_LABELS.pending) return 'bg-amber-100 text-amber-800';
-  if (label === WRITEOFF_LABELS.settled) return 'bg-emerald-100 text-emerald-800';
-  if (label === WRITEOFF_LABELS.deferred) return 'bg-indigo-100 text-indigo-900';
-  return 'bg-slate-100 text-slate-600';
-}
 
 function nextReceivableMonthLabel(yyyyMm: string): string {
   const parts = yyyyMm.split('-');
@@ -74,7 +92,17 @@ interface FinanceManagerProps {
   }) => void;
   getBillingDetails: (year: number, month: number) => BillingDetail[];
   onDeferPayment: (tenantId: string, fromYear: number, fromMonth: number, toYear: number, toMonth: number) => void;
+  /** 撤销单条缓缴备注（billingPeriodNotes 键），调入行删除、金额回原账期 */
+  onRevokeDeferBillingNote?: (noteKey: string) => void;
+  /** 一键撤回全部缓缴 + 应收核销自动生成的收款流水（不误删收款明细手工记账） */
+  onResetReceivableApplications?: () => void;
   onUpdateRentRemark?: (tenantId: string, periodYYYYMM: string, remark: string) => void;
+  /** 用于合同概要弹窗：楼宇名 / 房号解析及与预算一致的推算应收 */
+  buildings?: Building[];
+  budgetAssumptions?: BudgetAssumption[];
+  budgetAdjustments?: BudgetAdjustment[];
+  /** 手机窄屏：仅保留「应收核销」视图，隐藏收款明细与特殊业态录入入口 */
+  mobileReceivableOnly?: boolean;
 }
 
 // Mobile Payment Card
@@ -111,35 +139,62 @@ const ReceivableCard: React.FC<{
     remaining: number, 
     isPaid: boolean, 
     paidAmount: number,
-    writeOffLabel: string,
-    invoiceStatus: 'Pending' | 'Invoiced',
     remark: string,
     onRemarkChange: (text: string) => void,
     remarkDisabled?: boolean,
     onConfirm: () => void,
     onDefer?: () => void,
     onRevoke: () => void,
-    onToggleInvoice: () => void,
-}> = ({ item, remaining, isPaid, paidAmount, writeOffLabel, invoiceStatus, remark, onRemarkChange, remarkDisabled, onConfirm, onDefer, onRevoke, onToggleInvoice }) => {
+    /** 缓缴调入行：撤销该笔缓缴 */
+    onRevokeDefer?: () => void,
+    onOpenContractSummary?: () => void,
+    /** 全额缓出原账期：不展示收款/缓缴，仅提示至目标账期核销 */
+    collectBlockedHint?: string | null,
+}> = ({ item, remaining, isPaid, paidAmount, remark, onRemarkChange, remarkDisabled, onConfirm, onDefer, onRevoke, onRevokeDefer, onOpenContractSummary, collectBlockedHint }) => {
     const deferShell = deferReceivableShellClass(item);
     const hasDeferOut = !!(item.deferredToPeriod && (item.deferredAmount ?? 0) > 0);
     const hasDeferIn = !!(item.deferredInAmount && item.deferredInAmount > 0);
     return (
     <div className={`bg-white p-4 border-b border-slate-100 last:border-0 ${isPaid ? 'opacity-60' : ''} ${deferShell}`}>
-        <div className="flex justify-between items-start mb-2">
+        <div className="mb-2">
             <div>
-                <div className="font-medium text-slate-800">{item.tenantName}</div>
+                <div
+                    role={onOpenContractSummary ? 'button' : undefined}
+                    tabIndex={onOpenContractSummary ? 0 : undefined}
+                    className={`font-medium text-slate-800 ${onOpenContractSummary ? 'cursor-pointer hover:text-blue-700 underline-offset-2 hover:underline decoration-blue-400/70 text-left' : ''}`}
+                    title={onOpenContractSummary ? '点击查看合同概要' : undefined}
+                    onClick={
+                        onOpenContractSummary
+                            ? (e) => {
+                                  e.stopPropagation();
+                                  onOpenContractSummary();
+                              }
+                            : undefined
+                    }
+                    onKeyDown={
+                        onOpenContractSummary
+                            ? (e) => {
+                                  if (e.key === 'Enter' || e.key === ' ') {
+                                      e.preventDefault();
+                                      onOpenContractSummary();
+                                  }
+                              }
+                            : undefined
+                    }
+                >
+                    {item.tenantName}
+                </div>
                 {hasDeferOut && (
                     <div className="mt-1 text-[10px] font-semibold text-orange-800 leading-snug">缓出 → {item.deferredToPeriod}（{formatCurrency(item.deferredAmount ?? 0)}）</div>
                 )}
                 {hasDeferIn && (
                     <div className="mt-1 text-[10px] font-semibold text-sky-800 leading-snug">缓入 ← {item.deferredInFromSummary}（{formatCurrency(item.deferredInAmount ?? 0)}）</div>
                 )}
-            </div>
-            <div className="flex gap-2">
-                <span className={`px-2 py-0.5 rounded text-xs font-medium ${writeOffBadgeClass(writeOffLabel)}`}>
-                    {writeOffLabel}
-                </span>
+                {item.budgetAlignmentNote && (
+                    <div className="mt-1.5 text-[10px] text-rose-800 leading-snug bg-rose-50/90 border border-rose-100 rounded px-1.5 py-1">
+                        {item.budgetAlignmentNote}
+                    </div>
+                )}
             </div>
         </div>
         <div className="grid grid-cols-3 gap-2 text-xs text-center bg-slate-50 p-2 rounded mb-3">
@@ -169,28 +224,45 @@ const ReceivableCard: React.FC<{
                 disabled={remarkDisabled}
             />
         </div>
-        <div className="flex justify-between items-center">
-            <button 
-                onClick={(e) => { e.stopPropagation(); onToggleInvoice(); }}
-                className={`px-3 py-1.5 rounded text-xs font-medium border transition-colors flex items-center gap-1 ${invoiceStatus === 'Invoiced' ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-slate-500 border-slate-200'}`}
-            >
-                {invoiceStatus === 'Invoiced' ? <CheckSquare size={12}/> : <Square size={12}/>}
-                {invoiceStatus === 'Invoiced' ? '已开票' : '待开票'}
-            </button>
-            <div className="flex justify-end gap-2">
-                {!isPaid && remaining > 0 ? (
-                    <>
-                        {onDefer != null && (
-                            <button type="button" onClick={onDefer} className="px-3 py-1.5 border border-slate-200 text-slate-600 rounded text-xs">缓缴</button>
-                        )}
+        <div className="flex justify-end items-center gap-2">
+            {collectBlockedHint && !isPaid ? (
+                <p className="text-[11px] text-slate-500 text-right leading-snug max-w-[220px]">{collectBlockedHint}</p>
+            ) : !isPaid && (remaining > 0 || onRevokeDefer != null) ? (
+                <>
+                    {onRevokeDefer != null && (
+                        <button
+                            type="button"
+                            onClick={onRevokeDefer}
+                            className="px-3 py-1.5 border border-amber-200 text-amber-800 bg-amber-50/80 rounded text-xs font-medium"
+                        >
+                            缓缴撤销
+                        </button>
+                    )}
+                    {onDefer != null && (
+                        <button type="button" onClick={onDefer} className="px-3 py-1.5 border border-slate-200 text-slate-600 rounded text-xs">缓缴</button>
+                    )}
+                    {remaining > 0 ? (
                         <button type="button" onClick={onConfirm} className="px-3 py-1.5 bg-blue-600 text-white rounded text-xs">收款</button>
-                    </>
-                ) : isPaid ? (
-                    <button onClick={onRevoke} className="px-3 py-1.5 border border-rose-200 text-rose-600 rounded text-xs">撤销</button>
-                ) : (
-                    <span className="text-xs text-slate-400">—</span>
-                )}
-            </div>
+                    ) : null}
+                </>
+            ) : isPaid ? (
+                <div className="flex flex-wrap justify-end gap-2">
+                    {onRevokeDefer != null && (
+                        <button
+                            type="button"
+                            onClick={onRevokeDefer}
+                            className="px-3 py-1.5 border border-amber-200 text-amber-800 bg-amber-50/80 rounded text-xs font-medium"
+                        >
+                            缓缴撤销
+                        </button>
+                    )}
+                    <button type="button" onClick={onRevoke} className="px-3 py-1.5 border border-rose-200 text-rose-600 rounded text-xs">
+                        撤销
+                    </button>
+                </div>
+            ) : (
+                <span className="text-xs text-slate-400">—</span>
+            )}
         </div>
     </div>
     );
@@ -207,11 +279,22 @@ export const FinanceManager: React.FC<FinanceManagerProps> = ({
     onBatchUpdate,
     getBillingDetails,
     onDeferPayment,
+    onRevokeDeferBillingNote,
+    onResetReceivableApplications,
     onUpdateRentRemark,
+    buildings,
+    budgetAssumptions = [],
+    budgetAdjustments = [],
+    mobileReceivableOnly = false,
 }) => {
   const [showForm, setShowForm] = useState(false);
   const [showDepositTransfer, setShowDepositTransfer] = useState(false);
-  const [activeView, setActiveView] = useState<'Payments' | 'Receivables'>('Receivables'); // Default to Receivables
+  const [activeView, setActiveView] = useState<'Payments' | 'Receivables' | 'SpecialBusiness'>('Receivables'); // Default to Receivables
+
+  useEffect(() => {
+    if (!mobileReceivableOnly) return;
+    setActiveView('Receivables');
+  }, [mobileReceivableOnly]);
   
   const currentYear = new Date().getFullYear();
   const [selectedYear, setSelectedYear] = useState<number>(currentYear);
@@ -231,18 +314,39 @@ export const FinanceManager: React.FC<FinanceManagerProps> = ({
   const [receivableBucketFilter, setReceivableBucketFilter] = useState<'all' | 'pending' | 'deferred' | 'settled'>('all');
   const [paymentKeyword, setPaymentKeyword] = useState('');
   const [paymentTypeFilter, setPaymentTypeFilter] = useState<'all' | PaymentRecord['type']>('all');
-  const [manualLineDraft, setManualLineDraft] = useState<{ title: string; customerLabel: string; amount: string }>({
-      title: '',
-      customerLabel: '',
-      amount: '',
-  });
   const [periodPickerYear, setPeriodPickerYear] = useState<number>(new Date().getFullYear());
   const desktopViewportRef = useRef<HTMLDivElement | null>(null);
   const desktopContentRef = useRef<HTMLDivElement | null>(null);
   const [desktopScale, setDesktopScale] = useState(1);
   const [desktopScaledHeight, setDesktopScaledHeight] = useState<number | null>(null);
+  const [contractSummaryContent, setContractSummaryContent] = useState<ContractSummaryContent | null>(null);
 
-  const getInvoiceId = (tenantId: string, month: string) => `inv_${tenantId}_${month}-01`;
+  const receivableYear = useMemo(() => {
+      const y = parseInt(String(receivableMonth).slice(0, 4), 10);
+      return Number.isFinite(y) ? y : currentYear;
+  }, [receivableMonth, currentYear]);
+
+  const openReceivableContractSummary = (item: BillingDetail) => {
+      if (isManualArTenantId(item.tenantId)) {
+          alert('手工应收行未关联正式合同，无法展示合同概要。');
+          return;
+      }
+      const realId =
+          realTenantIdFromDeferInDisplayTenantId(item.tenantId) ?? realTenantIdFromSpecialBusinessAr(item.tenantId);
+      const tenantLive = tenants.find((x) => x.id === realId);
+      const tenantForBills = item.billingTermsTenant ?? tenantLive;
+      if (!tenantForBills) {
+          setContractSummaryContent({ kind: 'missing', hint: '未找到该客户的合同档案，无法展示明细。' });
+          return;
+      }
+      const { buildingLabel, unitNamesLabel } = resolveTenantAssetLabels(tenantLive ?? tenantForBills, buildings);
+      setContractSummaryContent({
+          kind: 'tenant',
+          tenant: tenantForBills,
+          buildingLabel,
+          unitNamesLabel,
+      });
+  };
 
   // --- Statistics Calculation ---
   // 1. Annual Cumulative Rent (Actual Received in selected Year)
@@ -257,15 +361,173 @@ export const FinanceManager: React.FC<FinanceManagerProps> = ({
       [billingPeriodNotes]
   );
 
-  const persistManualLines = (lines: ManualReceivableLine[]) => {
-      if (!onBatchUpdate) return;
+  // ---------- 特殊业态收入录入 ----------
+  const specialBusinessTenants = useMemo(
+      () =>
+          tenants.filter(
+              (t) =>
+                  !!t.isSpecialBusiness &&
+                  t.status !== ContractStatus.Terminated &&
+                  t.status !== ContractStatus.Expired
+          ),
+      [tenants]
+  );
+
+  const specialBusinessReceivablesAll = useMemo(
+      () => parseSpecialBusinessReceivablesFromNotes(billingPeriodNotes),
+      [billingPeriodNotes]
+  );
+
+  /** 当前账期已存的特殊业态应收（按 tenantId 索引） */
+  const specialBusinessSavedByTenantInMonth = useMemo(() => {
+      const map = new Map<string, SpecialBusinessReceivable>();
+      for (const r of specialBusinessReceivablesAll) {
+          if (r.periodYYYYMM === receivableMonth) map.set(r.tenantId, r);
+      }
+      return map;
+  }, [specialBusinessReceivablesAll, receivableMonth]);
+
+  const [specialBizAmountDraft, setSpecialBizAmountDraft] = useState<Record<string, string>>({});
+  const [specialBizRemarkDraft, setSpecialBizRemarkDraft] = useState<Record<string, string>>({});
+  const [specialBizKeyword, setSpecialBizKeyword] = useState('');
+
+  // 切换账期 / 数据变化时，把已保存值同步到草稿（避免不同账期之间错乱）
+  useEffect(() => {
+      const amt: Record<string, string> = {};
+      const rem: Record<string, string> = {};
+      for (const t of specialBusinessTenants) {
+          const saved = specialBusinessSavedByTenantInMonth.get(t.id);
+          amt[t.id] = saved && saved.amount > 0 ? String(saved.amount) : '';
+          rem[t.id] = saved?.remark || '';
+      }
+      setSpecialBizAmountDraft(amt);
+      setSpecialBizRemarkDraft(rem);
+  }, [receivableMonth, specialBusinessTenants, specialBusinessSavedByTenantInMonth]);
+
+  const persistSpecialBusinessReceivables = (next: SpecialBusinessReceivable[]) => {
+      if (!onBatchUpdate) {
+          alert('当前环境不支持批量保存，已忽略录入');
+          return;
+      }
       onBatchUpdate({
           billingPeriodNotes: {
               ...billingPeriodNotes,
-              [MANUAL_RECEIVABLE_LINES_NOTE_KEY]: JSON.stringify(lines),
+              [SPECIAL_BUSINESS_RECEIVABLES_NOTE_KEY]: stringifySpecialBusinessReceivables(next),
           },
       });
   };
+
+  const saveSpecialBusinessRow = (tenantId: string) => {
+      const amountRaw = String(specialBizAmountDraft[tenantId] ?? '').replace(/,/g, '').trim();
+      const amount = roundMoney2(Number(amountRaw));
+      if (!Number.isFinite(amount) || amount < 0) {
+          alert('请输入有效金额');
+          return;
+      }
+      const remark = String(specialBizRemarkDraft[tenantId] ?? '').trim();
+      let next: SpecialBusinessReceivable[];
+      if (amount <= 0.005) {
+          next = removeSpecialBusinessReceivable(specialBusinessReceivablesAll, tenantId, receivableMonth);
+      } else {
+          next = upsertSpecialBusinessReceivable(specialBusinessReceivablesAll, {
+              tenantId,
+              periodYYYYMM: receivableMonth,
+              amount,
+              remark: remark || undefined,
+              updatedAt: new Date().toISOString(),
+          });
+      }
+      persistSpecialBusinessReceivables(next);
+  };
+
+  const saveAllSpecialBusinessRows = () => {
+      let next = specialBusinessReceivablesAll;
+      let saved = 0;
+      let cleared = 0;
+      let invalid = 0;
+      for (const t of specialBusinessTenants) {
+          const raw = String(specialBizAmountDraft[t.id] ?? '').replace(/,/g, '').trim();
+          if (raw === '') {
+              // 空白：维持原值（不视为清除）
+              continue;
+          }
+          const amount = roundMoney2(Number(raw));
+          if (!Number.isFinite(amount) || amount < 0) {
+              invalid += 1;
+              continue;
+          }
+          const remark = String(specialBizRemarkDraft[t.id] ?? '').trim();
+          if (amount <= 0.005) {
+              next = removeSpecialBusinessReceivable(next, t.id, receivableMonth);
+              cleared += 1;
+          } else {
+              next = upsertSpecialBusinessReceivable(next, {
+                  tenantId: t.id,
+                  periodYYYYMM: receivableMonth,
+                  amount,
+                  remark: remark || undefined,
+                  updatedAt: new Date().toISOString(),
+              });
+              saved += 1;
+          }
+      }
+      persistSpecialBusinessReceivables(next);
+      const tail: string[] = [];
+      if (saved) tail.push(`保存 ${saved} 条`);
+      if (cleared) tail.push(`清除 ${cleared} 条`);
+      if (invalid) tail.push(`忽略无效 ${invalid} 条`);
+      if (tail.length === 0) alert('没有可保存的修改');
+      else alert(`本月（${receivableMonth}）特殊业态应收录入：${tail.join('，')}`);
+  };
+
+  const filteredSpecialBusinessTenants = useMemo(() => {
+      const kw = specialBizKeyword.trim().toLowerCase();
+      if (!kw) return specialBusinessTenants;
+      return specialBusinessTenants.filter((t) => (t.name || '').toLowerCase().includes(kw));
+  }, [specialBusinessTenants, specialBizKeyword]);
+
+  const specialBusinessMonthTotal = useMemo(() => {
+      let total = 0;
+      for (const r of specialBusinessReceivablesAll) {
+          if (r.periodYYYYMM === receivableMonth) total += r.amount;
+      }
+      return roundMoney2(total);
+  }, [specialBusinessReceivablesAll, receivableMonth]);
+
+  /**
+   * 把指定客户标记 / 取消标记为「特殊业态」。
+   * - 立即更新 tenants（合同中心同步生效）；
+   * - 取消标注时不会动已录入的应收数据，方便撤回；
+   * - 标注后会立刻清空 batch 选择避免选中已不该出现的行。
+   */
+  const toggleTenantSpecialBusiness = (tenantId: string, next: boolean) => {
+      const target = tenants.find((t) => t.id === tenantId);
+      if (!target) {
+          alert('未找到该客户合同（可能为手工应收行，请使用清除按钮）');
+          return;
+      }
+      if (next === !!target.isSpecialBusiness) return;
+      const updated = tenants.map((t) => (t.id === tenantId ? { ...t, isSpecialBusiness: next } : t));
+      onUpdateTenants(updated);
+      setBatchSelectedIds(new Set());
+  };
+
+  /**
+   * 智能识别「公区配套」类候选客户：名字含停车/公区/物业/配套/广告/充电桩等关键词，
+   * 且未被标注为特殊业态。这些客户**通常**也是按经营/分成结算，
+   * 用户在标特殊业态时往往会漏标其中一两条（如示例中的「停车场」与「停车收费」）。
+   */
+  const SPECIAL_BUSINESS_NAME_HINT_RE = /(停车|公区|公共区域|配套|广告|展位|展柜|充电桩|租赁费|物业管理|物业费|代收|场地费|场租|经营分成|分成)/;
+  const specialBusinessCandidatesUnmarked = useMemo(() => {
+      const list: Tenant[] = [];
+      for (const t of tenants) {
+          if (t.isSpecialBusiness) continue;
+          if (t.status === ContractStatus.Terminated || t.status === ContractStatus.Expired) continue;
+          if (!SPECIAL_BUSINESS_NAME_HINT_RE.test(t.name || '')) continue;
+          list.push(t);
+      }
+      return list;
+  }, [tenants]);
 
   // 2. Monthly Stats based on Receivable Month Selection（含手工应收行）
   const currentReceivables = useMemo(() => {
@@ -312,19 +574,11 @@ export const FinanceManager: React.FC<FinanceManagerProps> = ({
       return currentReceivables.filter((r) => !kw || r.tenantName.toLowerCase().includes(kw));
   }, [currentReceivables, receivableKeyword]);
 
-  const paymentMatchesBillingTenant = (paymentTenantId: string, billingTenantId: string): boolean => {
-      if (paymentTenantId === billingTenantId) return true;
-      const payT = tenants.find((t) => t.id === paymentTenantId);
-      const billT = tenants.find((t) => t.id === billingTenantId);
-      if (!payT || !billT) return false;
-      return (payT.rootId || payT.id) === (billT.rootId || billT.id);
-  };
-
   const paymentAmountForPeriod = (tenantId: string, periodYYYYMM: string): number => {
       return payments
           .filter((p) => {
               if (p.type !== 'Rent' && p.type !== 'DepositToRent') return false;
-              if (!paymentMatchesBillingTenant(p.tenantId, tenantId)) return false;
+              if (!paymentTenantMatchesBillingTenant(p.tenantId, tenantId, tenants, p.tenantName)) return false;
               const periodList = parseBillingPeriods(p.period);
               if (periodList.length > 0) return periodList.includes(periodYYYYMM);
               return p.date.startsWith(periodYYYYMM);
@@ -389,29 +643,19 @@ export const FinanceManager: React.FC<FinanceManagerProps> = ({
       };
   }, [receivableSections, receivableBucketFilter, receivableMonth, payments, tenants]);
 
+  const receivableResetImpact = useMemo(
+      () => countReceivableTabResetImpact(billingPeriodNotes, payments),
+      [billingPeriodNotes, payments],
+  );
+
   const monthStats = useMemo(() => {
-      // 注意：顶部「本月应收/实收/待收/应开票/已开票/未开票」必须基于「本月全量」统计，
-      // 不能跟随用户的关键词过滤变化。
-      // 「本月应收租金」 = 系统账单 + 手工应收行（真实需要催收的总额）。
-      // 「与工作台一致」的纯系统账单口径用 sumSystemBudgetReceivable 单独显示备注。
+      // 顶部「本月应收/实收/待收」基于「本月全量」统计，不跟随关键词过滤。
+      // 待收 = 各行「待收余额」之和（与表格一致，含缓缴目标账期已收款抵扣）；实收与应收、待收在同一口径下可加总核对。
       const systemReceivable = sumSystemBudgetReceivable(currentReceivables);
       const manualReceivable = sumManualArReceivable(currentReceivables);
       const budgetReceivable = sumBudgetReceivableForFinance(currentReceivables); // 含手工
-      const actualReceived = currentReceivables.reduce((sum, r) => sum + r.amountPaid, 0);
-      const pendingCollection = budgetReceivable - actualReceived;
-
-      const totalInvoiceTarget = budgetReceivable;
-
-      let totalInvoiced = 0;
-      currentReceivables.forEach((item) => {
-          const invId = getInvoiceId(item.tenantId, receivableMonth);
-          const isMarked = invoices.some((inv) => inv.id === invId && inv.status === 'Invoiced');
-          if (isMarked) {
-              totalInvoiced += receivableBudgetDisplay(item);
-          }
-      });
-
-      const totalPendingInvoice = totalInvoiceTarget - totalInvoiced;
+      const pendingCollection = currentReceivables.reduce((sum, r) => sum + getRemainingReceivable(r), 0);
+      const actualReceived = roundMoney2(Math.max(0, budgetReceivable - pendingCollection));
 
       return {
           budgetReceivable,
@@ -419,11 +663,8 @@ export const FinanceManager: React.FC<FinanceManagerProps> = ({
           manualReceivable,
           actualReceived,
           pendingCollection,
-          totalInvoiceTarget,
-          totalInvoiced,
-          totalPendingInvoice,
       };
-  }, [currentReceivables, invoices, receivableMonth]);
+  }, [currentReceivables]);
 
   const availableYears = useMemo(() => {
       const years = new Set<number>();
@@ -529,9 +770,16 @@ export const FinanceManager: React.FC<FinanceManagerProps> = ({
       setReceivableMonth(`${newYear}-${String(newMonth).padStart(2, '0')}`);
   };
 
+  const receivableDeferCollectHint = (it: BillingDetail) =>
+      isFullDeferOutSourceRow(it) ? `请于 ${it.deferredToPeriod} 账期核销缓入金额` : null;
+
   const openCollectModal = (detail: BillingDetail) => {
       const remaining = getRemainingReceivable(detail);
       if (remaining <= 0) return;
+      if (isFullDeferOutSourceRow(detail)) {
+          alert(`该笔已全部缓出至 ${detail.deferredToPeriod}，请切换到该账期进行收款/核销。`);
+          return;
+      }
       setCollectModalDetail(detail);
       setCollectModalAmount(String(remaining));
   };
@@ -553,12 +801,19 @@ export const FinanceManager: React.FC<FinanceManagerProps> = ({
           return;
       }
       const paymentDate = new Date().toISOString().split('T')[0];
-      const paymentPeriod = collectModalDetail.deferredToPeriod && (collectModalDetail.deferredAmount ?? 0) > 0.005
-          ? collectModalDetail.deferredToPeriod
-          : receivableMonth;
+      const { period: paymentPeriod, error: periodErr } = resolveRentWriteOffPaymentPeriod(
+          collectModalDetail,
+          receivableMonth,
+          amt,
+      );
+      if (periodErr) {
+          alert(periodErr);
+          return;
+      }
+      const payTenantId = realTenantIdFromDeferInDisplayTenantId(collectModalDetail.tenantId) ?? collectModalDetail.tenantId;
       const newPayment: PaymentRecord = {
-          id: `p${Date.now()}_col_${collectModalDetail.tenantId}`,
-          tenantId: collectModalDetail.tenantId,
+          id: `p${Date.now()}_col_${payTenantId}`,
+          tenantId: payTenantId,
           tenantName: collectModalDetail.tenantName,
           amount: amt,
           type: 'Rent',
@@ -584,6 +839,10 @@ export const FinanceManager: React.FC<FinanceManagerProps> = ({
       for (const tid of ids) {
           const detail = receivableFiltered.find((r) => r.tenantId === tid);
           if (!detail) continue;
+          if (isFullDeferOutSourceRow(detail)) {
+              alert(`${detail.tenantName} 已全部缓出至 ${detail.deferredToPeriod}，请取消勾选并在该账期核销。`);
+              return;
+          }
           const remaining = getRemainingReceivable(detail);
           const raw = (batchAmountInputs[tid] ?? String(remaining)).replace(/,/g, '').trim();
           const amt = roundMoney2(Number(raw));
@@ -592,16 +851,22 @@ export const FinanceManager: React.FC<FinanceManagerProps> = ({
               alert(`${detail.tenantName}: 金额不能超过待收 ${formatCurrency(remaining)}`);
               return;
           }
+          const { period: payPeriod, error: periodErr } = resolveRentWriteOffPaymentPeriod(detail, receivableMonth, amt);
+          if (periodErr) {
+              alert(`${detail.tenantName}: ${periodErr}`);
+              return;
+          }
+          const payTid = realTenantIdFromDeferInDisplayTenantId(tid) ?? tid;
           nextPayments.push({
-              id: `p${Date.now()}_col_${tid}_${Math.random().toString(36).slice(2, 8)}`,
-              tenantId: tid,
+              id: `p${Date.now()}_col_${payTid}_${Math.random().toString(36).slice(2, 8)}`,
+              tenantId: payTid,
               tenantName: detail.tenantName,
               amount: amt,
               type: 'Rent',
               date: paymentDate,
-              period: detail.deferredToPeriod && (detail.deferredAmount ?? 0) > 0.005 ? detail.deferredToPeriod : receivableMonth,
+              period: payPeriod,
               status: 'Received',
-              remarks: `[${receivableMonth}] 批量核销`,
+              remarks: `[${payPeriod}] 批量核销`,
               invoiceStatus: 'Pending',
           });
       }
@@ -634,14 +899,14 @@ export const FinanceManager: React.FC<FinanceManagerProps> = ({
           alert('账期格式无效');
           return;
       }
-      onDeferPayment(deferModalTenant.tenantId, fromYear, fromMonth, toYear, toMonth);
+      const deferSourceId = realTenantIdFromDeferInDisplayTenantId(deferModalTenant.tenantId) ?? deferModalTenant.tenantId;
+      onDeferPayment(deferSourceId, fromYear, fromMonth, toYear, toMonth);
       setDeferModalTenant(null);
   };
 
   const handleRevokeCollection = (detail: BillingDetail) => {
       const relevantPayments = payments.filter((p) => {
-          if (p.tenantId !== detail.tenantId) return false;
-          if (p.type !== 'Rent' && p.type !== 'DepositToRent') return false;
+          if (!paymentTenantMatchesBillingTenant(p.tenantId, detail.tenantId, tenants, p.tenantName)) return false;
           const periodList = parseBillingPeriods(p.period);
           const relatedPeriods = [receivableMonth];
           if (detail.deferredToPeriod && (detail.deferredAmount ?? 0) > 0.005) relatedPeriods.push(detail.deferredToPeriod);
@@ -717,51 +982,32 @@ export const FinanceManager: React.FC<FinanceManagerProps> = ({
       });
   };
 
-  const toggleInvoiceStatus = (item: BillingDetail) => {
-      if (isManualArTenantId(item.tenantId)) {
-          alert('手工应收行不支持开票标记');
-          return;
-      }
-      const invId = getInvoiceId(item.tenantId, receivableMonth);
-      const existingInv = invoices.find(inv => inv.id === invId);
-      
-      let newInvoices = [...invoices];
-      if (existingInv && existingInv.status === 'Invoiced') {
-          // Revert to Pending (remove record or update status)
-          // Removing is cleaner for "no zombie data" if we treat non-existence as Pending
-          newInvoices = newInvoices.filter(inv => inv.id !== invId);
-      } else {
-          // Mark as Invoiced
-          const newRecord: InvoiceRecord = {
-              id: invId,
-              tenantId: item.tenantId,
-              billDate: `${receivableMonth}-01`,
-              targetInvoiceDate: `${receivableMonth}-01`,
-              amount: receivableBudgetDisplay(item),
-              status: 'Invoiced',
-              invoicedAt: new Date().toISOString()
-          };
-          // Remove potential old pending/duplicates
-          newInvoices = newInvoices.filter(inv => inv.id !== invId);
-          newInvoices.push(newRecord);
-      }
-      onUpdateInvoices(newInvoices);
+  const deferRevokeClickForItem = (item: BillingDetail): (() => void) | undefined => {
+      if (!onRevokeDeferBillingNote || !isDeferInDisplayTenantId(item.tenantId)) return undefined;
+      const k = deferBillingNoteKeyFromDeferInDisplayTenantId(item.tenantId);
+      if (!k) return undefined;
+      return () => onRevokeDeferBillingNote(k);
   };
 
-  const renderReceivableTableRow = (item: BillingDetail, writeOffLabel: string) => {
+  const renderReceivableTableRow = (item: BillingDetail) => {
       const remaining = getRemainingReceivable(item);
       const paidAmount = getEffectivePaidAmount(item);
       const isPaid = isReceivableSettled(item);
-      const invId = getInvoiceId(item.tenantId, receivableMonth);
-      const isInvoiceDone = invoices.some(inv => inv.id === invId && inv.status === 'Invoiced');
-      const remark = getRentCollectionRemark(billingPeriodNotes, item.tenantId, receivableMonth);
+      const remarkTenantId = realTenantIdFromDeferInDisplayTenantId(item.tenantId) ?? item.tenantId;
+      const remark = getRentCollectionRemark(billingPeriodNotes, remarkTenantId, receivableMonth);
       const deferShell = deferReceivableShellClass(item);
       const hasDeferOut = !!(item.deferredToPeriod && (item.deferredAmount ?? 0) > 0);
       const hasDeferIn = !!(item.deferredInAmount && item.deferredInAmount > 0);
+      const fullDeferOutBlock = isFullDeferOutSourceRow(item);
+      const deferRevokeKey =
+          onRevokeDeferBillingNote && isDeferInDisplayTenantId(item.tenantId)
+              ? deferBillingNoteKeyFromDeferInDisplayTenantId(item.tenantId)
+              : null;
+
       return (
           <tr key={item.tenantId} className={`hover:bg-slate-50 transition-colors ${isPaid ? 'opacity-75' : ''} ${deferShell}`}>
               <td className="px-2 py-3 text-center w-12 align-middle">
-                  {!isPaid && remaining > 0 ? (
+                  {!isPaid && remaining > 0 && !fullDeferOutBlock ? (
                       <input
                           type="checkbox"
                           className="rounded border-slate-300"
@@ -774,12 +1020,64 @@ export const FinanceManager: React.FC<FinanceManagerProps> = ({
                   )}
               </td>
               <td className="px-4 py-3 text-slate-700">
-                  <div className="font-medium">{item.tenantName}</div>
+                  <div className="font-medium flex items-center gap-1.5 flex-wrap">
+                      {isManualArTenantId(item.tenantId) ? (
+                          <span>{item.tenantName}</span>
+                      ) : (
+                          <span
+                              role="button"
+                              tabIndex={0}
+                              className="cursor-pointer hover:text-blue-700 underline-offset-2 hover:underline decoration-blue-400/70 text-left"
+                              title="点击查看合同概要"
+                              onClick={(e) => {
+                                  e.stopPropagation();
+                                  openReceivableContractSummary(item);
+                              }}
+                              onKeyDown={(e) => {
+                                  if (e.key === 'Enter' || e.key === ' ') {
+                                      e.preventDefault();
+                                      openReceivableContractSummary(item);
+                                  }
+                              }}
+                          >
+                              {item.tenantName}
+                          </span>
+                      )}
+                      {isSpecialBusinessArTenantId(item.tenantId) ? (
+                          <span className="text-[10px] bg-amber-50 text-amber-700 px-1.5 py-0.5 rounded border border-amber-200 font-bold inline-flex items-center gap-0.5">
+                              <Sparkles size={10} /> 特殊业态
+                          </span>
+                      ) : isManualArTenantId(item.tenantId) ? (
+                          <span className="text-[10px] bg-slate-100 text-slate-600 px-1.5 py-0.5 rounded border border-slate-200 font-medium">手工应收</span>
+                      ) : (
+                          <>
+                              <span className="text-[10px] bg-blue-50 text-blue-700 px-1.5 py-0.5 rounded border border-blue-100 font-medium">合同账单</span>
+                              {SPECIAL_BUSINESS_NAME_HINT_RE.test(item.tenantName || '') && (
+                                  <button
+                                      type="button"
+                                      onClick={() => {
+                                          if (confirm(`将「${item.tenantName}」标记为特殊业态？\n标注后将不再按合同自动产生应收，\n金额需在「特殊业态收入录入」按月手工录入。`)) {
+                                              toggleTenantSpecialBusiness(realTenantIdFromSpecialBusinessAr(item.tenantId), true);
+                                          }
+                                      }}
+                                      className="text-[10px] bg-amber-50 text-amber-700 px-1.5 py-0.5 rounded border border-amber-200 hover:bg-amber-100 inline-flex items-center gap-0.5"
+                                  >
+                                      <Sparkles size={10} /> 标为特殊业态
+                                  </button>
+                              )}
+                          </>
+                      )}
+                  </div>
                   {hasDeferOut && (
                       <div className="mt-1 text-[10px] font-semibold text-orange-800">缓出 → {item.deferredToPeriod}（{formatCurrency(item.deferredAmount ?? 0)}）</div>
                   )}
                   {hasDeferIn && (
                       <div className="mt-1 text-[10px] font-semibold text-sky-800">缓入 ← {item.deferredInFromSummary}（{formatCurrency(item.deferredInAmount ?? 0)}）</div>
+                  )}
+                  {item.budgetAlignmentNote && (
+                      <div className="mt-1.5 text-[10px] text-rose-800 leading-snug bg-rose-50/90 border border-rose-100 rounded px-1.5 py-1">
+                          {item.budgetAlignmentNote}
+                      </div>
                   )}
               </td>
               <td className="px-4 py-3 align-middle text-center whitespace-nowrap">
@@ -790,37 +1088,60 @@ export const FinanceManager: React.FC<FinanceManagerProps> = ({
               </td>
               <td className="px-4 py-3 text-slate-500 text-center whitespace-nowrap">{formatCurrency(paidAmount)}</td>
               <td className="px-4 py-3 font-bold text-blue-600 text-center whitespace-nowrap">{remaining > 0 ? formatCurrency(remaining) : '-'}</td>
-              <td className="px-4 py-3 text-center whitespace-nowrap">
-                  <span className={`px-2 py-0.5 rounded text-xs font-medium ${writeOffBadgeClass(writeOffLabel)}`}>{writeOffLabel}</span>
-              </td>
-              <td className="px-4 py-3 text-center">
-                  <button
-                      onClick={() => toggleInvoiceStatus(item)}
-                      className={`px-3 py-1 rounded text-xs font-medium border transition-colors inline-flex items-center gap-1 whitespace-nowrap min-w-[68px] justify-center ${isInvoiceDone ? 'bg-blue-600 text-white border-blue-600 hover:bg-blue-700' : 'bg-white text-slate-500 border-slate-200 hover:border-slate-300'}`}
-                  >
-                      {isInvoiceDone ? <CheckSquare size={12}/> : <Square size={12}/>}
-                      {isInvoiceDone ? '已开票' : '待开票'}
-                  </button>
-              </td>
               <td className="px-4 py-2 align-top max-w-[220px]">
                   <textarea
                       className="w-full min-h-[52px] text-xs border border-slate-200 rounded-lg p-2 text-slate-700 resize-y"
                       placeholder="预期收款日、沟通情况等"
                       value={remark}
-                      onChange={(e) => onUpdateRentRemark?.(item.tenantId, receivableMonth, e.target.value)}
+                      onChange={(e) => onUpdateRentRemark?.(remarkTenantId, receivableMonth, e.target.value)}
                       disabled={!onUpdateRentRemark}
                   />
               </td>
               <td className="px-4 py-3 text-right">
-                  {!isPaid && remaining > 0 ? (
-                      <div className="flex justify-end gap-2">
+                  {fullDeferOutBlock && !isPaid ? (
+                      <div className="text-xs text-slate-500 text-right leading-snug max-w-[200px] ml-auto">
+                          请于 <span className="font-mono font-semibold text-slate-700">{item.deferredToPeriod}</span> 账期核销缓入金额
+                      </div>
+                  ) : !isPaid && remaining > 0 ? (
+                      <div className="flex justify-end gap-2 flex-wrap">
                           <button onClick={() => openCollectModal(item)} className="px-2 py-1 bg-white border border-blue-200 text-blue-600 rounded hover:bg-blue-50 text-xs inline-flex items-center gap-1 shadow-sm whitespace-nowrap min-w-[64px] justify-center"><Receipt size={14} /> 收款</button>
-                          {!isManualArTenantId(item.tenantId) && (
+                          {!isManualArTenantId(item.tenantId) && !isDeferInDisplayTenantId(item.tenantId) && (
                               <button onClick={() => openDeferModal(item)} className="px-2 py-1 bg-white border border-slate-200 text-slate-600 rounded hover:bg-slate-50 text-xs inline-flex items-center gap-1 shadow-sm whitespace-nowrap min-w-[64px] justify-center"><Clock size={14} /> 缓缴</button>
                           )}
+                          {deferRevokeKey != null && onRevokeDeferBillingNote ? (
+                              <button
+                                  type="button"
+                                  onClick={() => onRevokeDeferBillingNote(deferRevokeKey)}
+                                  className="px-2 py-1 bg-white border border-amber-200 text-amber-800 rounded hover:bg-amber-50 text-xs inline-flex items-center gap-1 shadow-sm whitespace-nowrap min-w-[72px] justify-center font-medium"
+                                  title="撤销该笔缓缴，金额回到原账期"
+                              >
+                                  缓缴撤销
+                              </button>
+                          ) : null}
+                      </div>
+                  ) : !isPaid && deferRevokeKey != null && onRevokeDeferBillingNote ? (
+                      <div className="flex justify-end gap-2 flex-wrap">
+                          <button
+                              type="button"
+                              onClick={() => onRevokeDeferBillingNote(deferRevokeKey)}
+                              className="px-2 py-1 bg-white border border-amber-200 text-amber-800 rounded hover:bg-amber-50 text-xs inline-flex items-center gap-1 shadow-sm whitespace-nowrap min-w-[72px] justify-center font-medium"
+                              title="撤销该笔缓缴，金额回到原账期"
+                          >
+                              缓缴撤销
+                          </button>
                       </div>
                   ) : isPaid ? (
-                      <div className="flex justify-end gap-2">
+                      <div className="flex justify-end gap-2 flex-wrap">
+                          {deferRevokeKey != null && onRevokeDeferBillingNote ? (
+                              <button
+                                  type="button"
+                                  onClick={() => onRevokeDeferBillingNote(deferRevokeKey)}
+                                  className="px-2 py-1 bg-white border border-amber-200 text-amber-800 rounded hover:bg-amber-50 text-xs inline-flex items-center gap-1 shadow-sm whitespace-nowrap min-w-[72px] justify-center font-medium"
+                                  title="撤销该笔缓缴（不影响已记账流水，请核对收款明细）"
+                              >
+                                  缓缴撤销
+                              </button>
+                          ) : null}
                           <button onClick={() => handleRevokeCollection(item)} className="px-2 py-1 bg-white border border-rose-200 text-rose-600 rounded hover:bg-rose-50 text-xs inline-flex items-center gap-1 shadow-sm whitespace-nowrap min-w-[64px] justify-center"><RotateCcw size={14} /> 撤销</button>
                       </div>
                   ) : (
@@ -831,13 +1152,13 @@ export const FinanceManager: React.FC<FinanceManagerProps> = ({
       );
   };
 
+  const listView = mobileReceivableOnly ? 'Receivables' : activeView;
+
   return (
     <div className="space-y-4 md:space-y-6">
       
       {/* Revised Financial Overview Cards */}
-      <div className="grid grid-cols-1 md:grid-cols-7 gap-3 md:gap-4">
-          {/* Main Financials - Row 1 equivalent (Span 4) */}
-          <div className="md:col-span-4 grid grid-cols-2 md:grid-cols-4 gap-3 md:gap-4">
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 md:gap-4">
               <div className="bg-white p-3 rounded-xl border border-blue-100 shadow-sm flex flex-col justify-between items-center text-center relative overflow-hidden">
                   <div className="absolute top-0 right-0 p-2 opacity-10"><Wallet size={32} className="text-blue-600"/></div>
                   <div className="text-xs text-slate-500 font-bold mb-1 uppercase tracking-wider whitespace-nowrap">本年累计租金收款</div>
@@ -877,36 +1198,19 @@ export const FinanceManager: React.FC<FinanceManagerProps> = ({
                   <div className="text-base md:text-lg font-bold text-amber-600 whitespace-nowrap">{formatCurrency(Math.max(0, monthStats.pendingCollection))}</div>
                   <div className="text-[10px] text-amber-400 font-medium whitespace-nowrap">Pending</div>
               </div>
-          </div>
-
-          {/* Invoice Stats - Row 2 equivalent (Span 3) */}
-          <div className="md:col-span-3 grid grid-cols-3 gap-3">
-              <div className="bg-indigo-50/50 p-3 rounded-xl border border-indigo-100 flex flex-col justify-between items-center text-center">
-                  <div className="text-xs text-indigo-500 font-bold mb-1 whitespace-nowrap">本月应开票</div>
-                  <div className="text-sm md:text-base font-bold text-indigo-700 whitespace-nowrap">{formatCurrency(monthStats.totalInvoiceTarget)}</div>
-                  <div className="text-[10px] text-indigo-400 whitespace-nowrap">应收额</div>
-              </div>
-              <div className="bg-white p-3 rounded-xl border border-indigo-100 flex flex-col justify-between items-center text-center relative overflow-hidden">
-                  <div className="absolute right-0 top-0 p-1 bg-indigo-50 text-indigo-600 rounded-bl-lg"><Check size={10}/></div>
-                  <div className="text-xs text-slate-500 font-medium mb-1 whitespace-nowrap">本月已开票</div>
-                  <div className="text-sm md:text-base font-bold text-slate-800 whitespace-nowrap">{formatCurrency(monthStats.totalInvoiced)}</div>
-              </div>
-              <div className="bg-white p-3 rounded-xl border border-indigo-100 flex flex-col justify-between items-center text-center relative overflow-hidden">
-                  <div className="absolute right-0 top-0 p-1 bg-slate-50 text-slate-400 rounded-bl-lg"><Clock size={10}/></div>
-                  <div className="text-xs text-slate-500 font-medium mb-1 whitespace-nowrap">本月未开票</div>
-                  <div className="text-sm md:text-base font-bold text-slate-800 whitespace-nowrap">{formatCurrency(monthStats.totalPendingInvoice)}</div>
-              </div>
-          </div>
       </div>
 
       {/* Main View Toggle & Toolbar */}
       <div className="flex flex-col md:flex-row justify-between items-start md:items-center border-b border-slate-200 pb-2 gap-4">
+        {!mobileReceivableOnly && (
         <div className="flex gap-4 w-full md:w-auto overflow-x-auto">
-             <button onClick={() => setActiveView('Receivables')} className={`pb-2 px-2 text-sm font-bold flex items-center gap-2 transition-colors whitespace-nowrap ${activeView === 'Receivables' ? 'text-blue-600 border-b-2 border-blue-600' : 'text-slate-500 hover:text-slate-700'}`}><ListChecks size={18} /> 应收核销</button>
-             <button onClick={() => setActiveView('Payments')} className={`pb-2 px-2 text-sm font-bold flex items-center gap-2 transition-colors whitespace-nowrap ${activeView === 'Payments' ? 'text-blue-600 border-b-2 border-blue-600' : 'text-slate-500 hover:text-slate-700'}`}><BadgeCheck size={18} /> 收款明细</button>
+             <button type="button" onClick={() => setActiveView('Receivables')} className={`pb-2 px-2 text-sm font-bold flex items-center gap-2 transition-colors whitespace-nowrap ${activeView === 'Receivables' ? 'text-blue-600 border-b-2 border-blue-600' : 'text-slate-500 hover:text-slate-700'}`}><ListChecks size={18} /> 应收核销</button>
+             <button type="button" onClick={() => setActiveView('Payments')} className={`pb-2 px-2 text-sm font-bold flex items-center gap-2 transition-colors whitespace-nowrap ${activeView === 'Payments' ? 'text-blue-600 border-b-2 border-blue-600' : 'text-slate-500 hover:text-slate-700'}`}><BadgeCheck size={18} /> 收款明细</button>
+             <button type="button" onClick={() => setActiveView('SpecialBusiness')} className={`pb-2 px-2 text-sm font-bold flex items-center gap-2 transition-colors whitespace-nowrap ${activeView === 'SpecialBusiness' ? 'text-amber-600 border-b-2 border-amber-600' : 'text-slate-500 hover:text-slate-700'}`}><Sparkles size={18} /> 特殊业态收入录入</button>
         </div>
+        )}
 
-        {activeView === 'Payments' ? (
+        {!mobileReceivableOnly && activeView === 'Payments' ? (
              <div className="flex flex-wrap gap-2 items-center w-full md:w-auto">
                  <select value={selectedYear} onChange={e => setSelectedYear(Number(e.target.value))} className="bg-white border border-slate-200 text-slate-700 text-sm rounded-lg px-2 py-1.5 focus:outline-none flex-1 md:flex-none cursor-pointer">{availableYears.map(y => <option key={y} value={y}>{y}年</option>)}</select>
                  <input type="search" placeholder="关键词" value={paymentKeyword} onChange={(e) => setPaymentKeyword(e.target.value)} className="min-w-[120px] border border-slate-200 rounded-lg px-2 py-1.5 text-sm flex-1 md:flex-none max-w-[200px]" />
@@ -921,6 +1225,34 @@ export const FinanceManager: React.FC<FinanceManagerProps> = ({
                  </select>
                  <button onClick={() => { setShowDepositTransfer(true); setShowForm(false); setIsEditing(false); }} className="px-3 py-1.5 bg-white border border-slate-200 text-slate-700 rounded-lg hover:bg-slate-50 text-sm flex items-center gap-1 flex-1 md:flex-none justify-center whitespace-nowrap"><ArrowRightLeft size={14} /> 转租金</button>
                  <button onClick={() => { const now = new Date().toISOString().split('T')[0]; setShowForm(true); setShowDepositTransfer(false); setIsEditing(false); setCurrentPayment({ date: now, type: 'Rent', period: now.slice(0, 7) }); }} className="px-3 py-1.5 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 text-sm flex items-center gap-1 shadow-sm flex-1 md:flex-none justify-center whitespace-nowrap"><Plus size={14} /> 记账</button>
+             </div>
+        ) : !mobileReceivableOnly && activeView === 'SpecialBusiness' ? (
+             <div className="flex flex-col sm:flex-row flex-wrap gap-2 items-stretch sm:items-center w-full md:w-auto justify-end">
+                 <input
+                     type="search"
+                     placeholder="搜索特殊业态客户"
+                     value={specialBizKeyword}
+                     onChange={(e) => setSpecialBizKeyword(e.target.value)}
+                     className="min-w-[140px] flex-1 sm:flex-none border border-amber-200 rounded-lg px-3 py-1.5 text-sm bg-white"
+                 />
+                 <div className="flex flex-wrap gap-2 items-center justify-end">
+                     <div
+                         className="flex items-center gap-1 bg-white border border-amber-200 rounded-lg p-1 whitespace-nowrap"
+                         title="录入账期与「应收核销」一致（自然月 YYYY-MM）"
+                     >
+                         <button type="button" onClick={handlePrevMonth} className="p-1 hover:bg-amber-50 rounded text-slate-500"><ChevronLeft size={16}/></button>
+                         <div className="flex items-center gap-2 px-2 text-sm font-medium text-slate-700 w-24 justify-center whitespace-nowrap"><Calendar size={14} className="text-amber-500"/><span className="text-center whitespace-nowrap leading-none">{receivableMonth}</span></div>
+                         <button type="button" onClick={handleNextMonth} className="p-1 hover:bg-amber-50 rounded text-slate-500"><ChevronRight size={16}/></button>
+                     </div>
+                     <button
+                         type="button"
+                         onClick={saveAllSpecialBusinessRows}
+                         disabled={!onBatchUpdate}
+                         className="px-3 py-1.5 text-sm font-medium rounded-lg border border-amber-400 bg-amber-500 text-white hover:bg-amber-600 disabled:opacity-40 disabled:pointer-events-none whitespace-nowrap inline-flex items-center gap-1"
+                     >
+                         <Save size={14} /> 保存本月已填金额
+                     </button>
+                 </div>
              </div>
         ) : (
              <div className="flex flex-col sm:flex-row flex-wrap gap-2 items-stretch sm:items-center w-full md:w-auto justify-end">
@@ -946,13 +1278,33 @@ export const FinanceManager: React.FC<FinanceManagerProps> = ({
                  <div className="flex flex-wrap gap-2 items-center justify-end">
                      <button
                          type="button"
+                         onClick={() => onResetReceivableApplications?.()}
+                         disabled={
+                             !onResetReceivableApplications ||
+                             (receivableResetImpact.deferNotes === 0 &&
+                                 receivableResetImpact.autoWriteOffPayments === 0)
+                         }
+                         title={
+                             onResetReceivableApplications
+                                 ? `将清除全部缓缴记录 ${receivableResetImpact.deferNotes} 条，并删除应收核销自动生成的流水 ${receivableResetImpact.autoWriteOffPayments} 笔（收款明细手工记账保留）`
+                                 : undefined
+                         }
+                         className="px-3 py-1.5 text-sm font-medium rounded-lg border border-rose-200 bg-white text-rose-700 hover:bg-rose-50 disabled:opacity-40 disabled:pointer-events-none whitespace-nowrap inline-flex items-center gap-1"
+                     >
+                         <Undo2 size={14} /> 撤回核销与缓缴
+                     </button>
+                     <button
+                         type="button"
                          onClick={openBatchPartialModal}
                          disabled={batchSelectedIds.size === 0}
                          className="px-3 py-1.5 text-sm font-medium rounded-lg border border-blue-200 bg-blue-50 text-blue-700 hover:bg-blue-100 disabled:opacity-40 disabled:pointer-events-none whitespace-nowrap"
                      >
                          批量核销 ({batchSelectedIds.size})
                      </button>
-                     <div className="flex items-center gap-1 bg-white border border-slate-200 rounded-lg p-1 whitespace-nowrap">
+                     <div
+                         className="flex items-center gap-1 bg-white border border-slate-200 rounded-lg p-1 whitespace-nowrap"
+                         title="当月应收按合同生成账单的「收款日期」所在自然月汇总；与合同中「覆盖周期」跨多个月时，同一笔金额只记在收款月（季付等常见）。对照覆盖周期请以合同中心预览为准。"
+                     >
                          <button type="button" onClick={handlePrevMonth} className="p-1 hover:bg-slate-100 rounded text-slate-500"><ChevronLeft size={16}/></button>
                          <div className="flex items-center gap-2 px-2 text-sm font-medium text-slate-700 w-24 justify-center whitespace-nowrap"><Calendar size={14} className="text-slate-400"/><span className="text-center whitespace-nowrap leading-none">{receivableMonth}</span></div>
                          <button type="button" onClick={handleNextMonth} className="p-1 hover:bg-slate-100 rounded text-slate-500"><ChevronRight size={16}/></button>
@@ -974,6 +1326,35 @@ export const FinanceManager: React.FC<FinanceManagerProps> = ({
                     <label className="block text-xs font-medium text-emerald-700 mb-1">关联账期（多选）</label>
                     <div className="border border-emerald-200 rounded-lg p-2 bg-white">
                         <div className="flex items-center justify-between mb-2">
+                    {specialBusinessCandidatesUnmarked.length > 0 && (
+                        <div className="bg-amber-50/70 border-b border-amber-200 px-3 py-2.5 text-xs text-amber-900">
+                            <div className="flex flex-wrap items-center gap-2">
+                                <Sparkles size={14} className="text-amber-600 shrink-0" />
+                                <span className="font-bold">疑似公区/配套类客户未标注特殊业态：</span>
+                                {specialBusinessCandidatesUnmarked.slice(0, 12).map((t) => (
+                                    <button
+                                        key={t.id}
+                                        type="button"
+                                        onClick={() => {
+                                            if (confirm(`将「${t.name}」标记为特殊业态？\n标注后将不再按合同自动产生应收，\n金额需在「特殊业态收入录入」按月手工录入。`)) {
+                                                toggleTenantSpecialBusiness(t.id, true);
+                                            }
+                                        }}
+                                        className="px-2 py-0.5 rounded bg-white border border-amber-300 text-amber-800 hover:bg-amber-100 inline-flex items-center gap-1 whitespace-nowrap"
+                                        title="点击一键标为特殊业态"
+                                    >
+                                        {t.name} <Sparkles size={10} />
+                                    </button>
+                                ))}
+                                {specialBusinessCandidatesUnmarked.length > 12 && (
+                                    <span className="text-amber-700/80">…等共 {specialBusinessCandidatesUnmarked.length} 个</span>
+                                )}
+                                <span className="ml-auto text-[10px] text-amber-700/70 whitespace-nowrap">
+                                    名称含「停车/公区/配套/广告/充电桩/物业」等关键字时自动识别。如不需要此提示请直接忽略。
+                                </span>
+                            </div>
+                        </div>
+                    )}
                             <div className="text-xs text-slate-600 font-medium">已选：{selectedPeriods.length > 0 ? selectedPeriods.join('、') : '未选择（默认按入账月份）'}</div>
                             <div className="flex items-center gap-1">
                                 <button type="button" className="px-2 py-0.5 text-xs border border-slate-200 rounded hover:bg-slate-50" onClick={() => setPeriodPickerYear((y) => y - 1)}>‹</button>
@@ -1019,7 +1400,7 @@ export const FinanceManager: React.FC<FinanceManagerProps> = ({
 
       {/* Main Lists */}
       <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
-        {activeView === 'Payments' ? (
+        {listView === 'Payments' ? (
             <>
                 <div className="hidden md:block">
                     <div ref={desktopViewportRef} className="w-full overflow-hidden">
@@ -1094,6 +1475,130 @@ export const FinanceManager: React.FC<FinanceManagerProps> = ({
                     ) : (<div className="p-8 text-center text-slate-400 text-sm">暂无记录</div>)}
                 </div>
             </>
+        ) : listView === 'SpecialBusiness' ? (
+            <>
+                <div className="border-b border-amber-100 bg-amber-50/50 px-4 py-3 text-sm text-amber-950 flex flex-wrap items-center gap-2">
+                    <Sparkles size={16} className="text-amber-600 shrink-0" />
+                    <span>
+                        以下为履约中的「特殊业态」客户。录入金额写入当前账期{' '}
+                        <span className="font-mono font-semibold">{receivableMonth}</span>，并参与「应收核销」汇总。本月已保存合计：
+                        <strong className="font-mono ml-1">{formatCurrency(specialBusinessMonthTotal)}</strong>
+                    </span>
+                </div>
+                {filteredSpecialBusinessTenants.length === 0 ? (
+                    <div className="p-12 text-center text-slate-500 text-sm space-y-2">
+                        <p>
+                            {specialBusinessTenants.length === 0
+                                ? '暂无特殊业态客户。请在「应收核销」列表中点击「标为特殊业态」，或在合同档案中勾选对应标注后再录入。'
+                                : '没有匹配搜索条件的客户。'}
+                        </p>
+                    </div>
+                ) : (
+                    <>
+                        <div className="hidden md:block overflow-x-auto">
+                            <table className="w-full text-sm text-left">
+                                <thead className="bg-amber-50/90 text-amber-950 font-medium border-b border-amber-100">
+                                    <tr>
+                                        <th className="px-4 py-3">客户</th>
+                                        <th className="px-4 py-3 hidden lg:table-cell text-slate-600 font-normal">房源概要</th>
+                                        <th className="px-4 py-3 text-center whitespace-nowrap w-36">本月应收（元）</th>
+                                        <th className="px-4 py-3 min-w-[160px]">备注</th>
+                                        <th className="px-4 py-3 text-right whitespace-nowrap w-28">操作</th>
+                                    </tr>
+                                </thead>
+                                <tbody className="divide-y divide-slate-100">
+                                    {filteredSpecialBusinessTenants.map((t) => {
+                                        const { buildingLabel, unitNamesLabel } = resolveTenantAssetLabels(t, buildings);
+                                        const assetHint = [buildingLabel, unitNamesLabel].filter(Boolean).join(' · ') || '—';
+                                        return (
+                                            <tr key={t.id} className="hover:bg-amber-50/30">
+                                                <td className="px-4 py-3 font-medium text-slate-800">{t.name}</td>
+                                                <td className="px-4 py-3 hidden lg:table-cell text-xs text-slate-500">{assetHint}</td>
+                                                <td className="px-4 py-3">
+                                                    <input
+                                                        type="number"
+                                                        step="0.01"
+                                                        className="w-full border border-slate-200 rounded-lg px-2 py-1.5 font-mono text-sm text-right"
+                                                        placeholder="0"
+                                                        value={specialBizAmountDraft[t.id] ?? ''}
+                                                        onChange={(e) =>
+                                                            setSpecialBizAmountDraft((prev) => ({ ...prev, [t.id]: e.target.value }))
+                                                        }
+                                                    />
+                                                </td>
+                                                <td className="px-4 py-3">
+                                                    <input
+                                                        type="text"
+                                                        className="w-full border border-slate-200 rounded-lg px-2 py-1.5 text-sm"
+                                                        placeholder="选填"
+                                                        value={specialBizRemarkDraft[t.id] ?? ''}
+                                                        onChange={(e) =>
+                                                            setSpecialBizRemarkDraft((prev) => ({ ...prev, [t.id]: e.target.value }))
+                                                        }
+                                                    />
+                                                </td>
+                                                <td className="px-4 py-3 text-right">
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => saveSpecialBusinessRow(t.id)}
+                                                        disabled={!onBatchUpdate}
+                                                        className="px-2.5 py-1 rounded-lg border border-amber-300 bg-white text-amber-900 text-xs font-medium hover:bg-amber-50 disabled:opacity-40"
+                                                    >
+                                                        保存
+                                                    </button>
+                                                </td>
+                                            </tr>
+                                        );
+                                    })}
+                                </tbody>
+                            </table>
+                        </div>
+                        <div className="md:hidden divide-y divide-slate-100">
+                            {filteredSpecialBusinessTenants.map((t) => {
+                                const { buildingLabel, unitNamesLabel } = resolveTenantAssetLabels(t, buildings);
+                                const assetHint = [buildingLabel, unitNamesLabel].filter(Boolean).join(' · ') || '—';
+                                return (
+                                    <div key={t.id} className="p-4 space-y-3 bg-white">
+                                        <div className="font-semibold text-slate-800">{t.name}</div>
+                                        <div className="text-[11px] text-slate-500">{assetHint}</div>
+                                        <div>
+                                            <label className="text-[11px] text-slate-500 font-medium">本月应收（元）</label>
+                                            <input
+                                                type="number"
+                                                step="0.01"
+                                                className="mt-0.5 w-full border border-slate-200 rounded-lg px-2 py-1.5 font-mono text-sm"
+                                                value={specialBizAmountDraft[t.id] ?? ''}
+                                                onChange={(e) =>
+                                                    setSpecialBizAmountDraft((prev) => ({ ...prev, [t.id]: e.target.value }))
+                                                }
+                                            />
+                                        </div>
+                                        <div>
+                                            <label className="text-[11px] text-slate-500 font-medium">备注</label>
+                                            <input
+                                                type="text"
+                                                className="mt-0.5 w-full border border-slate-200 rounded-lg px-2 py-1.5 text-sm"
+                                                value={specialBizRemarkDraft[t.id] ?? ''}
+                                                onChange={(e) =>
+                                                    setSpecialBizRemarkDraft((prev) => ({ ...prev, [t.id]: e.target.value }))
+                                                }
+                                            />
+                                        </div>
+                                        <button
+                                            type="button"
+                                            onClick={() => saveSpecialBusinessRow(t.id)}
+                                            disabled={!onBatchUpdate}
+                                            className="w-full py-2 rounded-lg border border-amber-400 bg-amber-500 text-white text-sm font-medium hover:bg-amber-600 disabled:opacity-40"
+                                        >
+                                            保存本行
+                                        </button>
+                                    </div>
+                                );
+                            })}
+                        </div>
+                    </>
+                )}
+            </>
         ) : (
             <>
                 <div className="hidden md:block">
@@ -1106,62 +1611,11 @@ export const FinanceManager: React.FC<FinanceManagerProps> = ({
                                     transformOrigin: 'top left',
                                 }}
                             >
-                    <div className="bg-blue-50/50 p-3 border-b border-blue-100 flex flex-wrap items-center gap-2 text-sm text-blue-700"><AlertCircle size={16} /> 此界面按“应收款专用方案”生成应收账单（存量含账期/金额调整，续租新签按实际合同）。支持分次核销；勾选多行后可批量核销。</div>
-                    <div className="px-4 py-3 border-b border-slate-100 bg-slate-50/50 flex flex-col md:flex-row gap-3 md:items-end">
-                        <div className="flex-1 grid grid-cols-1 sm:grid-cols-3 gap-2 text-xs">
-                            <div>
-                                <label className="text-slate-500 font-medium block mb-0.5">应收项目 / 名称</label>
-                                <input className="w-full border rounded px-2 py-1.5" placeholder="例如：灯箱服务费"
-                                    value={manualLineDraft.title}
-                                    onChange={(e) => setManualLineDraft((d) => ({ ...d, title: e.target.value }))}
-                                />
-                            </div>
-                            <div>
-                                <label className="text-slate-500 font-medium block mb-0.5">搜索客户（可不关联）</label>
-                                <input className="w-full border rounded px-2 py-1.5" placeholder="客户或项目简称"
-                                    value={manualLineDraft.customerLabel}
-                                    onChange={(e) => setManualLineDraft((d) => ({ ...d, customerLabel: e.target.value }))}
-                                />
-                            </div>
-                            <div>
-                                <label className="text-slate-500 font-medium block mb-0.5">金额（元）</label>
-                                <input className="w-full border rounded px-2 py-1.5 font-mono" type="number" step="0.01"
-                                    value={manualLineDraft.amount}
-                                    onChange={(e) => setManualLineDraft((d) => ({ ...d, amount: e.target.value }))}
-                                />
-                            </div>
-                        </div>
-                        <button
-                            type="button"
-                            className="px-4 py-2 bg-slate-800 text-white rounded-lg text-sm font-medium hover:bg-slate-900 whitespace-nowrap"
-                            onClick={() => {
-                                const amt = roundMoney2(Number(String(manualLineDraft.amount).replace(/,/g, '')));
-                                let title = manualLineDraft.title.trim();
-                                let customerLabel = manualLineDraft.customerLabel.trim();
-                                if (!title && !customerLabel) {
-                                    alert('请填写应收项目名称或客户/项目简称');
-                                    return;
-                                }
-                                if (!Number.isFinite(amt) || amt <= 0) {
-                                    alert('请输入有效金额');
-                                    return;
-                                }
-                                if (!customerLabel) customerLabel = title;
-                                if (!title) title = customerLabel;
-                                const line: ManualReceivableLine = {
-                                    id: `mar_${Date.now()}`,
-                                    customerLabel,
-                                    title: title || customerLabel,
-                                    amount: amt,
-                                    periodYYYYMM: receivableMonth,
-                                };
-                                const next = [...manualReceivableLinesAll.filter((l) => !(l.periodYYYYMM === receivableMonth && l.title === line.title && l.customerLabel === line.customerLabel)), line];
-                                persistManualLines(next);
-                                setManualLineDraft({ title: '', customerLabel: '', amount: '' });
-                            }}
-                        >
-                            添加手工应收（本账期）
-                        </button>
+                    <div className="bg-blue-50/50 p-3 border-b border-blue-100 flex flex-wrap items-center gap-2 text-sm text-blue-700">
+                        <AlertCircle size={16} className="shrink-0" />
+                        <span>
+                            此界面按「应收款专用方案」生成应收账单（与预算管理「当年生效方案」中各在租客户的系统推算月度应收一致，不含「待租单元」空置去化行；存量含账期/金额调整，续租新签按实际合同）。支持分次核销；勾选多行后可批量核销。非合同类收入请使用「特殊业态收入录入」。
+                        </span>
                     </div>
                     <table className="w-full text-sm text-left">
                         <thead className="bg-slate-50 text-slate-500 font-medium border-b border-slate-200">
@@ -1171,8 +1625,6 @@ export const FinanceManager: React.FC<FinanceManagerProps> = ({
                                 <th className="px-4 py-3 text-center whitespace-nowrap">应收租金 (预算)</th>
                                 <th className="px-4 py-3 text-center whitespace-nowrap">已收金额</th>
                                 <th className="px-4 py-3 text-center whitespace-nowrap">待收余额</th>
-                                <th className="px-4 py-3 text-center whitespace-nowrap">应收核销情况</th>
-                                <th className="px-4 py-3 text-center">开票状态</th>
                                 <th className="px-4 py-3 min-w-[200px]">备注</th>
                                 <th className="px-4 py-3 text-right">操作</th>
                             </tr>
@@ -1183,37 +1635,37 @@ export const FinanceManager: React.FC<FinanceManagerProps> = ({
                                     {displayReceivableSections.unsettled.length > 0 && (
                                         <>
                                             <tr className="bg-amber-50/60">
-                                                <td colSpan={9} className="px-4 py-2 text-xs font-bold text-amber-900/90 border-t border-amber-100/80">
+                                                <td colSpan={7} className="px-4 py-2 text-xs font-bold text-amber-900/90 border-t border-amber-100/80">
                                                     {WRITEOFF_LABELS.pending}
                                                 </td>
                                             </tr>
-                                            {displayReceivableSections.unsettled.map(({ item }) => renderReceivableTableRow(item, WRITEOFF_LABELS.pending))}
+                                            {displayReceivableSections.unsettled.map(({ item }) => renderReceivableTableRow(item))}
                                         </>
                                     )}
                                     {displayReceivableSections.deferred.length > 0 && (
                                         <>
                                             <tr className="bg-indigo-50/60">
-                                                <td colSpan={9} className="px-4 py-2 text-xs font-bold text-indigo-900/90 border-t border-indigo-100/80">
+                                                <td colSpan={7} className="px-4 py-2 text-xs font-bold text-indigo-900/90 border-t border-indigo-100/80">
                                                     {WRITEOFF_LABELS.deferred}（原账期挂账已调至其他月份）
                                                 </td>
                                             </tr>
-                                            {displayReceivableSections.deferred.map(({ item }) => renderReceivableTableRow(item, WRITEOFF_LABELS.deferred))}
+                                            {displayReceivableSections.deferred.map(({ item }) => renderReceivableTableRow(item))}
                                         </>
                                     )}
                                     {(displayReceivableSections.settledThisMonth.length + displayReceivableSections.prepaid.length) > 0 && (
                                         <>
                                             <tr className="bg-emerald-50/50">
-                                                <td colSpan={9} className="px-4 py-2 text-xs font-bold text-emerald-900/90 border-t border-emerald-100/80">
+                                                <td colSpan={7} className="px-4 py-2 text-xs font-bold text-emerald-900/90 border-t border-emerald-100/80">
                                                     {WRITEOFF_LABELS.settled}
                                                 </td>
                                             </tr>
-                                            {displayReceivableSections.settledThisMonth.map(({ item }) => renderReceivableTableRow(item, WRITEOFF_LABELS.settled))}
-                                            {displayReceivableSections.prepaid.map(({ item }) => renderReceivableTableRow(item, WRITEOFF_LABELS.settled))}
+                                            {displayReceivableSections.settledThisMonth.map(({ item }) => renderReceivableTableRow(item))}
+                                            {displayReceivableSections.prepaid.map(({ item }) => renderReceivableTableRow(item))}
                                         </>
                                     )}
                                 </>
                             ) : (
-                                <tr><td colSpan={9} className="p-8 text-center text-slate-400">该月份暂无应收账单</td></tr>
+                                <tr><td colSpan={7} className="p-8 text-center text-slate-400">该月份暂无应收账单</td></tr>
                             )}
                         </tbody>
                     </table>
@@ -1233,8 +1685,7 @@ export const FinanceManager: React.FC<FinanceManagerProps> = ({
                                         const remaining = getRemainingReceivable(item);
                                         const isPaid = isReceivableSettled(item);
                                         const paidAmount = getEffectivePaidAmount(item);
-                                        const invId = getInvoiceId(item.tenantId, receivableMonth);
-                                        const isInvoiceDone = invoices.some(inv => inv.id === invId && inv.status === 'Invoiced');
+                                        const remarkTid = realTenantIdFromDeferInDisplayTenantId(item.tenantId) ?? item.tenantId;
                                         return (
                                             <ReceivableCard
                                                 key={item.tenantId}
@@ -1242,15 +1693,23 @@ export const FinanceManager: React.FC<FinanceManagerProps> = ({
                                                 remaining={remaining}
                                                 isPaid={isPaid}
                                                 paidAmount={paidAmount}
-                                                writeOffLabel={WRITEOFF_LABELS.pending}
-                                                invoiceStatus={isInvoiceDone ? 'Invoiced' : 'Pending'}
-                                                remark={getRentCollectionRemark(billingPeriodNotes, item.tenantId, receivableMonth)}
-                                                onRemarkChange={(text) => onUpdateRentRemark?.(item.tenantId, receivableMonth, text)}
+                                                remark={getRentCollectionRemark(billingPeriodNotes, remarkTid, receivableMonth)}
+                                                onRemarkChange={(text) => onUpdateRentRemark?.(remarkTid, receivableMonth, text)}
                                                 remarkDisabled={!onUpdateRentRemark}
                                                 onConfirm={() => openCollectModal(item)}
-                                                onDefer={isManualArTenantId(item.tenantId) ? undefined : () => openDeferModal(item)}
+                                                onDefer={
+                                                    isManualArTenantId(item.tenantId) || isDeferInDisplayTenantId(item.tenantId)
+                                                        ? undefined
+                                                        : () => openDeferModal(item)
+                                                }
+                                                onRevokeDefer={deferRevokeClickForItem(item)}
                                                 onRevoke={() => handleRevokeCollection(item)}
-                                                onToggleInvoice={() => toggleInvoiceStatus(item)}
+                                                collectBlockedHint={receivableDeferCollectHint(item)}
+                                                onOpenContractSummary={
+                                                    isManualArTenantId(item.tenantId)
+                                                        ? undefined
+                                                        : () => openReceivableContractSummary(item)
+                                                }
                                             />
                                         );
                                     })}
@@ -1263,8 +1722,7 @@ export const FinanceManager: React.FC<FinanceManagerProps> = ({
                                         const remaining = getRemainingReceivable(item);
                                         const isPaid = isReceivableSettled(item);
                                         const paidAmount = getEffectivePaidAmount(item);
-                                        const invId = getInvoiceId(item.tenantId, receivableMonth);
-                                        const isInvoiceDone = invoices.some(inv => inv.id === invId && inv.status === 'Invoiced');
+                                        const remarkTid = realTenantIdFromDeferInDisplayTenantId(item.tenantId) ?? item.tenantId;
                                         return (
                                             <ReceivableCard
                                                 key={`${item.tenantId}-def`}
@@ -1272,15 +1730,23 @@ export const FinanceManager: React.FC<FinanceManagerProps> = ({
                                                 remaining={remaining}
                                                 isPaid={isPaid}
                                                 paidAmount={paidAmount}
-                                                writeOffLabel={WRITEOFF_LABELS.deferred}
-                                                invoiceStatus={isInvoiceDone ? 'Invoiced' : 'Pending'}
-                                                remark={getRentCollectionRemark(billingPeriodNotes, item.tenantId, receivableMonth)}
-                                                onRemarkChange={(text) => onUpdateRentRemark?.(item.tenantId, receivableMonth, text)}
+                                                remark={getRentCollectionRemark(billingPeriodNotes, remarkTid, receivableMonth)}
+                                                onRemarkChange={(text) => onUpdateRentRemark?.(remarkTid, receivableMonth, text)}
                                                 remarkDisabled={!onUpdateRentRemark}
                                                 onConfirm={() => openCollectModal(item)}
-                                                onDefer={isManualArTenantId(item.tenantId) ? undefined : () => openDeferModal(item)}
+                                                onDefer={
+                                                    isManualArTenantId(item.tenantId) || isDeferInDisplayTenantId(item.tenantId)
+                                                        ? undefined
+                                                        : () => openDeferModal(item)
+                                                }
+                                                onRevokeDefer={deferRevokeClickForItem(item)}
                                                 onRevoke={() => handleRevokeCollection(item)}
-                                                onToggleInvoice={() => toggleInvoiceStatus(item)}
+                                                collectBlockedHint={receivableDeferCollectHint(item)}
+                                                onOpenContractSummary={
+                                                    isManualArTenantId(item.tenantId)
+                                                        ? undefined
+                                                        : () => openReceivableContractSummary(item)
+                                                }
                                             />
                                         );
                                     })}
@@ -1293,8 +1759,7 @@ export const FinanceManager: React.FC<FinanceManagerProps> = ({
                                         const remaining = getRemainingReceivable(item);
                                         const isPaid = isReceivableSettled(item);
                                         const paidAmount = getEffectivePaidAmount(item);
-                                        const invId = getInvoiceId(item.tenantId, receivableMonth);
-                                        const isInvoiceDone = invoices.some(inv => inv.id === invId && inv.status === 'Invoiced');
+                                        const remarkTid = realTenantIdFromDeferInDisplayTenantId(item.tenantId) ?? item.tenantId;
                                         return (
                                             <ReceivableCard
                                                 key={item.tenantId}
@@ -1302,15 +1767,23 @@ export const FinanceManager: React.FC<FinanceManagerProps> = ({
                                                 remaining={remaining}
                                                 isPaid={isPaid}
                                                 paidAmount={paidAmount}
-                                                writeOffLabel={WRITEOFF_LABELS.settled}
-                                                invoiceStatus={isInvoiceDone ? 'Invoiced' : 'Pending'}
-                                                remark={getRentCollectionRemark(billingPeriodNotes, item.tenantId, receivableMonth)}
-                                                onRemarkChange={(text) => onUpdateRentRemark?.(item.tenantId, receivableMonth, text)}
+                                                remark={getRentCollectionRemark(billingPeriodNotes, remarkTid, receivableMonth)}
+                                                onRemarkChange={(text) => onUpdateRentRemark?.(remarkTid, receivableMonth, text)}
                                                 remarkDisabled={!onUpdateRentRemark}
                                                 onConfirm={() => openCollectModal(item)}
-                                                onDefer={isManualArTenantId(item.tenantId) ? undefined : () => openDeferModal(item)}
+                                                onDefer={
+                                                    isManualArTenantId(item.tenantId) || isDeferInDisplayTenantId(item.tenantId)
+                                                        ? undefined
+                                                        : () => openDeferModal(item)
+                                                }
+                                                onRevokeDefer={deferRevokeClickForItem(item)}
                                                 onRevoke={() => handleRevokeCollection(item)}
-                                                onToggleInvoice={() => toggleInvoiceStatus(item)}
+                                                collectBlockedHint={receivableDeferCollectHint(item)}
+                                                onOpenContractSummary={
+                                                    isManualArTenantId(item.tenantId)
+                                                        ? undefined
+                                                        : () => openReceivableContractSummary(item)
+                                                }
                                             />
                                         );
                                     })}
@@ -1332,7 +1805,25 @@ export const FinanceManager: React.FC<FinanceManagerProps> = ({
                   </div>
                   <div className="p-5 space-y-3 text-sm text-slate-700">
                       <p><span className="text-slate-500">客户</span> <span className="font-semibold text-slate-900">{collectModalDetail.tenantName}</span></p>
-                      <p><span className="text-slate-500">账期</span> <span className="font-mono font-semibold">{receivableMonth}</span></p>
+                      <p>
+                          <span className="text-slate-500">查看账期</span>{' '}
+                          <span className="font-mono font-semibold">{receivableMonth}</span>
+                      </p>
+                      <p>
+                          <span className="text-slate-500">核销记入账期</span>{' '}
+                          <span className="font-mono font-semibold text-blue-800">
+                              {resolveRentWriteOffPaymentPeriod(
+                                  collectModalDetail,
+                                  receivableMonth,
+                                  (() => {
+                                      const raw = String(collectModalAmount).replace(/,/g, '').trim();
+                                      const n = roundMoney2(Number(raw));
+                                      const rem = getRemainingReceivable(collectModalDetail);
+                                      return Number.isFinite(n) && n > 0 ? n : rem;
+                                  })(),
+                              ).period}
+                          </span>
+                      </p>
                       <p>
                           <span className="text-slate-500">待收余额</span>{' '}
                           <span className="font-mono font-bold text-amber-700">{formatCurrency(getRemainingReceivable(collectModalDetail))}</span>
@@ -1393,6 +1884,18 @@ export const FinanceManager: React.FC<FinanceManagerProps> = ({
               </div>
           </div>
       )}
+
+      <ContractSummaryModal
+          open={contractSummaryContent !== null}
+          onClose={() => setContractSummaryContent(null)}
+          detailYear={receivableYear}
+          subtitle={`当前核销账期 ${receivableMonth} · 推算账单与列表应收使用相同租户条款及预算调整（含应收专用方案快照合并）`}
+          billsSectionSuffix="与应收核销列表口径一致"
+          budgetAssumptions={budgetAssumptions}
+          budgetAdjustments={budgetAdjustments}
+          content={contractSummaryContent ?? { kind: 'missing' }}
+          highlightReceivableYYYYMM={receivableMonth}
+      />
 
       {deferModalTenant && (
           <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
