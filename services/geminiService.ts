@@ -1,5 +1,3 @@
-
-import { GoogleGenAI, Type } from "@google/genai";
 import { DashboardData, KeyMoment } from "../types";
 
 // 注意：此服务已废弃，默认使用千问 AI

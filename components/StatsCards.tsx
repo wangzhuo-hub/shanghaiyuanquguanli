@@ -21,7 +21,31 @@ export const StatsCards: React.FC<StatsCardsProps> = ({ data, onEditTargets, sel
   const dashboardPct = (v: number | null | undefined) => formatPercent(v, 0);
 
   const annualProgress = data.annualRevenueTarget > 0 ? Math.min(100, (data.annualRevenueCollected / data.annualRevenueTarget) * 100) : 0;
-  
+
+  // 年初预算：年度合计来自 yearlyTargets；按月数值来自 initializationData.initialBudget（元）
+  const yearTarget = (data.yearlyTargets || {})[selectedYear] || {};
+  const annualInitialBudget = (yearTarget as { revenue?: number; occupancy?: number; initialBudget?: number }).initialBudget || 0;
+
+  const initialBudgetMonthMap = useMemo(() => {
+      const map = new Map<number, number>();
+      for (const d of data.initializationData || []) {
+          if (d.year !== selectedYear) continue;
+          if (d.initialBudget == null || !Number.isFinite(Number(d.initialBudget))) continue;
+          map.set(d.month, Number(d.initialBudget));
+      }
+      return map;
+  }, [data.initializationData, selectedYear]);
+
+  const hasMonthlyInitialBudget = initialBudgetMonthMap.size > 0;
+  const initialBudgetFooterSum = useMemo(() => {
+      if (hasMonthlyInitialBudget) {
+          let sum = 0;
+          for (let m = 1; m <= 12; m++) sum += initialBudgetMonthMap.get(m) ?? 0;
+          return sum;
+      }
+      return annualInitialBudget;
+  }, [hasMonthlyInitialBudget, initialBudgetMonthMap, annualInitialBudget]);
+
   // Occupancy Target Gap
   const occupancyGap = data.annualOccupancyTarget - data.occupancyRate;
 
@@ -117,7 +141,8 @@ export const StatsCards: React.FC<StatsCardsProps> = ({ data, onEditTargets, sel
       let cumulativeBudget = 0;
       return Array.from({ length: 12 }, (_, i) => {
           const trend = data.monthlyTrends[i];
-          const budget = trend?.revenueTarget || 0;
+          const contractReceivable = trend?.contractReceivable ?? trend?.revenueTarget ?? 0;
+          const budget = contractReceivable;
           const actual = trend?.revenueCollected || 0;
           const hasActual = trend?.revenueCollected !== null;
           
@@ -176,72 +201,69 @@ export const StatsCards: React.FC<StatsCardsProps> = ({ data, onEditTargets, sel
         {/* Annual Goal Card with Monthly Breakdown Below */}
         <div className="space-y-4">
             {/* Monthly Breakdown Table - Integrated Budget Execution */}
-            <div className="grid grid-cols-1 lg:grid-cols-[2fr,1fr] gap-4">
+            <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,2fr)_minmax(0,1fr)] gap-4 items-stretch">
                 {/* Left: Table */}
-                <div className="bg-white rounded-2xl shadow-lg border border-slate-200 overflow-hidden min-w-0">
-                    <div className="bg-gradient-to-r from-emerald-50 to-emerald-100 px-4 sm:px-6 py-4 border-b border-emerald-200">
-                        <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-                            <div className="flex flex-wrap items-center gap-2 text-emerald-800 min-w-0">
-                                <CalendarRange size={18} className="shrink-0" />
-                                <h3 className="font-bold text-sm sm:text-base">预算执行 (Budget vs Actual)</h3>
-                                <span className="text-xs font-semibold bg-emerald-600 text-white px-2 py-1 rounded shrink-0">实时监控</span>
-                            </div>
-                        </div>
-                        <div className="mt-1 text-[11px] text-emerald-700/80 break-words">
-                            数据源：初始化月度应收（有值则优先）+ 预算表/生效方案 + 财务报表收款明细
+                <div className="bg-white rounded-xl shadow-sm border border-slate-100 overflow-hidden min-w-0 flex flex-col hover:shadow-md transition-shadow duration-300">
+                    <div className="bg-gradient-to-r from-emerald-50 to-emerald-100 px-4 sm:px-5 py-2.5 border-b border-emerald-200">
+                        <div className="flex flex-wrap items-center gap-2 text-emerald-800 min-w-0">
+                            <CalendarRange size={16} className="shrink-0" />
+                            <h3 className="font-bold text-xs sm:text-sm">预算执行</h3>
+                            <span className="text-[10px] font-semibold bg-emerald-600 text-white px-1.5 py-0.5 rounded shrink-0">实时</span>
                         </div>
                     </div>
-                    <div className="overflow-x-auto min-w-0">
-                        <table className="w-full text-sm min-w-[600px]">
+                    <div className="overflow-x-auto min-w-0 flex-1">
+                        <table className="w-full text-xs min-w-[720px]">
                             <thead>
                                 <tr className="bg-slate-50 border-b border-slate-200">
-                                    <th className="px-4 py-3 text-center font-semibold text-slate-700">月份</th>
-                                    <th className="px-4 py-3 text-right font-semibold text-blue-700 bg-blue-50/30">预算收款(万元)</th>
-                                    <th className="px-4 py-3 text-right font-semibold text-emerald-700 bg-emerald-50/30">实际收款(万元)</th>
-                                    <th className="px-4 py-3 text-right font-semibold text-slate-700 hidden sm:table-cell">去年同期(万元)</th>
-                                    <th className="px-4 py-3 text-right font-semibold text-slate-700">同比</th>
-                                    <th className="px-4 py-3 text-center font-semibold text-slate-700">当月完成率</th>
-                                    <th className="px-4 py-3 text-right font-semibold text-slate-700 border-l border-slate-200 hidden sm:table-cell">累计达成率</th>
+                                    <th className="px-3 py-2.5 text-center font-semibold text-slate-700 whitespace-nowrap">月份</th>
+                                    <th className="px-3 py-2.5 text-right font-semibold text-amber-700 bg-amber-50/30 whitespace-nowrap">年初预算</th>
+                                    <th className="px-3 py-2.5 text-right font-semibold text-blue-700 bg-blue-50/30 whitespace-nowrap">合同应收</th>
+                                    <th className="px-3 py-2.5 text-right font-semibold text-emerald-700 bg-emerald-50/30 whitespace-nowrap">实际收款</th>
+                                    <th className="px-3 py-2.5 text-right font-semibold text-slate-700 hidden sm:table-cell whitespace-nowrap">去年同期</th>
+                                    <th className="px-3 py-2.5 text-right font-semibold text-slate-700 whitespace-nowrap">同比</th>
+                                    <th className="px-3 py-2.5 text-center font-semibold text-slate-700 whitespace-nowrap">完成率</th>
+                                    <th className="px-3 py-2.5 text-right font-semibold text-slate-700 border-l border-slate-200 hidden sm:table-cell whitespace-nowrap">累计达成</th>
                                 </tr>
                             </thead>
                             <tbody>
                                 {monthlyBreakdown.map((month) => (
                                     <tr key={month.month} className="border-b border-slate-100 hover:bg-slate-50 transition-colors">
-                                        <td className="px-4 py-3 font-medium text-slate-800 text-center">{month.monthName}</td>
-                                        <td className="px-4 py-3 text-right text-slate-600 tabular-nums bg-blue-50/10">
+                                        <td className="px-3 py-2.5 font-medium text-slate-800 text-center">{month.monthName}</td>
+                                        <td className="px-3 py-2.5 text-right text-slate-500 tabular-nums bg-amber-50/10 whitespace-nowrap">
+                                            {initialBudgetMonthMap.has(month.month)
+                                                ? dashboardWan(initialBudgetMonthMap.get(month.month)!)
+                                                : '—'}
+                                        </td>
+                                        <td className="px-3 py-2.5 text-right text-slate-600 tabular-nums bg-blue-50/10 whitespace-nowrap">
                                             {dashboardWan(month.budget)}
                                         </td>
-                                        <td className="px-4 py-3 text-right font-semibold text-slate-800 tabular-nums bg-emerald-50/10">
+                                        <td className="px-3 py-2.5 text-right font-semibold text-slate-800 tabular-nums bg-emerald-50/10 whitespace-nowrap">
                                             {month.hasActual ? dashboardWan(month.actual!) : <span className="text-slate-300">-</span>}
                                         </td>
-                                        <td className="px-4 py-3 text-right text-slate-400 text-xs tabular-nums hidden sm:table-cell">
+                                        <td className="px-3 py-2.5 text-right text-slate-400 tabular-nums hidden sm:table-cell whitespace-nowrap">
                                             {dashboardWan(month.prevActual)}
                                         </td>
-                                        <td className="px-4 py-3 text-right">
+                                        <td className="px-3 py-2.5 text-right whitespace-nowrap">
                                             {month.hasActual && month.prevActual > 0 ? (
-                                                <span className={`text-xs font-medium ${
-                                                    month.yoy >= 0 ? 'text-emerald-600' : 'text-rose-500'
-                                                }`}>
+                                                <span className={`font-medium ${month.yoy >= 0 ? 'text-emerald-600' : 'text-rose-500'}`}>
                                                     {month.yoy > 0 ? '+' : ''}{dashboardPct(month.yoy)}
                                                 </span>
                                             ) : <span className="text-slate-300">-</span>}
                                         </td>
-                                        <td className="px-4 py-3 text-center">
-                                            {month.hasActual ? (
-                                                <span className={`inline-block px-2 py-1 rounded-full text-xs font-bold ${
-                                                    month.monthlyRate >= 100 ? 'bg-emerald-100 text-emerald-700' :
-                                                    month.monthlyRate >= 80 ? 'bg-blue-100 text-blue-700' :
-                                                    'bg-amber-100 text-amber-700'
-                                                }`}>
-                                                    {dashboardPct(month.monthlyRate)}
-                                                </span>
-                                            ) : <span className="text-slate-300">-</span>}
+                                        <td className="px-3 py-2.5 text-center whitespace-nowrap">
+                                            <span className={`inline-flex items-center justify-center min-w-[48px] px-2 py-1 rounded-full text-[11px] font-bold ${
+                                                month.hasActual
+                                                    ? month.monthlyRate >= 100 ? 'bg-emerald-100 text-emerald-700' :
+                                                      month.monthlyRate >= 80 ? 'bg-blue-100 text-blue-700' :
+                                                      'bg-amber-100 text-amber-700'
+                                                    : 'text-slate-300'
+                                            }`}>
+                                                {month.hasActual ? dashboardPct(month.monthlyRate) : '—'}
+                                            </span>
                                         </td>
-                                        <td className="px-4 py-3 text-right font-medium border-l border-slate-200 hidden sm:table-cell">
+                                        <td className="px-3 py-2.5 text-right font-medium border-l border-slate-200 hidden sm:table-cell whitespace-nowrap">
                                             {month.hasActual ? (
-                                                <span className={`text-xs px-2 py-0.5 rounded ${
-                                                    month.cumulativeProgress >= 100 ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-100 text-slate-600'
-                                                }`}>
+                                                <span className={`text-[11px] px-2 py-0.5 rounded font-bold ${month.cumulativeProgress >= 100 ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-100 text-slate-600'}`}>
                                                     {dashboardPct(month.cumulativeProgress)}
                                                 </span>
                                             ) : <span className="text-slate-300">-</span>}
@@ -250,36 +272,37 @@ export const StatsCards: React.FC<StatsCardsProps> = ({ data, onEditTargets, sel
                                 ))}
                             </tbody>
                             <tfoot>
-                                <tr className="bg-slate-900 text-white border-t-2 border-slate-700">
-                                    <td className="px-4 py-3 font-bold text-center">合计</td>
-                                    <td className="px-4 py-3 text-right font-bold tabular-nums bg-blue-500/10">
+                                <tr className="bg-slate-800 text-white border-t-2 border-slate-600">
+                                    <td className="px-3 py-2.5 font-bold text-center">合计</td>
+                                    <td className="px-3 py-2.5 text-right font-bold tabular-nums bg-amber-500/10 whitespace-nowrap">
+                                        {initialBudgetFooterSum > 0 ? dashboardWan(initialBudgetFooterSum) : '—'}
+                                    </td>
+                                    <td className="px-3 py-2.5 text-right font-bold tabular-nums bg-blue-500/10 whitespace-nowrap">
                                         {dashboardWan(budgetExecutionTotal.totalBudget)}
                                     </td>
-                                    <td className="px-4 py-3 text-right font-bold tabular-nums bg-emerald-500/10">
+                                    <td className="px-3 py-2.5 text-right font-bold tabular-nums bg-emerald-500/10 whitespace-nowrap">
                                         {budgetExecutionTotal.hasActual ? dashboardWan(budgetExecutionTotal.totalActual) : <span className="text-slate-400">-</span>}
                                     </td>
-                                    <td className="px-4 py-3 text-right text-slate-300 text-xs tabular-nums hidden sm:table-cell">
+                                    <td className="px-3 py-2.5 text-right text-slate-300 tabular-nums hidden sm:table-cell whitespace-nowrap">
                                         {dashboardWan(budgetExecutionTotal.yearPrevActual)}
                                     </td>
-                                    <td className="px-4 py-3 text-right">
+                                    <td className="px-3 py-2.5 text-right whitespace-nowrap">
                                         {budgetExecutionTotal.hasActual && budgetExecutionTotal.comparablePrevActual > 0 ? (
-                                            <span className={`text-xs font-bold ${
-                                                budgetExecutionTotal.yoy >= 0 ? 'text-emerald-300' : 'text-rose-300'
-                                            }`}>
+                                            <span className={`text-xs font-bold ${budgetExecutionTotal.yoy >= 0 ? 'text-emerald-300' : 'text-rose-300'}`}>
                                                 {budgetExecutionTotal.yoy > 0 ? '+' : ''}{dashboardPct(budgetExecutionTotal.yoy)}
                                             </span>
                                         ) : <span className="text-slate-400">-</span>}
                                     </td>
-                                    <td className="px-4 py-3 text-center">
+                                    <td className="px-3 py-2.5 text-center whitespace-nowrap">
                                         {budgetExecutionTotal.hasActual ? (
-                                            <span className="inline-block px-2 py-1 rounded-full text-xs font-bold bg-white/15 text-white">
+                                            <span className="inline-flex items-center px-2 py-1 rounded-full text-[11px] font-bold bg-white/15 text-white">
                                                 {dashboardPct(budgetExecutionTotal.monthlyRate)}
                                             </span>
                                         ) : <span className="text-slate-400">-</span>}
                                     </td>
-                                    <td className="px-4 py-3 text-right font-bold border-l border-slate-700 hidden sm:table-cell">
+                                    <td className="px-3 py-2.5 text-right font-bold border-l border-slate-700 hidden sm:table-cell whitespace-nowrap">
                                         {budgetExecutionTotal.hasActual ? (
-                                            <span className="text-xs px-2 py-0.5 rounded bg-white/15 text-white">
+                                            <span className="text-[11px] px-2 py-0.5 rounded font-bold bg-white/15 text-white">
                                                 {dashboardPct(budgetExecutionTotal.cumulativeProgress)}
                                             </span>
                                         ) : <span className="text-slate-400">-</span>}
@@ -291,18 +314,17 @@ export const StatsCards: React.FC<StatsCardsProps> = ({ data, onEditTargets, sel
                 </div>
 
                 {/* Right: Annual Completion Visualization */}
-                <div className="bg-white rounded-2xl shadow-lg border border-slate-200 overflow-hidden group flex flex-col min-w-0">
-                    <div className="bg-gradient-to-r from-blue-50 to-blue-100 px-4 py-3 border-b border-blue-200">
-                        <h3 className="font-bold text-sm text-blue-800">年度指标完成率</h3>
+                <div className="bg-white rounded-xl shadow-sm border border-slate-100 overflow-hidden group flex flex-col min-w-0 hover:shadow-md transition-shadow duration-300">
+                    <div className="bg-gradient-to-r from-blue-50 to-blue-100 px-3 sm:px-4 py-2.5 border-b border-blue-200 shrink-0">
+                        <h3 className="font-semibold text-xs sm:text-sm text-slate-800">年度指标完成率</h3>
                     </div>
-                    <div className="p-5 flex-1 flex flex-col justify-between">
-                        {/* Annual Progress */}
-                        <div className="space-y-5">
+                    <div className="p-3 sm:p-4 flex-1 flex flex-col justify-between overflow-y-auto">
+                        <div className="space-y-3.5">
                             {/* Revenue Completion */}
                             <div>
                                 <div className="flex justify-between items-baseline mb-2">
                                     <span className="text-xs text-slate-600 font-medium">营收达成</span>
-                                    <span className={`text-2xl font-bold tabular-nums ${
+                                    <span className={`text-3xl font-bold tracking-tight tabular-nums ${
                                         annualProgress >= 100 ? 'text-emerald-600' :
                                         annualProgress >= 80 ? 'text-blue-600' :
                                         'text-amber-600'
@@ -345,7 +367,7 @@ export const StatsCards: React.FC<StatsCardsProps> = ({ data, onEditTargets, sel
                                             <Edit3 size={12} />
                                         </button>
                                     </div>
-                                    <span className={`text-2xl font-bold tabular-nums ${
+                                    <span className={`text-3xl font-bold tracking-tight tabular-nums ${
                                         occupancyGap <= 0 ? 'text-emerald-600' :
                                         occupancyGap <= 5 ? 'text-blue-600' :
                                         'text-amber-600'
@@ -392,13 +414,13 @@ export const StatsCards: React.FC<StatsCardsProps> = ({ data, onEditTargets, sel
                                         {data.accumulatedArrears === 0 ? '✓ 无欠款' : `⚠ 待核销账单`}
                                     </span>
                                 </div>
-                                <div className="text-[10px] text-slate-400 mt-1">
+                                <div className="text-[10px] text-slate-400 mt-0.5">
                                     2026年1月1日起所有未核销账单
                                 </div>
                             </div>
 
-                            {/* 租赁动态 - 紧凑模板 */}
-                            <div className="pt-3 border-t border-slate-100">
+                            {/* 租赁动态 */}
+                            <div className="pt-2 border-t border-slate-100">
                                 <h4 className="text-xs font-semibold text-slate-700 mb-3">租赁维度择取</h4>
                                 
                                 {/* Tab切换 */}

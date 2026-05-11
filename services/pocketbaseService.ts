@@ -22,6 +22,21 @@ import type { DirtyPayload } from './dirtyTracker';
  */
 export type RecordMeta = Record<string, Record<string, string>>;
 
+/** PocketBase 记录通用字段 */
+type PbRecord = { id: string; created?: string; updated?: string; [key: string]: unknown };
+
+/** 从 unknown 错误对象安全提取消息 */
+const errMsg = (e: unknown): string => {
+    const err = e as { data?: { message?: string }; response?: { message?: string }; message?: string; status?: number };
+    return String(err?.data?.message || err?.response?.message || err?.message || '');
+};
+
+/** 从 unknown 错误对象安全提取 HTTP 状态码 */
+const errStatus = (e: unknown): number | undefined => {
+    const err = e as { status?: number; response?: { status?: number } };
+    return err?.status ?? err?.response?.status;
+};
+
 let pb: PocketBase | null = null;
 
 export const initPocketBase = (url: string) => {
@@ -74,8 +89,8 @@ const PB_AUTH_PASSWORD_MIN_LEN = 8;
 
 /** 将 PocketBase ClientResponseError 的字段级校验合并为可读文案 */
 const formatPocketBaseClientError = (err: unknown): string => {
-    const e = err as any;
-    const payload = e?.data ?? e?.response ?? {};
+    const e = err as { data?: { message?: string; data?: Record<string, { message?: string }> }; response?: { message?: string; data?: Record<string, { message?: string }> }; message?: string };
+    const payload = (e?.data ?? e?.response ?? {}) as { message?: string; data?: Record<string, { message?: string }> };
     const top = String(payload?.message || e?.message || '').trim();
     const fieldBag = payload?.data;
     if (fieldBag && typeof fieldBag === 'object' && !Array.isArray(fieldBag)) {
@@ -92,7 +107,7 @@ const formatPocketBaseClientError = (err: unknown): string => {
 
 /** PocketBase filter：`email="..."`（转义引号与反斜杠） */
 const emailEqFilter = (email: string): string => {
-    const e = String(email || '').trim().replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+    const e = escFilter(String(email || '').trim());
     return `email="${e}"`;
 };
 
@@ -108,7 +123,7 @@ const isElevatedAuthRole = (role: unknown): boolean => {
  */
 const mergeSignupIntoExistingUser = async (
     request: SignupRequestRecord,
-    existingRow?: any
+    existingRow?: Record<string, unknown>
 ): Promise<{ success: boolean; user?: ManagedUserAccount; message: string }> => {
     if (!pb) return { success: false, message: 'PocketBase 未初始化' };
     const email = String(request.email || '').trim();
@@ -146,7 +161,7 @@ const mergeSignupIntoExistingUser = async (
             patch.passwordConfirm = pwd;
         }
         try {
-            const updated = await pb.collection('users').update(row.id, patch);
+            const updated = await pb.collection('users').update(String(row.id), patch);
             return {
                 success: true,
                 user: mapManagedUser(updated),
@@ -156,25 +171,25 @@ const mergeSignupIntoExistingUser = async (
                       ? '该邮箱已有账号：已合并园区授权并启用（平台/集团管理员密码未通过注册单修改）。'
                       : '该邮箱已有账号：已合并园区授权并启用（申请密码过短或未提供，未改密）。',
             };
-        } catch (first: any) {
+        } catch (first: unknown) {
             if (!canTryPassword) {
                 return { success: false, message: formatPocketBaseClientError(first) || '合并已有账号失败' };
             }
             const { password: _p, passwordConfirm: _c, ...withoutPwd } = patch;
             try {
-                const updated = await pb.collection('users').update(row.id, withoutPwd);
+                const updated = await pb.collection('users').update(String(row.id), withoutPwd);
                 return {
                     success: true,
                     user: mapManagedUser(updated),
                     message:
                         '该邮箱已有账号：已合并园区授权并启用；密码因权限策略未自动更新，请管理员在后台重置或通知用户使用原密码登录。',
                 };
-            } catch (second: any) {
+            } catch (second: unknown) {
                 return { success: false, message: formatPocketBaseClientError(second) || '合并已有账号失败' };
             }
         }
-    } catch (e: any) {
-        const status = e?.status ?? e?.response?.status;
+    } catch (e: unknown) {
+        const status = errStatus(e);
         if (status === 404) {
             return { success: false, message: '未找到同名邮箱账号' };
         }
@@ -182,23 +197,23 @@ const mergeSignupIntoExistingUser = async (
     }
 };
 
-const mapAuthUser = (record: any): AuthUser | null => {
+const mapAuthUser = (record: Record<string, unknown> | null | undefined): AuthUser | null => {
     if (!record?.id) return null;
     const projectId = String(record.project_id || '').trim();
     const allowedProjectIds = normalizeProjectIds(record.allowed_project_ids, projectId);
     return {
-        id: record.id,
-        email: record.email || '',
-        name: record.name || record.username || '',
+        id: String(record.id),
+        email: String(record.email || ''),
+        name: String(record.name || record.username || ''),
         projectId: projectId || allowedProjectIds[0] || '',
-        role: (record.role || 'park_user') as UserRole,
+        role: (String(record.role || 'park_user')) as UserRole,
         allowedProjectIds,
         enabled: record.enabled !== false,
     };
 };
 
 export const getCurrentAuthUser = (): AuthUser | null => {
-    return mapAuthUser(pb?.authStore?.model);
+    return mapAuthUser(pb?.authStore?.model as Record<string, unknown> | null);
 };
 
 export const isAuthenticated = (): boolean => {
@@ -227,8 +242,8 @@ export const authenticatePocketBaseUser = async (
             return { success: false, message: '账号未绑定园区，请联系管理员' };
         }
         return { success: true, user, message: '登录成功' };
-    } catch (e: any) {
-        return { success: false, message: e?.data?.message || e?.message || '登录失败，请检查账号密码' };
+    } catch (e: unknown) {
+        return { success: false, message: errMsg(e) || '登录失败，请检查账号密码' };
     }
 };
 
@@ -253,8 +268,8 @@ export const fetchAuthorizedParks = async (): Promise<{ success: boolean; parks:
             sortOrder: row.sort_order ?? 0,
         }));
         return { success: true, parks, message: '加载成功' };
-    } catch (e: any) {
-        return { success: false, parks: [], message: e?.data?.message || e?.message || '加载园区失败' };
+    } catch (e: unknown) {
+        return { success: false, parks: [], message: errMsg(e) || '加载园区失败' };
     }
 };
 
@@ -306,18 +321,18 @@ export interface SignupRequestRecord {
     updated?: string;
 }
 
-const mapManagedUser = (row: any): ManagedUserAccount => {
-    const projectId = String(row?.project_id || '').trim();
+const mapManagedUser = (row: Record<string, unknown>): ManagedUserAccount => {
+    const projectId = String(row.project_id || '').trim();
     return {
-        id: String(row?.id || ''),
-        email: String(row?.email || ''),
-        name: String(row?.name || row?.username || ''),
-        role: (row?.role || 'park_user') as UserRole,
+        id: String(row.id || ''),
+        email: String(row.email || ''),
+        name: String(row.name || row.username || ''),
+        role: (String(row.role || 'park_user')) as UserRole,
         projectId,
-        allowedProjectIds: normalizeProjectIds(row?.allowed_project_ids, projectId),
-        enabled: row?.enabled !== false,
-        created: row?.created || '',
-        updated: row?.updated || '',
+        allowedProjectIds: normalizeProjectIds(row.allowed_project_ids, projectId),
+        enabled: row.enabled !== false,
+        created: String(row.created || ''),
+        updated: String(row.updated || ''),
     };
 };
 
@@ -329,23 +344,23 @@ export const fetchManagedUsers = async (): Promise<{ success: boolean; users: Ma
             sort: '-created',
         });
         return { success: true, users: rows.map(mapManagedUser), message: '加载成功' };
-    } catch (e: any) {
-        return { success: false, users: [], message: e?.data?.message || e?.message || '加载登录人员失败' };
+    } catch (e: unknown) {
+        return { success: false, users: [], message: errMsg(e) || '加载登录人员失败' };
     }
 };
 
-const mapSignupRequest = (row: any): SignupRequestRecord => ({
-    id: String(row?.id || ''),
-    applicantName: String(row?.applicant_name || '').trim(),
-    email: String(row?.email || ''),
-    password: String(row?.password_plain || ''),
-    requestedProjectIds: normalizeProjectIds(row?.requested_project_ids),
-    status: (row?.status || 'pending') as SignupRequestRecord['status'],
-    reviewNote: String(row?.review_note || ''),
-    approvedUserId: String(row?.approved_user_id || ''),
-    approvedAt: String(row?.approved_at || ''),
-    created: String(row?.created || ''),
-    updated: String(row?.updated || ''),
+const mapSignupRequest = (row: Record<string, unknown>): SignupRequestRecord => ({
+    id: String(row.id || ''),
+    applicantName: String(row.applicant_name || '').trim(),
+    email: String(row.email || ''),
+    password: String(row.password_plain || ''),
+    requestedProjectIds: normalizeProjectIds(row.requested_project_ids),
+    status: (String(row.status || 'pending')) as SignupRequestRecord['status'],
+    reviewNote: String(row.review_note || ''),
+    approvedUserId: String(row.approved_user_id || ''),
+    approvedAt: String(row.approved_at || ''),
+    created: String(row.created || ''),
+    updated: String(row.updated || ''),
 });
 
 export const fetchPublicParks = async (): Promise<{ success: boolean; parks: ParkInfo[]; message: string }> => {
@@ -364,8 +379,8 @@ export const fetchPublicParks = async (): Promise<{ success: boolean; parks: Par
             sortOrder: row.sort_order ?? 0,
         }));
         return { success: true, parks, message: '加载成功' };
-    } catch (e: any) {
-        return { success: false, parks: [], message: e?.data?.message || e?.message || '加载园区失败' };
+    } catch (e: unknown) {
+        return { success: false, parks: [], message: errMsg(e) || '加载园区失败' };
     }
 };
 
@@ -401,8 +416,8 @@ export const submitSignupRequest = async (
             status: 'pending',
         });
         return { success: true, message: '申请已提交，请等待管理员审批' };
-    } catch (e: any) {
-        return { success: false, message: e?.data?.message || e?.message || '提交申请失败' };
+    } catch (e: unknown) {
+        return { success: false, message: errMsg(e) || '提交申请失败' };
     }
 };
 
@@ -412,8 +427,8 @@ export const fetchSignupRequests = async (): Promise<{ success: boolean; request
     try {
         const rows = await pb.collection('pb_user_signup_requests').getFullList();
         return { success: true, requests: rows.map(mapSignupRequest), message: '加载成功' };
-    } catch (e: any) {
-        return { success: false, requests: [], message: e?.data?.message || e?.message || '加载注册申请失败' };
+    } catch (e: unknown) {
+        return { success: false, requests: [], message: errMsg(e) || '加载注册申请失败' };
     }
 };
 
@@ -460,7 +475,7 @@ export const createManagedUser = async (
     try {
         const created = await pb.collection('users').create(payload);
         return { success: true, user: mapManagedUser(created), message: '创建成功' };
-    } catch (e: any) {
+    } catch (e: unknown) {
         return { success: false, message: formatPocketBaseClientError(e) || '创建登录人员失败' };
     }
 };
@@ -476,8 +491,8 @@ export const updateManagedUserEnabled = async (
     try {
         await pb.collection('users').update(id, { enabled });
         return { success: true, message: enabled ? '已审批通过并启用' : '已禁用账号' };
-    } catch (e: any) {
-        return { success: false, message: e?.data?.message || e?.message || '更新账号状态失败' };
+    } catch (e: unknown) {
+        return { success: false, message: errMsg(e) || '更新账号状态失败' };
     }
 };
 
@@ -491,7 +506,7 @@ export const updateManagedUser = async (
     let current: any;
     try {
         current = await pb.collection('users').getOne(userId);
-    } catch (e: any) {
+    } catch (e: unknown) {
         return { success: false, message: formatPocketBaseClientError(e) || '用户不存在' };
     }
     const patch: Record<string, unknown> = {};
@@ -531,7 +546,7 @@ export const updateManagedUser = async (
     try {
         const updated = await pb.collection('users').update(userId, patch);
         return { success: true, user: mapManagedUser(updated), message: '已保存' };
-    } catch (e: any) {
+    } catch (e: unknown) {
         return { success: false, message: formatPocketBaseClientError(e) || '更新账号失败' };
     }
 };
@@ -547,8 +562,8 @@ export const deleteSignupRequest = async (
     try {
         await pb.collection('pb_user_signup_requests').delete(id);
         return { success: true, message: '已清理审批记录' };
-    } catch (e: any) {
-        const status = e?.status ?? e?.response?.status;
+    } catch (e: unknown) {
+        const status = errStatus(e);
         if (status === 404) {
             return { success: true, message: '审批记录已不存在' };
         }
@@ -587,12 +602,12 @@ export const cleanupSignupRequestsForUser = async (
             try {
                 await pb.collection('pb_user_signup_requests').delete(row.id);
                 ok += 1;
-            } catch {
-                /* 单条失败忽略，最终返回成功数 */
+            } catch (e) {
+                console.warn('[PB] 清理单条审批记录失败:', e);
             }
         }
         return { success: true, cleaned: ok, message: ok > 0 ? `已清理 ${ok} 条审批记录` : '清理失败' };
-    } catch (e: any) {
+    } catch (e: unknown) {
         return {
             success: false,
             cleaned: 0,
@@ -623,20 +638,20 @@ export const deleteManagedUser = async (
                 return { success: false, message: '不能删除最后一个平台管理员账号' };
             }
         }
-    } catch {
-        /* 删除前校验失败时仍尝试 delete，由服务端返回错误 */
+    } catch (e) {
+        console.warn('[PB] 删除前用户预检失败，继续尝试删除:', e);
     }
     try {
         await pb.collection('users').delete(id);
-    } catch (e: any) {
+    } catch (e: unknown) {
         return { success: false, message: formatPocketBaseClientError(e) || '删除账号失败' };
     }
     let cleanedSignupCount = 0;
     try {
         const cleanup = await cleanupSignupRequestsForUser(id, userEmail);
         if (cleanup.success) cleanedSignupCount = cleanup.cleaned;
-    } catch {
-        /* 清理失败不影响账号已删的事实 */
+    } catch (e) {
+        console.warn('[PB] 清理关联审批记录失败（账号已删除）:', e);
     }
     const tail = cleanedSignupCount > 0 ? `，并清理 ${cleanedSignupCount} 条审批记录` : '';
     return { success: true, message: `已删除账号${tail}`, cleanedSignupCount };
@@ -723,7 +738,7 @@ export const approveSignupRequest = async (
             success: true,
             message: existingUser ? createRes.message || '审批完成，申请人账号已可登录' : '审批完成，申请人账号已可登录',
         };
-    } catch (e: any) {
+    } catch (e: unknown) {
         return { success: false, message: formatPocketBaseClientError(e) || '审批申请失败' };
     }
 };
@@ -779,7 +794,7 @@ export const authenticatePocketBase = async (email: string, password: string) =>
         console.log('PocketBase 管理员登录成功:', authData.record?.email || safeEmail);
         console.log('Token:', pb.authStore.token ? '已生成' : '未生成');
         return true;
-    } catch (e: any) {
+    } catch (e: unknown) {
         // 回退 1：兼容旧版本 PocketBase admins 认证端点
         try {
             console.log('PocketBase 回退登录(admins endpoint):', safeEmail);
@@ -787,7 +802,7 @@ export const authenticatePocketBase = async (email: string, password: string) =>
             console.log('PocketBase admins 登录成功:', safeEmail);
             console.log('Token:', pb.authStore.token ? '已生成' : '未生成');
             return true;
-        } catch (adminErr: any) {
+        } catch (adminErr: unknown) {
             // 回退 2：兼容使用 users 集合做登录的旧配置
             try {
                 console.log('PocketBase 回退登录(users):', safeEmail);
@@ -795,15 +810,15 @@ export const authenticatePocketBase = async (email: string, password: string) =>
                 console.log('PocketBase 用户登录成功:', authData.record?.email || safeEmail);
                 console.log('Token:', pb.authStore.token ? '已生成' : '未生成');
                 return true;
-            } catch (userErr: any) {
+            } catch (userErr: unknown) {
                 // 认证失败不再打红色 error，避免控制台噪音；保存接口可按 API Rules 直接工作
                 console.warn("PocketBase 认证失败（已跳过登录，继续匿名模式）", {
-                    superuserStatus: e?.status,
-                    superuserMessage: e?.message,
-                    adminStatus: adminErr?.status,
-                    adminMessage: adminErr?.message,
-                    userStatus: userErr?.status,
-                    userMessage: userErr?.message,
+                    superuserStatus: errStatus(e),
+                    superuserMessage: errMsg(e),
+                    adminStatus: errStatus(adminErr),
+                    adminMessage: errMsg(adminErr),
+                    userStatus: errStatus(userErr),
+                    userMessage: errMsg(userErr),
                 });
                 return false;
             }
@@ -822,13 +837,17 @@ export const checkPocketBaseConnection = async (url: string): Promise<boolean> =
     }
 };
 
+/** PocketBase filter 字符串安全转义（防止注入） */
+const escFilter = (value: string): string =>
+    String(value || '').replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+
 /** 与 pb_billing_period_notes 中单条记录的 original_id 对应，存 notes_json.version */
 const DASHBOARD_DATA_VERSION_OID = 'dashboard_data_version';
 
 const readCloudSaveVersion = async (projectId: string): Promise<number> => {
     if (!pb) return 0;
     const list = await pb.collection('pb_billing_period_notes').getList(1, 1, {
-        filter: `project_id = "${projectId}" && original_id = "${DASHBOARD_DATA_VERSION_OID}"`,
+        filter: `project_id = "${escFilter(projectId)}" && original_id = "${escFilter(DASHBOARD_DATA_VERSION_OID)}"`,
         fields: 'notes_json',
     });
     const v = (list.items[0]?.notes_json as { version?: unknown } | undefined)?.version;
@@ -885,7 +904,7 @@ export const saveToPocketBase = async (
     }
 
     const ensureArray = <T>(value: unknown): T[] => (Array.isArray(value) ? (value as T[]) : []);
-    const byOriginalId = (id: string) => `project_id = "${projectId}" && original_id = "${id}"`;
+    const byOriginalId = (id: string) => `project_id = "${escFilter(projectId)}" && original_id = "${escFilter(id)}"`;
     const upsertByOriginalId = async (collection: string, originalId: string, payload: Record<string, any>) => {
         const existing = await pb!.collection(collection).getList(1, 1, {
             filter: byOriginalId(originalId),
@@ -899,7 +918,7 @@ export const saveToPocketBase = async (
     };
     const replaceCollection = async (collection: string, rows: Record<string, any>[]) => {
         const oldRows = await pb!.collection(collection).getFullList({
-            filter: `project_id = "${projectId}"`,
+            filter: `project_id = "${escFilter(projectId)}"`,
             fields: 'id',
         });
         for (const row of oldRows) {
@@ -977,6 +996,8 @@ export const saveToPocketBase = async (
             key_moments: t.keyMoments || [],
             name_history: t.nameHistory || [],
             payment_cycle_changes: t.paymentCycleChanges || [],
+            payment_period_adjustments: t.paymentPeriodAdjustments || [],
+            payment_period_shift_months: t.paymentPeriodShiftMonths ?? 0,
             project_id: projectId,
         }));
         const payments = ensureArray<any>(data.payments).map((p) => ({
@@ -1007,6 +1028,7 @@ export const saveToPocketBase = async (
             year: Number(year),
             revenue: (targets as any)?.revenue || 0,
             occupancy: (targets as any)?.occupancy || 0,
+            initial_budget: (targets as any)?.initialBudget ?? 0,
             project_id: projectId,
         }));
         const monthlyInitData = ensureArray<any>(data.initializationData).map((d) => ({
@@ -1016,6 +1038,7 @@ export const saveToPocketBase = async (
             revenue_collected: d.revenueCollected || 0,
             occupancy_rate: d.occupancyRate || 0,
             accumulated_arrears: d.accumulatedArrears || 0,
+            initial_budget: d.initialBudget ?? 0,
             project_id: projectId,
         }));
         const budgetAssumptions = ensureArray<any>(data.budgetAssumptions).map((a) => ({
@@ -1098,8 +1121,8 @@ export const saveToPocketBase = async (
         });
 
         return { success: true, message: 'PocketBase 结构化数据保存成功', newVersion };
-    } catch (e: any) {
-        const errorMsg = e?.data?.message || e?.message || 'Unknown error';
+    } catch (e: unknown) {
+        const errorMsg = errMsg(e) || 'Unknown error';
         return { success: false, message: `PocketBase 保存失败: ${errorMsg}` };
     }
 };
@@ -1111,7 +1134,7 @@ export const getPocketBaseHistory = async (
     
     try {
         const noteRecord = await pb.collection('pb_billing_period_notes').getList(1, 1, {
-            filter: `project_id = "${projectId}" && original_id = "last_save_note"`,
+            filter: `project_id = "${escFilter(projectId)}" && original_id = "last_save_note"`,
             fields: 'updated,notes_json',
         });
         const notePayload = noteRecord.items[0]?.notes_json || {};
@@ -1122,7 +1145,7 @@ export const getPocketBaseHistory = async (
             data: [{ id: projectId, created_at: createdAt, note }],
             message: '加载成功',
         };
-    } catch (e: any) {
+    } catch (e: unknown) {
         return { success: true, data: [{ id: projectId, created_at: new Date().toISOString(), note: '结构化数据' }], message: '加载成功' };
     }
 };
@@ -1139,7 +1162,7 @@ export const fetchPocketBaseBackup = async (
 
     const mapList = async (collection: string) =>
         client.collection(collection).getFullList({
-            filter: `project_id = "${projectId}"`,
+            filter: `project_id = "${escFilter(projectId)}"`,
             ...noAutoCancel,
         });
 
@@ -1155,11 +1178,11 @@ export const fetchPocketBaseBackup = async (
         const adjustmentRows = await mapList('pb_budget_adjustments');
         const scenarioRows = await mapList('pb_budget_scenarios');
         const notesRows = await client.collection('pb_billing_period_notes').getList(1, 1, {
-            filter: `project_id = "${projectId}" && original_id = "billing_period_notes"`,
+            filter: `project_id = "${escFilter(projectId)}" && original_id = "billing_period_notes"`,
             ...noAutoCancel,
         });
         const versionRows = await client.collection('pb_billing_period_notes').getList(1, 1, {
-            filter: `project_id = "${projectId}" && original_id = "${DASHBOARD_DATA_VERSION_OID}"`,
+            filter: `project_id = "${escFilter(projectId)}" && original_id = "${escFilter(DASHBOARD_DATA_VERSION_OID)}"`,
             fields: 'notes_json',
             ...noAutoCancel,
         });
@@ -1248,6 +1271,8 @@ export const fetchPocketBaseBackup = async (
                 keyMoments: Array.isArray(t.key_moments) ? t.key_moments : [],
                 nameHistory: Array.isArray(t.name_history) ? t.name_history : [],
                 paymentCycleChanges: Array.isArray(t.payment_cycle_changes) ? t.payment_cycle_changes : [],
+                paymentPeriodAdjustments: Array.isArray(t.payment_period_adjustments) ? t.payment_period_adjustments : [],
+                paymentPeriodShiftMonths: typeof t.payment_period_shift_months === 'number' ? t.payment_period_shift_months : 0,
             })),
             payments: paymentsRows.map((p: any) => ({
                 id: p.original_id,
@@ -1271,13 +1296,17 @@ export const fetchPocketBaseBackup = async (
                 invoicedAt: inv.invoiced_at || undefined,
                 deferReason: inv.defer_reason || '',
             })),
-            yearlyTargets: yearlyRows.reduce((acc: Record<number, { revenue: number; occupancy: number }>, row: any) => {
-                acc[Number(row.year)] = {
-                    revenue: row.revenue || 0,
-                    occupancy: row.occupancy || 0,
-                };
-                return acc;
-            }, {}),
+            yearlyTargets: yearlyRows.reduce(
+                (acc: Record<number, { revenue: number; occupancy: number; initialBudget?: number }>, row: any) => {
+                    acc[Number(row.year)] = {
+                        revenue: row.revenue || 0,
+                        occupancy: row.occupancy || 0,
+                        initialBudget: row.initial_budget ?? 0,
+                    };
+                    return acc;
+                },
+                {}
+            ),
             initializationData: monthlyInitRows.map((row: any) => ({
                 year: row.year,
                 month: row.month,
@@ -1285,6 +1314,7 @@ export const fetchPocketBaseBackup = async (
                 revenueCollected: row.revenue_collected || 0,
                 occupancyRate: row.occupancy_rate || 0,
                 accumulatedArrears: row.accumulated_arrears || 0,
+                initialBudget: row.initial_budget ?? 0,
             })),
             budgetAssumptions: assumptionRows.map((a: any) => ({
                 id: a.original_id,
@@ -1363,8 +1393,8 @@ export const fetchPocketBaseBackup = async (
         }
 
         return { success: true, data: rebuilt as DashboardData, message: '获取成功', recordMeta };
-    } catch (e: any) {
-        return { success: false, message: 'PocketBase 数据获取失败: ' + e.message };
+    } catch (e: unknown) {
+        return { success: false, message: 'PocketBase 数据获取失败: ' + errMsg(e) };
     }
 };
 
@@ -1381,7 +1411,7 @@ const buildOriginalIdFilter = (
     originalId: string,
     projectId: string
 ): string => {
-    const pid = projectId.replace(/"/g, '\\"');
+    const pid = escFilter(projectId);
     if (collection === 'pb_yearly_targets') {
         const year = Number(originalId);
         return `project_id = "${pid}" && year = ${Number.isFinite(year) ? year : 0}`;
@@ -1392,7 +1422,7 @@ const buildOriginalIdFilter = (
         const month = Number(mStr);
         return `project_id = "${pid}" && year = ${Number.isFinite(year) ? year : 0} && month = ${Number.isFinite(month) ? month : 0}`;
     }
-    const oid = String(originalId).replace(/"/g, '\\"');
+    const oid = escFilter(String(originalId));
     return `project_id = "${pid}" && original_id = "${oid}"`;
 };
 
@@ -1518,12 +1548,12 @@ export const saveIncrementalToPocketBase = async (
                     op: 'create',
                     newUpdated: typeof created?.updated === 'string' ? created.updated : null,
                 });
-            } catch (e: any) {
+            } catch (e: unknown) {
                 errors.push({
                     collection,
                     originalId: c.originalId,
                     op: 'create',
-                    message: e?.data?.message || e?.message || String(e),
+                    message: errMsg(e) || String(e),
                 });
             }
         }
@@ -1585,12 +1615,12 @@ export const saveIncrementalToPocketBase = async (
                     newUpdated:
                         typeof updated?.updated === 'string' ? updated.updated : null,
                 });
-            } catch (e: any) {
+            } catch (e: unknown) {
                 errors.push({
                     collection,
                     originalId: u.originalId,
                     op: 'update',
-                    message: e?.data?.message || e?.message || String(e),
+                    message: errMsg(e) || String(e),
                 });
             }
         }
@@ -1630,12 +1660,12 @@ export const saveIncrementalToPocketBase = async (
                     op: 'delete',
                     newUpdated: null,
                 });
-            } catch (e: any) {
+            } catch (e: unknown) {
                 errors.push({
                     collection,
                     originalId: d.originalId,
                     op: 'delete',
-                    message: e?.data?.message || e?.message || String(e),
+                    message: errMsg(e) || String(e),
                 });
             }
         }
@@ -1695,8 +1725,8 @@ export const forceOverwriteRecord = async (
             message: '已强制覆盖',
             newUpdated: typeof updated?.updated === 'string' ? updated.updated : undefined,
         };
-    } catch (e: any) {
-        return { success: false, message: e?.data?.message || e?.message || String(e) };
+    } catch (e: unknown) {
+        return { success: false, message: errMsg(e) || String(e) };
     }
 };
 
@@ -1710,7 +1740,7 @@ export const bumpCloudSaveVersion = async (projectId: string): Promise<number | 
         const current = await readCloudSaveVersion(projectId);
         const next = current + 1;
         const existing = await pb.collection('pb_billing_period_notes').getList(1, 1, {
-            filter: `project_id = "${projectId}" && original_id = "${DASHBOARD_DATA_VERSION_OID}"`,
+            filter: `project_id = "${escFilter(projectId)}" && original_id = "${escFilter(DASHBOARD_DATA_VERSION_OID)}"`,
             fields: 'id',
         });
         const row = {
@@ -1733,6 +1763,7 @@ export const bumpCloudSaveVersion = async (projectId: string): Promise<number | 
 export type KpiSnapshotSummary = {
     annualRevenueTarget: number;
     annualRevenueCollected: number;
+    annualInitialBudget: number;
     annualBudgetTarget: number;
     annualGoalCompletion: number;
     annualBudgetCompletion: number;
@@ -1763,7 +1794,7 @@ export const fetchKpiSnapshot = async (
 
     try {
         const res = await pb.collection(kpiSnapshotCollection).getList(1, 1, {
-            filter: `project_id = "${pid}" && year = ${Math.floor(year)}`,
+            filter: `project_id = "${escFilter(pid)}" && year = ${Math.floor(year)}`,
         });
         const row = res.items[0];
         if (!row) return { success: false, message: '暂无 KPI 快照' };
@@ -1779,8 +1810,8 @@ export const fetchKpiSnapshot = async (
             },
             message: '加载成功',
         };
-    } catch (e: any) {
-        return { success: false, message: 'KPI 快照加载失败: ' + (e?.message || '未知错误') };
+    } catch (e: unknown) {
+        return { success: false, message: 'KPI 快照加载失败: ' + (errMsg(e) || '未知错误') };
     }
 };
 
@@ -1792,7 +1823,7 @@ export const upsertKpiSnapshot = async (
     if (!pid) return { success: false, message: '缺少 project_id' };
 
     try {
-        const filter = `project_id = "${pid}" && year = ${Math.floor(snapshot.year)}`;
+        const filter = `project_id = "${escFilter(pid)}" && year = ${Math.floor(snapshot.year)}`;
         const existing = await pb.collection(kpiSnapshotCollection).getList(1, 1, {
             filter,
             fields: 'id',
@@ -1811,8 +1842,8 @@ export const upsertKpiSnapshot = async (
             await pb.collection(kpiSnapshotCollection).create(row);
         }
         return { success: true, message: 'KPI 快照已更新' };
-    } catch (e: any) {
-        return { success: false, message: 'KPI 快照更新失败: ' + (e?.message || '未知错误') };
+    } catch (e: unknown) {
+        return { success: false, message: 'KPI 快照更新失败: ' + (errMsg(e) || '未知错误') };
     }
 };
 
@@ -1831,7 +1862,7 @@ export const upsertIntegrationFullSnapshot = async (
     const pid = (projectId || '').trim();
     if (!pid) return;
 
-    const filter = `project_id = "${pid}" && snapshot_kind = "${INTEGRATION_FULL_SNAPSHOT_KIND}"`;
+    const filter = `project_id = "${escFilter(pid)}" && snapshot_kind = "${escFilter(INTEGRATION_FULL_SNAPSHOT_KIND)}"`;
     const existing = await pb.collection(integrationSnapshotCollection).getList(1, 1, {
         filter,
         fields: 'id',

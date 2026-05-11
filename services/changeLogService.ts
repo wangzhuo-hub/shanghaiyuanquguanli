@@ -15,7 +15,8 @@ const MAX_ENTRIES = 50;
 export function getOperatorName(): string {
   try {
     return localStorage.getItem(OPERATOR_KEY) || '';
-  } catch {
+  } catch (e) {
+    console.warn('[changeLog] 读取操作人名失败:', e);
     return '';
   }
 }
@@ -23,7 +24,9 @@ export function getOperatorName(): string {
 export function setOperatorName(name: string): void {
   try {
     localStorage.setItem(OPERATOR_KEY, (name || '').trim());
-  } catch {}
+  } catch (e) {
+    console.warn('[changeLog] 保存操作人名失败:', e);
+  }
 }
 
 export function getChangeLog(): ChangeLogEntry[] {
@@ -32,7 +35,8 @@ export function getChangeLog(): ChangeLogEntry[] {
     if (!raw) return [];
     const list = JSON.parse(raw) as ChangeLogEntry[];
     return Array.isArray(list) ? list : [];
-  } catch {
+  } catch (e) {
+    console.warn('[changeLog] 读取变更日志失败:', e);
     return [];
   }
 }
@@ -41,7 +45,9 @@ function saveChangeLog(list: ChangeLogEntry[]): void {
   try {
     const trimmed = list.slice(0, MAX_ENTRIES);
     localStorage.setItem(LOG_KEY, JSON.stringify(trimmed));
-  } catch {}
+  } catch (e) {
+    console.warn('[changeLog] 保存变更日志失败:', e);
+  }
 }
 
 /**
@@ -83,7 +89,8 @@ export function getSnapshot(entry: ChangeLogEntry): any | null {
   if (!entry.snapshot) return null;
   try {
     return JSON.parse(entry.snapshot);
-  } catch {
+  } catch (e) {
+    console.warn('[changeLog] 解析快照失败:', e);
     return null;
   }
 }

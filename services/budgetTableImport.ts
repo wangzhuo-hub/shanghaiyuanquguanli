@@ -490,6 +490,7 @@ export function mergeBudgetTotalsIntoInitData(
             revenueCollected: prev?.revenueCollected ?? 0,
             occupancyRate: prev?.occupancyRate ?? 0,
             accumulatedArrears: prev?.accumulatedArrears ?? 0,
+            initialBudget: prev?.initialBudget,
         });
     }
     return [...others, ...next];

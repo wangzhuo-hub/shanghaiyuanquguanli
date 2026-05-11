@@ -57,12 +57,66 @@ npm run dev
 - 开发服务器默认端口 **1001**（可用 `VITE_DEV_PORT` 覆盖）。
 - Vite 将 `/api/pb` 代理到 PocketBase、`/api/chat` 代理到 AI 代理，与生产环境路径一致。
 
-一键启动（macOS/Linux，含清理端口与后台日志）：
+### 本地启动脚本
+
+| 脚本 | 用途 |
+|------|------|
+| `./start.sh` | 本地一键启动（PocketBase :1002 + Vite :1001 + AI代理 :3010） |
+| `./prod-start.sh` | 本地生产模式启动（PocketBase 直接服务静态文件 :1001） |
+
+## 生产部署
+
+**线上地址：** `https://kdpark.fun`  
+**服务器：** 阿里云轻量服务器（Ubuntu 24.04）  
+**架构：** Caddy (:443) → PocketBase (:1001)
+
+### 部署流程
+
+首次部署：
+```bash
+./deploy.sh    # 构建 + 部署到本地 pb_public
+# 然后上传到服务器（目前手动或通过 update.sh）
+```
+
+日常更新：
+```bash
+./update.sh    # 构建 + 上传到服务器 + 验证
+```
+
+### 服务器配置
+
+| 组件 | 端口 | 说明 |
+|------|------|------|
+| Caddy | 80/443 | 自动 HTTPS，反向代理 |
+| PocketBase | 1001 | 后端 API + 前端静态文件 |
+| AI 代理 | 3010 | 千问 API（需 QWEN_API_KEY） |
+
+- 部署目录：`/opt/kingdee-park/`
+- PocketBase 数据：`/opt/kingdee-park/pb_data/`
+- 前端文件：`/opt/kingdee-park/pb_public/`
+- 服务管理：`systemctl start/stop/restart kingdee-park`
+- Caddy 配置：`/etc/caddy/Caddyfile`
+
+### 后续部署新应用
+
+在 DNS 添加子域名 A 记录指向 `47.92.35.188`，然后在 `/etc/caddy/Caddyfile` 添加：
+
+```caddyfile
+# 示例
+assets.kdpark.fun {
+    reverse_proxy 127.0.0.1:2000
+}
+```
+
+`systemctl reload caddy` 生效，HTTPS 证书自动签发。
+
+## 代码备份
 
 ```bash
-export QWEN_API_KEY=你的_key
-./start-all.sh
+git add -A && git commit -m "描述" && git push
 ```
+
+仓库：`https://github.com/wangzhuo-hub/shanghaiyuanquguanli`
 
 ## 环境变量说明
 

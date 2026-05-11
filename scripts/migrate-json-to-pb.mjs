@@ -142,6 +142,7 @@ function extractYearlyTargets(data, projectId) {
     year: Number(year),
     revenue: targets.revenue || 0,
     occupancy: targets.occupancy || 0,
+    initial_budget: targets.initialBudget ?? 0,
     project_id: projectId,
   }));
 }
@@ -155,6 +156,7 @@ function extractMonthlyInitData(data, projectId) {
     revenue_collected: d.revenueCollected || 0,
     occupancy_rate: d.occupancyRate || 0,
     accumulated_arrears: d.accumulatedArrears || 0,
+    initial_budget: d.initialBudget ?? 0,
     project_id: projectId,
   }));
 }

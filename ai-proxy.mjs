@@ -29,15 +29,22 @@ if (!QWEN_API_KEY) {
   process.exit(1);
 }
 
+const DEFAULT_ALLOWED_ORIGINS = [
+  'https://kdpark.fun',
+  'https://wyxj.kdpark.fun',
+  'https://contents.kdpark.fun',
+  'http://localhost:1001',
+  'http://localhost:5173',
+  'http://127.0.0.1:1001',
+  'http://127.0.0.1:5173',
+];
 const ALLOWED_ORIGINS = process.env.CORS_ORIGINS
   ? process.env.CORS_ORIGINS.split(',').map(s => s.trim())
-  : null; // null = 同源允许，可通过环境变量 CORS_ORIGINS 设置白名单
+  : DEFAULT_ALLOWED_ORIGINS;
 
 const server = http.createServer(async (req, res) => {
   const origin = req.headers.origin || '';
-  const allowOrigin = ALLOWED_ORIGINS
-    ? (ALLOWED_ORIGINS.includes(origin) ? origin : ALLOWED_ORIGINS[0])
-    : origin || '*';
+  const allowOrigin = ALLOWED_ORIGINS.includes(origin) ? origin : ALLOWED_ORIGINS[0];
 
   // CORS headers
   res.setHeader('Access-Control-Allow-Origin', allowOrigin);

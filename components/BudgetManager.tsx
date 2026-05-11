@@ -7,7 +7,7 @@ import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContai
 import { analyzeBudget } from '../services/geminiService';
 import { generateBudgetedBills } from '../services/billingService';
 import { ContractSummaryModal } from './ContractSummaryModal';
-import { formatArea, formatCurrency, formatNumber, formatPercent } from '../services/numberFormat';
+import { formatArea, formatCurrency, formatNumber, formatPercent, formatWan } from '../services/numberFormat';
 import {
     parseBudgetTableExcel,
     mergeBudgetTotalsIntoInitData,
@@ -211,15 +211,6 @@ export const BudgetManager: React.FC<BudgetManagerProps> = ({
   
   const [sortMethod, setSortMethod] = useState<'Category' | 'Building' | 'PaymentCycle'>('Category');
   
-  const [showAdjModal, setShowAdjModal] = useState(false);
-  const [adjData, setAdjData] = useState<{ tenantId: string, tenantName: string, originalMonth: number, amount: number } | null>(null);
-  const [adjForm, setAdjForm] = useState({ targetYear: detailYear, targetMonth: 0, reason: 'Deferred Payment / Adjustment' });
-  const [adjEditTab, setAdjEditTab] = useState<'period' | 'amount'>('period');
-  const [newAmountInput, setNewAmountInput] = useState('');
-
-  const [showAdjHistory, setShowAdjHistory] = useState(false);
-  const [adjHistoryTab, setAdjHistoryTab] = useState<'summary' | 'period' | 'amount'>('summary');
-
   /** 预算表明细行：点击客户名查看合同概要 */
   const [contractSummaryRow, setContractSummaryRow] = useState<any | null>(null);
 
@@ -305,14 +296,18 @@ export const BudgetManager: React.FC<BudgetManagerProps> = ({
       return readImportedBudgetTable(billingPeriodNotes, detailYear);
   }, [billingPeriodNotes, detailYear]);
 
+  // 仅在切换年份时自动定位到生效方案；编辑假设内容时不跳转
+  const prevYearFilter = React.useRef(scenarioYearFilter);
   useEffect(() => {
+      if (prevYearFilter.current === scenarioYearFilter) return;
+      prevYearFilter.current = scenarioYearFilter;
       const active = scenarios.find(s => s.isActive && (s.budgetYear || currentYear) === scenarioYearFilter);
       if (active) {
           setActiveScenarioId(active.id);
       } else {
           setActiveScenarioId('current');
       }
-  }, [scenarios, scenarioYearFilter]);
+  }, [scenarioYearFilter]); // 不依赖 scenarios，避免每次编辑都触发跳转
 
   useEffect(() => {
       if (String(activeScenarioId).startsWith('invoice_dedicated_')) {
@@ -414,10 +409,13 @@ export const BudgetManager: React.FC<BudgetManagerProps> = ({
   };
 
   const handleCreateScenario = () => {
-      if (!newScenarioName.trim()) { alert("请输入方案名称"); return; }
+      const trimmedName = newScenarioName.trim();
+      if (!trimmedName) { alert("请输入方案名称"); return; }
+      if (trimmedName.length < 2) { alert("方案名称至少需要2个字符"); return; }
+      if (/^\d+$/.test(trimmedName)) { alert("方案名称不能为纯数字"); return; }
       const newScenario: BudgetScenario = {
           id: `scenario_${Date.now()}`, name: newScenarioName, budgetYear: newScenarioYear, description: newScenarioDesc, createdAt: new Date().toISOString(), isActive: false,
-          assumptions: [...propAssumptions], adjustments: [...propAdjustments],
+          assumptions: [], adjustments: [],
           baseDataSnapshot: useSnapshot ? { tenants: JSON.parse(JSON.stringify(propTenants)), buildings: JSON.parse(JSON.stringify(propBuildings)) } : undefined
       };
       onUpdateScenarios([...scenarios, newScenario]); setScenarioYearFilter(newScenarioYear); setActiveScenarioId(newScenario.id); setShowScenarioModal(false); setNewScenarioName(''); setNewScenarioDesc('');
@@ -445,7 +443,16 @@ export const BudgetManager: React.FC<BudgetManagerProps> = ({
       });
       onUpdateScenarios(updated);
   };
-  const confirmCloudSave = () => { if (!operatorName) return; const scenarioName = activeScenarioId === 'current' ? '当前生效方案' : scenarios.find(s => s.id === activeScenarioId)?.name || '未命名方案'; onSaveBudgetToCloud(scenarioName, operatorName); setShowCloudModal(false); };
+  const confirmCloudSave = () => {
+    if (!operatorName) return;
+    const scenario = scenarios.find(s => s.id === activeScenarioId);
+    if (scenario && !scenario.assumptions?.length && !scenario.adjustments?.length) {
+      alert('当前方案没有预算假设数据，请先生成预算假设再保存。');
+      return;
+    }
+    const scenarioName = activeScenarioId === 'current' ? '年初预算方案' : scenario?.name || '未命名方案';
+    onSaveBudgetToCloud(scenarioName, operatorName); setShowCloudModal(false);
+  };
 
   const activeTenants = useMemo(() => tenants.filter(t => t.status === ContractStatus.Active || t.status === ContractStatus.Expiring || t.status === ContractStatus.Pending), [tenants]);
   const expiringTenants = useMemo(
@@ -745,6 +752,30 @@ export const BudgetManager: React.FC<BudgetManagerProps> = ({
               }
           });
 
+          // 复核：检查预算假设/调整对合同应收的偏离
+          const existingAsm = budgetAssumptions.find(a => a.targetId === t.id && a.targetType === 'Existing');
+          const tenantAdjustments = budgetAdjustments.filter(a => a.tenantId === t.id);
+          const verificationReasons: string[] = [];
+          // 整体偏移已迁移到合同，仅检查预算级调价/付款转移
+          if (existingAsm?.priceAdjustment?.startDate) verificationReasons.push(`单价调整(${existingAsm.priceAdjustment.newUnitPrice}元/㎡·天)`);
+          if (existingAsm?.paymentShift?.isActive) verificationReasons.push(`付款转移 ${existingAsm.paymentShift.fromYear}/${existingAsm.paymentShift.fromMonth+1}→${existingAsm.paymentShift.toYear}/${existingAsm.paymentShift.toMonth+1}`);
+          if (t.paymentPeriodShiftMonths) verificationReasons.push(`合同整体偏移 ${t.paymentPeriodShiftMonths > 0 ? '后移' : '前移'}${Math.abs(t.paymentPeriodShiftMonths)}月`);
+          if ((t.paymentPeriodAdjustments || []).length > 0) verificationReasons.push(`${t.paymentPeriodAdjustments!.length}笔合同账期调整`);
+          if (tenantAdjustments.length > 0) verificationReasons.push(`${tenantAdjustments.length}笔调账`);
+          const hasBudgetMods = verificationReasons.length > 0;
+          const pureBills = hasBudgetMods
+              ? generateBudgetedBills(t, [], [], billingGenStart, billingGenEnd)
+              : tenantBills;
+          const pureTotal = pureBills.reduce((s, b) => {
+              if (b.date.getFullYear() === year) s += b.amount;
+              return s;
+          }, 0);
+          const budgetTotal = tenantBills.reduce((s, b) => {
+              if (b.date.getFullYear() === year) s += b.amount;
+              return s;
+          }, 0);
+          const contractDiff = budgetTotal - pureTotal;
+
           rows.push({
               id: t.id,
               name: t.name,
@@ -770,6 +801,11 @@ export const BudgetManager: React.FC<BudgetManagerProps> = ({
               unitPrice: t.unitPrice,
               rentFreeYearSummary: formatYearRentFreeSummary(year, t.rentFreePeriods || []),
               rentFreeMonthFlags: yearRentFreeMonthFlags(year, t.rentFreePeriods || []),
+              // 复核字段
+              hasBudgetMods,
+              isVirtual: false,
+              verificationReasons,
+              contractDiff,
           });
       });
 
@@ -883,7 +919,7 @@ export const BudgetManager: React.FC<BudgetManagerProps> = ({
     const fmtArea = (n: number) => (Math.abs(n) < 0.005 ? undefined : Number(n.toFixed(2)));
     const scenarioLabel =
         activeScenarioId === 'current'
-            ? '当前实时生效方案 (Live)'
+            ? '年初预算方案 (Live)'
             : (scenarios.find((s) => s.id === activeScenarioId)?.name || activeScenarioId);
 
     const thinSide: ExcelJS.Border = { style: 'thin', color: { argb: 'FFCBD5E1' } };
@@ -1303,60 +1339,6 @@ export const BudgetManager: React.FC<BudgetManagerProps> = ({
       return Object.fromEntries(entries);
   };
 
-  const saveAdjustment = () => {
-    if (!adjData) return;
-    const newAdj: BudgetAdjustment = {
-        id: `adj_${Date.now()}`,
-        tenantId: adjData.tenantId,
-        tenantName: adjData.tenantName,
-        originalYear: detailYear,
-        originalMonth: adjData.originalMonth,
-        adjustedYear: adjForm.targetYear,
-        adjustedMonth: adjForm.targetMonth,
-        amount: adjData.amount,
-        reason: adjForm.reason,
-        adjustmentKind: 'period_shift',
-    };
-    handleUpdateAdjustments([...budgetAdjustments, newAdj]);
-    setShowAdjModal(false);
-  };
-
-  const saveAmountAdjustment = () => {
-      if (!adjData) return;
-      const prev = adjData.amount;
-      const next = Number(String(newAmountInput).replace(/,/g, '').trim());
-      if (Number.isNaN(next)) {
-          alert('请输入有效金额');
-          return;
-      }
-      const delta = Math.round((next - prev) * 100) / 100;
-      if (Math.abs(delta) < 0.005) {
-          setShowAdjModal(false);
-          return;
-      }
-      const newAdj: BudgetAdjustment = {
-          id: `adj_${Date.now()}`,
-          tenantId: adjData.tenantId,
-          tenantName: adjData.tenantName,
-          originalYear: -1,
-          originalMonth: -1,
-          adjustedYear: detailYear,
-          adjustedMonth: adjData.originalMonth,
-          amount: delta,
-          reason: `手动调整金额: ${formatCurrency(prev)} → ${formatCurrency(next)}`,
-          adjustmentKind: 'amount_delta',
-      };
-      handleUpdateAdjustments([...budgetAdjustments, newAdj]);
-      setShowAdjModal(false);
-  };
-
-  const deleteAdjustment = (id: string) => {
-    if (window.confirm("确定撤销此调整记录吗？")) {
-        const newAdjs = budgetAdjustments.filter(a => a.id !== id);
-        handleUpdateAdjustments(newAdjs);
-    }
-  };
-
   const groupAdjustmentsByTenant = (list: BudgetAdjustment[]) => {
       const groups: Record<string, BudgetAdjustment[]> = {};
       list.forEach((adj) => {
@@ -1488,7 +1470,6 @@ export const BudgetManager: React.FC<BudgetManagerProps> = ({
                 <button onClick={() => setActiveTab('Vacancy')} className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${activeTab === 'Vacancy' ? 'border-blue-600 text-blue-600' : 'border-transparent text-slate-500 hover:text-slate-700'}`}>空置去化 ({vacantUnits.length})</button>
                 <button onClick={() => setActiveTab('Renewal')} className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${activeTab === 'Renewal' ? 'border-blue-600 text-blue-600' : 'border-transparent text-slate-500 hover:text-slate-700'}`}>到期续约 ({expiringTenants.length})</button>
                 <button onClick={() => setActiveTab('Risk')} className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${activeTab === 'Risk' ? 'border-blue-600 text-blue-600' : 'border-transparent text-slate-500 hover:text-slate-700'}`}>风险应对 ({riskTenants.length})</button>
-                <button onClick={() => setActiveTab('Existing')} className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${activeTab === 'Existing' ? 'border-blue-600 text-blue-600' : 'border-transparent text-slate-500 hover:text-slate-700'}`}>存量调优 ({activeTenants.length})</button>
             </div>
 
             <div className="col-span-full min-w-0 animate-in fade-in slide-in-from-bottom-2">
@@ -1598,64 +1579,6 @@ export const BudgetManager: React.FC<BudgetManagerProps> = ({
                     </div>
                 )}
 
-                {activeTab === 'Existing' && (
-                    <div className="space-y-8">
-                        {existingTenantsGrouped.map(({ building, tenantCount, totalArea, floors }) => (
-                            <section key={building.id} className="space-y-4">
-                                <h3 className="text-sm font-bold text-slate-800 border-l-4 border-emerald-500 pl-2">
-                                    {building.name}
-                                    <span className="font-normal text-slate-500 text-xs ml-2">
-                                        {tenantCount} 户 · 合计租赁 {formatArea(totalArea)}
-                                    </span>
-                                </h3>
-                                {floors.map(({ floor, tenants: floorTenants }) => (
-                                    <div key={`${building.id}-f${floor}`} className="space-y-2">
-                                        <h4 className="text-xs font-semibold text-slate-500 uppercase tracking-wide">
-                                            {building.id === '__unknown__' && floor === 0 ? '未关联资产' : `第 ${floor} 层`}
-                                        </h4>
-                                        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-                                            {floorTenants.map((tenant) => {
-                                                const asm = getAssumption(tenant.id, 'Existing', tenant.name);
-                                                const shift = asm.billingCycleShiftMonths || 0;
-                                                const b = buildings.find((x) => x.id === tenant.buildingId);
-                                                const roomLabel = tenantMergedRoomLabels(tenant, b);
-                                                return (
-                                                    <div key={tenant.id} className="bg-white border border-slate-200 rounded-lg p-4 shadow-sm">
-                                                        <div className="flex justify-between items-start mb-2">
-                                                            <div className="min-w-0 flex-1">
-                                                                <h4 className="font-bold text-slate-700 text-sm truncate" title={tenant.name}>
-                                                                    {tenant.name}
-                                                                </h4>
-                                                                {roomLabel ? <p className="text-[11px] text-slate-500 mt-0.5 truncate" title={roomLabel}>房号 {roomLabel}</p> : null}
-                                                            </div>
-                                                            <span className="text-xs bg-slate-100 text-slate-500 px-2 py-0.5 rounded shrink-0">正常</span>
-                                                        </div>
-                                                        <div className="space-y-3">
-                                                            <div className="bg-slate-50 p-2 rounded">
-                                                                <label className="text-xs font-medium text-slate-600 block mb-1 flex justify-between">
-                                                                    <span>账期整体平移</span>
-                                                                    <span className={shift > 0 ? 'text-blue-600' : shift < 0 ? 'text-orange-600' : 'text-slate-400'}>
-                                                                        {shift > 0 ? `延后${shift}个月` : shift < 0 ? `提前${Math.abs(shift)}个月` : '无偏移'}
-                                                                    </span>
-                                                                </label>
-                                                                <input type="range" min="-3" max="3" step="1" className="w-full h-1 bg-slate-200 rounded-lg appearance-none cursor-pointer" value={shift} onChange={(e) => updateAssumption({ ...asm, billingCycleShiftMonths: Number(e.target.value) })} />
-                                                                <div className="flex justify-between text-[10px] text-slate-400 mt-1">
-                                                                    <span>-3月</span>
-                                                                    <span>0</span>
-                                                                    <span>+3月</span>
-                                                                </div>
-                                                            </div>
-                                                        </div>
-                                                    </div>
-                                                );
-                                            })}
-                                        </div>
-                                    </div>
-                                ))}
-                            </section>
-                        ))}
-                    </div>
-                )}
             </div>
         </div>
     );
@@ -1703,7 +1626,6 @@ export const BudgetManager: React.FC<BudgetManagerProps> = ({
                             <button onClick={() => setSortMethod('Building')} className={`px-3 py-1 text-xs font-medium rounded ${sortMethod === 'Building' ? 'bg-white shadow-sm text-blue-600' : 'text-slate-500'}`}>按楼宇</button>
                             <button onClick={() => setSortMethod('PaymentCycle')} className={`px-3 py-1 text-xs font-medium rounded ${sortMethod === 'PaymentCycle' ? 'bg-white shadow-sm text-blue-600' : 'text-slate-500'}`}>按账期</button>
                         </div>
-                        <button onClick={() => setShowAdjHistory(true)} className="flex items-center gap-1 text-xs text-blue-600 hover:bg-blue-50 px-2 py-1 rounded transition-colors" title="查看人工调整记录"><History size={14} /> 调整记录</button>
                     </div>
                     <div className="flex items-center gap-4">
                         <div className="text-right hidden md:block border-r pr-4 border-slate-200">
@@ -1860,7 +1782,22 @@ export const BudgetManager: React.FC<BudgetManagerProps> = ({
                                                         }}
                                                     >
                                                         <div className="flex items-center gap-1.5 min-w-0">
-                                                            <div className="font-medium text-slate-700 truncate w-[200px]" title={row.name}>{row.name}</div>
+                                                            {/* 复核标记 */}
+                                                            {!row.isVirtual && (
+                                                                <span
+                                                                    className={`shrink-0 w-4 h-4 rounded-full flex items-center justify-center text-[10px] font-bold ${
+                                                                        row.hasBudgetMods
+                                                                            ? 'bg-amber-100 text-amber-700'
+                                                                            : 'bg-emerald-100 text-emerald-700'
+                                                                    }`}
+                                                                    title={row.hasBudgetMods
+                                                                        ? `合同应收 vs 预算有差异 (${formatWan(row.contractDiff)})\n原因：${row.verificationReasons.join('；')}`
+                                                                        : '合同应收与预算一致，无调整'}
+                                                                >
+                                                                    {row.hasBudgetMods ? '⚠' : '✓'}
+                                                                </span>
+                                                            )}
+                                                            <div className="font-medium text-slate-700 truncate w-[180px]" title={row.name}>{row.name}</div>
                                                             {row.isTerminatingInYear && (
                                                                 <span className="shrink-0 rounded-full bg-rose-100 px-1.5 py-0.5 text-[10px] font-bold text-rose-700" title={`退租/到期日：${row.terminationDate || '—'}`}>
                                                                     退租
@@ -1930,20 +1867,9 @@ export const BudgetManager: React.FC<BudgetManagerProps> = ({
                                                             <td 
                                                                 key={idx} 
                                                                 title={cellTitleParts.length ? cellTitleParts.join('；') : undefined}
-                                                                className={`px-2 py-2 text-right relative transition-colors group/cell align-top ${
-                                                                    !isExec && val.amount > 0 ? 'cursor-pointer' : ''
-                                                                } ${!hasAdj && !isExec && val.amount > 0 ? 'hover:bg-emerald-50/50' : ''} ${
+                                                                className={`px-2 py-2 text-right relative transition-colors group/cell align-top ${!hasAdj && !isExec && val.amount > 0 ? 'hover:bg-emerald-50/50' : ''} ${
                                                                     isExec && isOverdue && !hasAdj ? 'bg-rose-50' : ''
                                                                 } ${!hasAdj && isLeaseStartMonth ? 'bg-orange-50/80 ring-1 ring-inset ring-orange-200' : ''} ${!hasAdj && isRentFreeMonth ? 'bg-amber-100/95 ring-1 ring-inset ring-amber-300 shadow-[inset_0_0_0_1px_rgba(245,158,11,0.18)]' : ''} ${!hasAdj && isLastReceivableMonth ? 'bg-rose-50/90 ring-1 ring-inset ring-rose-200' : ''} ${adjSt.shell} ${val.amount > 0 ? 'text-slate-700' : 'text-slate-300'}`}
-                                                                onClick={() => { 
-                                                                    if(!isExec && val.amount > 0) { 
-                                                                        setAdjData({ tenantId: row.id, tenantName: row.name, originalMonth: idx, amount: val.amount }); 
-                                                                        setAdjForm(prev => ({ ...prev, targetYear: detailYear, targetMonth: idx === 11 ? 0 : idx + 1 })); 
-                                                                        setNewAmountInput(String(Math.round(val.amount)));
-                                                                        setAdjEditTab('period');
-                                                                        setShowAdjModal(true); 
-                                                                    } 
-                                                                }}
                                                             >
                                                                 {!isExec ? (
                                                                     <div className="flex flex-col items-end gap-0.5">
@@ -2125,8 +2051,8 @@ export const BudgetManager: React.FC<BudgetManagerProps> = ({
                        ))}
                    </select>
                    <select value={activeScenarioId} onChange={e => setActiveScenarioId(e.target.value)} className="bg-white border border-slate-300 rounded px-3 py-1.5 text-sm min-w-[240px] outline-none focus:ring-2 focus:ring-blue-200 cursor-pointer shadow-sm">
-                       <option value="current">🟡 当前实时生效方案 (Live)</option>
-                     {scenarios.filter(s => !String(s.id).startsWith('invoice_dedicated_') && (s.budgetYear || currentYear) === scenarioYearFilter).map(s => (<option key={s.id} value={s.id}>{s.name} ({s.budgetYear || currentYear}) {s.isActive ? '(✅生效中)' : ''} {s.isReceivableActive ? '(🧾应收专用)' : ''}</option>))}
+                       <option value="current">🟡 年初预算方案 (Live)</option>
+                     {scenarios.filter(s => !String(s.id).startsWith('invoice_dedicated_') && (s.budgetYear || currentYear) === scenarioYearFilter).map(s => (<option key={s.id} value={s.id}>{s.name} ({s.budgetYear || currentYear}) {s.isActive ? '(✅年初预算生效中)' : ''} {s.isReceivableActive ? '(🧾应收专用)' : ''}</option>))}
                    </select>
                    {activeScenarioId !== 'current' && (
                        <div className="flex items-center gap-1">
@@ -2166,7 +2092,7 @@ export const BudgetManager: React.FC<BudgetManagerProps> = ({
                   </button>
               )}
                {activeScenarioId !== 'current' && !scenarios.find(s => s.id === activeScenarioId)?.isActive && (
-                   <button onClick={handleActivateCurrentScenario} className="flex items-center gap-1 px-3 py-1.5 bg-emerald-600 text-white rounded-lg text-xs font-bold hover:bg-emerald-700 shadow-sm animate-pulse"><Play size={14} /> 应用为{scenarioYearFilter}预算</button>
+                   <button onClick={handleActivateCurrentScenario} className="flex items-center gap-1 px-3 py-1.5 bg-emerald-600 text-white rounded-lg text-xs font-bold hover:bg-emerald-700 shadow-sm"><Play size={14} /> 设为{scenarioYearFilter}年初预算方案</button>
                )}
            </div>
        </div>
@@ -2189,248 +2115,7 @@ export const BudgetManager: React.FC<BudgetManagerProps> = ({
            />
        )}
 
-       {showAdjModal && adjData && (
-           <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
-               <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg max-h-[90vh] overflow-hidden flex flex-col animate-in zoom-in-50 duration-200">
-                   <div className="px-6 py-4 border-b border-slate-100 flex justify-between items-center bg-slate-50/80">
-                       <h3 className="text-lg font-bold text-slate-800 flex items-center gap-2"><Edit3 size={20} className="text-emerald-600" /> 编辑预算单元格</h3>
-                       <button type="button" onClick={() => setShowAdjModal(false)} className="p-1 rounded hover:bg-slate-200 text-slate-500"><X size={22} /></button>
-                   </div>
-                   <div className="px-6 pt-3 flex gap-2 border-b border-slate-100">
-                       <button type="button" onClick={() => setAdjEditTab('period')} className={`px-4 py-2 text-sm font-semibold rounded-t-lg border-b-2 transition-colors ${adjEditTab === 'period' ? 'border-emerald-600 text-emerald-700 bg-emerald-50/50' : 'border-transparent text-slate-500 hover:text-slate-700'}`}>调整账期</button>
-                       <button type="button" onClick={() => setAdjEditTab('amount')} className={`px-4 py-2 text-sm font-semibold rounded-t-lg border-b-2 transition-colors ${adjEditTab === 'amount' ? 'border-indigo-600 text-indigo-700 bg-indigo-50/50' : 'border-transparent text-slate-500 hover:text-slate-700'}`}>调整金额</button>
-                   </div>
-                   <div className="p-6 overflow-y-auto flex-1 space-y-4">
-                       <div className="bg-slate-50 p-4 rounded-xl text-sm text-slate-700 space-y-1 border border-slate-100">
-                           <p><span className="text-slate-500">客户</span> <span className="font-semibold">{adjData.tenantName}</span></p>
-                           <p><span className="text-slate-500">账期</span> {detailYear}年{adjData.originalMonth + 1}月</p>
-                           <p><span className="text-slate-500">当前预算额</span> <span className="font-mono font-bold text-slate-900">{formatCurrency(adjData.amount)}</span></p>
-                       </div>
-                       {adjEditTab === 'period' ? (
-                           <div className="space-y-4">
-                               <p className="text-xs text-slate-500">将本账期金额移至目标月份（生成一条账期调整记录）。</p>
-                               <div><label className="block text-sm font-medium text-slate-700 mb-1">目标年份</label><input type="number" className="w-full border border-slate-200 rounded-lg px-3 py-2" value={adjForm.targetYear} onChange={(e) => setAdjForm({ ...adjForm, targetYear: Number(e.target.value) })} /></div>
-                               <div><label className="block text-sm font-medium text-slate-700 mb-1">目标月份</label><select className="w-full border border-slate-200 rounded-lg px-3 py-2" value={adjForm.targetMonth} onChange={(e) => setAdjForm({ ...adjForm, targetMonth: Number(e.target.value) })}>{Array.from({ length: 12 }, (_, i) => <option key={i} value={i}>{i + 1}月</option>)}</select></div>
-                               <div><label className="block text-sm font-medium text-slate-700 mb-1">原因说明</label><input type="text" className="w-full border border-slate-200 rounded-lg px-3 py-2" value={adjForm.reason} onChange={(e) => setAdjForm({ ...adjForm, reason: e.target.value })} placeholder="例如：客户申请缓缴" /></div>
-                           </div>
-                       ) : (
-                           <div className="space-y-4">
-                               <p className="text-xs text-slate-500">直接修改该月预算金额（按差额生成「金额调整」记录，与系统账单叠加计算）。</p>
-                               <div><label className="block text-sm font-medium text-slate-700 mb-1">新预算金额 (元)</label><input type="text" inputMode="decimal" className="w-full border border-slate-200 rounded-lg px-3 py-2 font-mono text-lg" value={newAmountInput} onChange={(e) => setNewAmountInput(e.target.value)} placeholder="输入金额" /></div>
-                           </div>
-                       )}
-                   </div>
-                   <div className="px-6 py-4 border-t border-slate-100 flex justify-end gap-2 bg-slate-50/50">
-                       <button type="button" onClick={() => setShowAdjModal(false)} className="px-4 py-2 border border-slate-200 rounded-lg text-slate-600 hover:bg-white">取消</button>
-                       {adjEditTab === 'period' ? (
-                           <button type="button" onClick={saveAdjustment} className="px-5 py-2 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 font-medium">确认账期调整</button>
-                       ) : (
-                           <button type="button" onClick={saveAmountAdjustment} className="px-5 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 font-medium">确认金额调整</button>
-                       )}
-                   </div>
-               </div>
-           </div>
-       )}
 
-       {showAdjHistory && (
-           <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 backdrop-blur-sm p-3 sm:p-6">
-               <div className="bg-white rounded-2xl shadow-2xl w-full max-w-5xl max-h-[94vh] flex flex-col overflow-hidden animate-in zoom-in-50 duration-200">
-                   <div className="px-6 py-4 border-b border-slate-200 flex justify-between items-start gap-4 flex-shrink-0 bg-gradient-to-r from-slate-50 to-white">
-                       <div>
-                           <h3 className="text-xl font-bold text-slate-800 flex items-center gap-2"><History size={20} className="text-blue-600" /> 预算调整记录</h3>
-                           <p className="text-sm text-slate-500 mt-1">
-                               {adjHistoryTab === 'summary'
-                                   ? '按客户名称汇总全部调整，单行展示多条记录，并汇总对本年度与次年度收款的影响'
-                                   : '按租户集中展示，账期与金额调整分开展示'}
-                           </p>
-                       </div>
-                       <button type="button" onClick={() => setShowAdjHistory(false)} className="p-2 rounded-lg hover:bg-slate-100 text-slate-500"><X size={22} /></button>
-                   </div>
-                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 px-6 py-4 border-b border-slate-100 bg-slate-50/50 flex-shrink-0">
-                       <div className="bg-white border border-blue-100 rounded-xl p-4 shadow-sm">
-                           <div className="text-xs font-bold text-blue-600 uppercase tracking-wide mb-1">本年度 ({detailYear}) 预算影响</div>
-                           <div className={`text-2xl font-bold ${impactStats.currentYearNet >= 0 ? 'text-blue-700' : 'text-red-600'}`}>{impactStats.currentYearNet >= 0 ? '+' : ''}{formatCurrency(impactStats.currentYearNet)}</div>
-                       </div>
-                       <div className="bg-white border border-purple-100 rounded-xl p-4 shadow-sm">
-                           <div className="text-xs font-bold text-purple-600 uppercase tracking-wide mb-1">次年度 ({detailYear + 1}) 预算影响</div>
-                           <div className={`text-2xl font-bold ${impactStats.nextYearNet >= 0 ? 'text-purple-700' : 'text-red-600'}`}>{impactStats.nextYearNet >= 0 ? '+' : ''}{formatCurrency(impactStats.nextYearNet)}</div>
-                       </div>
-                   </div>
-                   <div className="px-6 pt-3 flex flex-wrap gap-2 border-b border-slate-100 flex-shrink-0">
-                       <button type="button" onClick={() => setAdjHistoryTab('summary')} className={`px-4 py-2.5 text-sm font-semibold rounded-t-lg border-b-2 transition-colors flex items-center gap-1.5 ${adjHistoryTab === 'summary' ? 'border-slate-800 text-slate-900 bg-slate-50/80' : 'border-transparent text-slate-500 hover:text-slate-700'}`}><LayoutList size={15} /> 调整汇总 ({budgetAdjustments.length})</button>
-                       <button type="button" onClick={() => setAdjHistoryTab('period')} className={`px-4 py-2.5 text-sm font-semibold rounded-t-lg border-b-2 transition-colors ${adjHistoryTab === 'period' ? 'border-emerald-600 text-emerald-700 bg-emerald-50/50' : 'border-transparent text-slate-500 hover:text-slate-700'}`}>调整账期 ({periodAdjustmentsList.length})</button>
-                       <button type="button" onClick={() => setAdjHistoryTab('amount')} className={`px-4 py-2.5 text-sm font-semibold rounded-t-lg border-b-2 transition-colors ${adjHistoryTab === 'amount' ? 'border-indigo-600 text-indigo-700 bg-indigo-50/50' : 'border-transparent text-slate-500 hover:text-slate-700'}`}>调整金额 ({amountAdjustmentsList.length})</button>
-                   </div>
-                   <div className="flex-1 overflow-y-auto px-6 py-5 min-h-[200px]">
-                       {adjHistoryTab === 'summary' ? (
-                           tenantAdjustmentSummary.length > 0 ? (
-                               <div className="space-y-4">
-                                   <div className="hidden md:block overflow-x-auto rounded-xl border border-slate-200 shadow-sm">
-                                       <table className="w-full text-sm">
-                                           <thead>
-                                               <tr className="bg-slate-50 text-left text-slate-600 border-b border-slate-200">
-                                                   <th className="px-4 py-3 font-semibold whitespace-nowrap w-[14%]">客户名称</th>
-                                                   <th className="px-4 py-3 font-semibold min-w-[280px]">调整内容</th>
-                                                   <th className="px-4 py-3 font-semibold whitespace-nowrap text-right w-[12%]">本年度 ({detailYear}) 影响</th>
-                                                   <th className="px-4 py-3 font-semibold whitespace-nowrap text-right w-[12%]">次年度 ({detailYear + 1}) 影响</th>
-                                               </tr>
-                                           </thead>
-                                           <tbody className="divide-y divide-slate-100 bg-white">
-                                               {tenantAdjustmentSummary.map((row) => (
-                                                   <tr key={row.tenantId} className="hover:bg-slate-50/80 align-top">
-                                                       <td className="px-4 py-3 font-bold text-slate-800">{row.tenantName}</td>
-                                                       <td className="px-4 py-3">
-                                                           <div className="flex flex-wrap gap-2">
-                                                               {row.adjs.map((adj) => {
-                                                                   const isAmt = isAmountDeltaAdj(adj);
-                                                                   return (
-                                                                       <span
-                                                                           key={adj.id}
-                                                                           className={`inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs max-w-full ${isAmt ? 'border-indigo-200 bg-indigo-50/80 text-indigo-900' : 'border-emerald-200 bg-emerald-50/80 text-emerald-900'}`}
-                                                                       title={adj.reason}
-                                                                       >
-                                                                           <span className={`font-semibold shrink-0 ${isAmt ? 'text-indigo-700' : 'text-emerald-700'}`}>{isAmt ? '金额' : '账期'}</span>
-                                                                           {isAmt ? (
-                                                                               <span className="font-mono">
-                                                                                   {adj.adjustedYear}年{adj.adjustedMonth + 1}月 {adj.amount >= 0 ? '+' : ''}{formatCurrency(adj.amount)}
-                                                                               </span>
-                                                                           ) : (
-                                                                               <span className="font-mono">
-                                                                                   {adj.originalYear}/{String(adj.originalMonth + 1).padStart(2, '0')} → {adj.adjustedYear}/{String(adj.adjustedMonth + 1).padStart(2, '0')} {formatCurrency(adj.amount)}
-                                                                               </span>
-                                                                           )}
-                                                                           <button type="button" onClick={() => deleteAdjustment(adj.id)} className="p-0.5 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded shrink-0" title="撤销"><Trash2 size={13} /></button>
-                                                                       </span>
-                                                                   );
-                                                               })}
-                                                           </div>
-                                                       </td>
-                                                       <td className={`px-4 py-3 text-right font-mono font-bold whitespace-nowrap ${row.currentYearNet >= 0 ? 'text-blue-700' : 'text-red-600'}`}>
-                                                           {row.currentYearNet >= 0 ? '+' : ''}{formatCurrency(row.currentYearNet)}
-                                                       </td>
-                                                       <td className={`px-4 py-3 text-right font-mono font-bold whitespace-nowrap ${row.nextYearNet >= 0 ? 'text-purple-700' : 'text-red-600'}`}>
-                                                           {row.nextYearNet >= 0 ? '+' : ''}{formatCurrency(row.nextYearNet)}
-                                                       </td>
-                                                   </tr>
-                                               ))}
-                                           </tbody>
-                                       </table>
-                                   </div>
-                                   <div className="md:hidden space-y-4">
-                                       {tenantAdjustmentSummary.map((row) => (
-                                           <div key={row.tenantId} className="border border-slate-200 rounded-xl overflow-hidden bg-white shadow-sm">
-                                               <div className="bg-slate-50 px-4 py-3 border-b border-slate-200 font-bold text-slate-800">{row.tenantName}</div>
-                                               <div className="p-4 space-y-3">
-                                                   <div className="flex flex-wrap gap-2">
-                                                       {row.adjs.map((adj) => {
-                                                           const isAmt = isAmountDeltaAdj(adj);
-                                                           return (
-                                                               <span key={adj.id} className={`inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs ${isAmt ? 'border-indigo-200 bg-indigo-50/80' : 'border-emerald-200 bg-emerald-50/80'}`} title={adj.reason}>
-                                                                   <span className={`font-semibold ${isAmt ? 'text-indigo-700' : 'text-emerald-700'}`}>{isAmt ? '金额' : '账期'}</span>
-                                                                   {isAmt ? (
-                                                                       <span className="font-mono text-indigo-900">{adj.adjustedYear}年{adj.adjustedMonth + 1}月 {adj.amount >= 0 ? '+' : ''}{formatCurrency(adj.amount)}</span>
-                                                                   ) : (
-                                                                       <span className="font-mono text-emerald-900">{adj.originalYear}/{String(adj.originalMonth + 1).padStart(2, '0')} → {adj.adjustedYear}/{String(adj.adjustedMonth + 1).padStart(2, '0')} {formatCurrency(adj.amount)}</span>
-                                                                   )}
-                                                                   <button type="button" onClick={() => deleteAdjustment(adj.id)} className="p-0.5 text-slate-400 hover:text-red-600"><Trash2 size={13} /></button>
-                                                               </span>
-                                                           );
-                                                       })}
-                                                   </div>
-                                                   <div className="grid grid-cols-2 gap-3 pt-1 border-t border-slate-100">
-                                                       <div>
-                                                           <div className="text-[10px] font-bold text-blue-600 uppercase mb-0.5">本年度影响</div>
-                                                           <div className={`font-mono font-bold ${row.currentYearNet >= 0 ? 'text-blue-700' : 'text-red-600'}`}>{row.currentYearNet >= 0 ? '+' : ''}{formatCurrency(row.currentYearNet)}</div>
-                                                       </div>
-                                                       <div>
-                                                           <div className="text-[10px] font-bold text-purple-600 uppercase mb-0.5">次年度影响</div>
-                                                           <div className={`font-mono font-bold ${row.nextYearNet >= 0 ? 'text-purple-700' : 'text-red-600'}`}>{row.nextYearNet >= 0 ? '+' : ''}{formatCurrency(row.nextYearNet)}</div>
-                                                       </div>
-                                                   </div>
-                                               </div>
-                                           </div>
-                                       ))}
-                                   </div>
-                               </div>
-                           ) : (
-                               <div className="text-center py-16 text-slate-400 flex flex-col items-center"><FileWarning size={40} className="mb-3 opacity-40" /><p>暂无预算调整记录</p></div>
-                           )
-                       ) : adjHistoryTab === 'period' ? (
-                           Object.keys(groupedPeriodAdjustments).length > 0 ? (
-                               <div className="space-y-5">
-                                   {Object.entries(groupedPeriodAdjustments)
-                                       .sort(([a], [b]) => a.localeCompare(b, 'zh-CN'))
-                                       .map(([tenantName, rawAdjs]) => {
-                                       const adjs = rawAdjs as BudgetAdjustment[];
-                                       return (
-                                           <div key={tenantName} className="border border-slate-200 rounded-xl overflow-hidden shadow-sm">
-                                               <div className="bg-slate-50 px-4 py-3 border-b border-slate-200 flex justify-between items-center">
-                                                   <div className="font-bold text-slate-800 flex items-center gap-2"><User size={16} className="text-slate-500" /> {tenantName}</div>
-                                                   <span className="text-xs bg-emerald-100 text-emerald-800 px-2.5 py-1 rounded-full font-medium">{adjs.length} 条</span>
-                                               </div>
-                                               <div className="divide-y divide-slate-100 bg-white">
-                                                   {adjs.map((adj) => (
-                                                       <div key={adj.id} className="p-4 flex justify-between items-start gap-3 hover:bg-slate-50/80 transition-colors">
-                                                           <div className="min-w-0 flex-1">
-                                                               <div className="flex flex-wrap items-center gap-2 text-sm mb-1">
-                                                                   <span className="text-slate-400 line-through">{adj.originalYear}/{String(adj.originalMonth + 1).padStart(2, '0')}</span>
-                                                                   <ArrowRight size={14} className="text-slate-300 flex-shrink-0" />
-                                                                   <span className="text-emerald-700 font-semibold">{adj.adjustedYear}/{String(adj.adjustedMonth + 1).padStart(2, '0')}</span>
-                                                                   <span className="font-bold text-slate-800 ml-1">{formatCurrency(adj.amount)}</span>
-                                                               </div>
-                                                               <div className="text-xs text-slate-500 flex items-center gap-1"><Info size={12} /> {adj.reason}</div>
-                                                           </div>
-                                                           <button type="button" onClick={() => deleteAdjustment(adj.id)} className="p-2 text-red-400 hover:text-red-600 hover:bg-red-50 rounded-lg flex-shrink-0" title="撤销"><Trash2 size={16} /></button>
-                                                       </div>
-                                                   ))}
-                                               </div>
-                                           </div>
-                                       );
-                                   })}
-                               </div>
-                           ) : (
-                               <div className="text-center py-16 text-slate-400 flex flex-col items-center"><FileWarning size={40} className="mb-3 opacity-40" /><p>暂无账期调整记录</p></div>
-                           )
-                       ) : Object.keys(groupedAmountAdjustments).length > 0 ? (
-                           <div className="space-y-5">
-                               {Object.entries(groupedAmountAdjustments)
-                                   .sort(([a], [b]) => a.localeCompare(b, 'zh-CN'))
-                                   .map(([tenantName, rawAdjs]) => {
-                                   const adjs = rawAdjs as BudgetAdjustment[];
-                                   return (
-                                       <div key={tenantName} className="border border-slate-200 rounded-xl overflow-hidden shadow-sm">
-                                           <div className="bg-slate-50 px-4 py-3 border-b border-slate-200 flex justify-between items-center">
-                                               <div className="font-bold text-slate-800 flex items-center gap-2"><User size={16} className="text-slate-500" /> {tenantName}</div>
-                                               <span className="text-xs bg-indigo-100 text-indigo-800 px-2.5 py-1 rounded-full font-medium">{adjs.length} 条</span>
-                                           </div>
-                                           <div className="divide-y divide-slate-100 bg-white">
-                                               {adjs.map((adj) => (
-                                                   <div key={adj.id} className="p-4 flex justify-between items-start gap-3 hover:bg-slate-50/80 transition-colors">
-                                                       <div className="min-w-0 flex-1">
-                                                           <div className="flex flex-wrap items-center gap-2 text-sm mb-1">
-                                                               <span className="text-slate-600 font-medium">{adj.adjustedYear}年{adj.adjustedMonth + 1}月</span>
-                                                               <span className={`font-bold ${adj.amount >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>{adj.amount >= 0 ? '+' : ''}{formatCurrency(adj.amount)}</span>
-                                                           </div>
-                                                           <div className="text-xs text-slate-500 flex items-center gap-1"><Info size={12} /> {adj.reason}</div>
-                                                       </div>
-                                                       <button type="button" onClick={() => deleteAdjustment(adj.id)} className="p-2 text-red-400 hover:text-red-600 hover:bg-red-50 rounded-lg flex-shrink-0" title="撤销"><Trash2 size={16} /></button>
-                                                   </div>
-                                               ))}
-                                           </div>
-                                       </div>
-                                   );
-                               })}
-                           </div>
-                       ) : (
-                           <div className="text-center py-16 text-slate-400 flex flex-col items-center"><FileWarning size={40} className="mb-3 opacity-40" /><p>暂无金额调整记录</p></div>
-                       )}
-                   </div>
-                   <div className="px-6 py-4 border-t border-slate-200 flex justify-end bg-slate-50/50 flex-shrink-0">
-                       <button type="button" onClick={() => setShowAdjHistory(false)} className="px-5 py-2 bg-slate-800 text-white rounded-lg hover:bg-slate-900 font-medium">关闭</button>
-                   </div>
-               </div>
-           </div>
-       )}
 
        {showScenarioModal && (
            <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/40 backdrop-blur-sm p-4">
@@ -2453,7 +2138,7 @@ export const BudgetManager: React.FC<BudgetManagerProps> = ({
                <div className="bg-white rounded-xl shadow-xl w-full max-w-sm p-6 animate-in zoom-in-50 duration-200">
                    <h3 className="text-lg font-bold text-slate-800 mb-4 flex items-center gap-2"><CloudUpload size={20}/> 备份至云端</h3>
                    <div className="space-y-4">
-                       <div className="bg-blue-50 p-3 rounded text-sm text-blue-800">即将保存: <strong>{activeScenarioId === 'current' ? '当前生效方案 (Live)' : scenarios.find(s=>s.id===activeScenarioId)?.name}</strong></div>
+                       <div className="bg-blue-50 p-3 rounded text-sm text-blue-800">即将保存: <strong>{activeScenarioId === 'current' ? '年初预算方案 (Live)' : scenarios.find(s=>s.id===activeScenarioId)?.name}</strong></div>
                        <div><label className="block text-sm font-medium text-slate-700 mb-1">操作人员姓名 <span className="text-red-500">*</span></label><input type="text" className="w-full border rounded p-2" value={operatorName} onChange={e => setOperatorName(e.target.value)} placeholder="请输入您的姓名" /></div>
                        <div className="flex justify-end gap-2 pt-2"><button onClick={() => setShowCloudModal(false)} className="px-4 py-2 border rounded text-slate-600 hover:bg-slate-50">取消</button><button onClick={confirmCloudSave} disabled={!operatorName.trim()} className="px-4 py-2 bg-emerald-600 text-white rounded hover:bg-emerald-700 disabled:opacity-50">确认上传</button></div>
                    </div>

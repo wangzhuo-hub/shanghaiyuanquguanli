@@ -1,8 +1,8 @@
 
 import React, { useState, useEffect, useMemo } from 'react';
-import { Tenant, Building, ContractStatus, DepositStatus, RentFreePeriod, UnitStatus, DashboardData, PaymentRecord, LeaseUnitTerm } from '../types';
+import { Tenant, Building, BudgetAdjustment, ContractStatus, DepositStatus, RentFreePeriod, UnitStatus, DashboardData, PaymentRecord, LeaseUnitTerm } from '../types';
 // Added missing UserMinus and Sparkles imports
-import { Search, Plus, FileText, Filter, XCircle, AlertTriangle, AlertCircle, Calendar, DollarSign, Edit2, X, Trash2, Users, Save, Building as BuildingIcon, UserCheck, UserPlus, UserMinus, UserX, Info, ShieldAlert, WalletIcon, ArrowLeft, Trash, TrendingUp, TrendingDown, PieChart, Activity, BarChart3, Clock, LayoutDashboard, ArrowUpRight, ArrowDownRight, Sparkles, Briefcase, User, Smartphone, Gift, MapPin, Receipt, CreditCard } from 'lucide-react';
+import { Search, Plus, FileText, Filter, XCircle, AlertTriangle, AlertCircle, Calendar, DollarSign, Edit2, X, Trash2, Users, Save, Building as BuildingIcon, UserCheck, UserPlus, UserMinus, UserX, Info, ShieldAlert, WalletIcon, ArrowLeft, ArrowLeftRight, Trash, TrendingUp, TrendingDown, PieChart, Activity, BarChart3, Clock, LayoutDashboard, ArrowUpRight, ArrowDownRight, Sparkles, Briefcase, User, Smartphone, Gift, MapPin, Receipt, CreditCard } from 'lucide-react';
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, BarChart, Bar, Cell, PieChart as RechartsPieChart, Pie, Legend, ComposedChart, Line } from 'recharts';
 import { OccupancyTrendChart, UnitPriceTrendChart } from './Charts';
 import { generateBudgetedBills, computeEarlyTerminationFreeRentClawbackAmount, buildVacancyBudgetAlignmentNote } from '../services/billingService';
@@ -20,6 +20,8 @@ interface ContractManagerProps {
   dashboardData?: DashboardData; // 新增：用于图表数据
   payments?: PaymentRecord[]; // 新增：用于关联实际收款
   onUpdatePayments?: (payments: PaymentRecord[]) => void; // 新增：用于更新收款记录
+  budgetAdjustments?: BudgetAdjustment[];
+  onUpdateAdjustments?: (newAdjustments: BudgetAdjustment[]) => void;
   /** 手机窄屏：隐藏经营分析，默认进入在租列表便于录入合同 */
   mobileEntryMode?: boolean;
 }
@@ -42,7 +44,7 @@ const paymentCycleMonthMap: Record<Tenant['paymentCycle'], number> = {
   Custom: 3,
 };
 
-export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, buildings, onUpdateTenants, dashboardData, payments = [], onUpdatePayments, mobileEntryMode = false }) => {
+export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, buildings, onUpdateTenants, dashboardData, payments = [], onUpdatePayments, budgetAdjustments = [], onUpdateAdjustments, mobileEntryMode = false }) => {
   const currentCalendarYear = new Date().getFullYear();
   const [activeTab, setActiveTab] = useState<'List' | 'Terminated' | 'Analysis'>(() =>
     mobileEntryMode ? 'List' : 'Analysis'
@@ -62,6 +64,8 @@ export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, build
   const [filterBuilding, setFilterBuilding] = useState('all');
   const [filterStatus, setFilterStatus] = useState('all');
   const [filterPaymentCycle, setFilterPaymentCycle] = useState('all');
+  const [showAdjForm, setShowAdjForm] = useState(false);
+  const [adjForm, setAdjForm] = useState({ origMonth: 1, targetMonth: 1, amount: 0, reason: '' });
   const [batchSelectedContractIds, setBatchSelectedContractIds] = useState<Set<string>>(() => new Set());
   // 应收明细预览：是否叠加预算假设/调整（与「预算管理 → 预算表」口径对齐）
   const [previewApplyBudget, setPreviewApplyBudget] = useState<boolean>(true);
@@ -2104,6 +2108,114 @@ export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, build
                     </section>
                 </div>
 
+                {/* 账期调整（存量调优） */}
+                {currentTenant.id && (
+                    <section className="px-8 py-5 border-t border-slate-200 bg-amber-50/30">
+                        {(() => {
+                            const tenantAdjs = (currentTenant.paymentPeriodAdjustments || []);
+                            const handleAddAdj = () => {
+                                if (!adjForm.amount || !adjForm.reason.trim()) { alert('请填写金额和原因'); return; }
+                                const newAdj: import('../types').PaymentPeriodAdjustment = {
+                                    id: `ppa_${Date.now()}`,
+                                    originalYear: new Date().getFullYear(),
+                                    originalMonth: adjForm.origMonth - 1,
+                                    adjustedYear: new Date().getFullYear(),
+                                    adjustedMonth: adjForm.targetMonth - 1,
+                                    amount: adjForm.amount,
+                                    reason: adjForm.reason,
+                                };
+                                setCurrentTenant(prev => ({
+                                    ...prev,
+                                    paymentPeriodAdjustments: [...(prev.paymentPeriodAdjustments || []), newAdj],
+                                }));
+                                setShowAdjForm(false);
+                                setAdjForm({ origMonth: 1, targetMonth: 1, amount: 0, reason: '' });
+                            };
+                            const handleDeleteAdj = (id: string) => {
+                                setCurrentTenant(prev => ({
+                                    ...prev,
+                                    paymentPeriodAdjustments: (prev.paymentPeriodAdjustments || []).filter(a => a.id !== id),
+                                }));
+                            };
+                            return (
+                                <div className="space-y-3">
+                                    <div className="flex items-center justify-between">
+                                        <h3 className="text-sm font-bold text-amber-800 flex items-center gap-2">
+                                            <ArrowLeftRight size={16} /> 账期调整（存量调优）
+                                        </h3>
+                                        <div className="flex items-center gap-3">
+                                            {/* 整体偏移 */}
+                                            <div className="flex items-center gap-1 text-xs">
+                                                <span className="text-slate-500">整体偏移:</span>
+                                                <button
+                                                    onClick={() => setCurrentTenant(prev => ({ ...prev, paymentPeriodShiftMonths: (prev.paymentPeriodShiftMonths || 0) - 1 }))}
+                                                    className="w-6 h-6 rounded bg-amber-100 text-amber-700 font-bold hover:bg-amber-200"
+                                                >−</button>
+                                                <span className="font-mono font-bold w-6 text-center">{(currentTenant.paymentPeriodShiftMonths || 0) > 0 ? '+' : ''}{currentTenant.paymentPeriodShiftMonths || 0}</span>
+                                                <button
+                                                    onClick={() => setCurrentTenant(prev => ({ ...prev, paymentPeriodShiftMonths: (prev.paymentPeriodShiftMonths || 0) + 1 }))}
+                                                    className="w-6 h-6 rounded bg-amber-100 text-amber-700 font-bold hover:bg-amber-200"
+                                                >+</button>
+                                                <span className="text-slate-400">月</span>
+                                            </div>
+                                            <button onClick={() => setShowAdjForm(!showAdjForm)} className="text-xs px-3 py-1 bg-amber-100 text-amber-700 rounded-lg hover:bg-amber-200 font-medium">
+                                                {showAdjForm ? '取消' : '+ 单月调整'}
+                                            </button>
+                                        </div>
+                                    </div>
+                                    {(currentTenant.paymentPeriodShiftMonths || 0) !== 0 && (
+                                        <p className="text-xs text-amber-700 bg-amber-100/50 rounded px-3 py-1.5">
+                                            整体{currentTenant.paymentPeriodShiftMonths! > 0 ? '后移' : '前移'} {Math.abs(currentTenant.paymentPeriodShiftMonths!)} 个月：所有收款日期统一{currentTenant.paymentPeriodShiftMonths! > 0 ? '推迟' : '提前'}，适用于合同整体调整场景
+                                        </p>
+                                    )}
+                                    {tenantAdjs.length > 0 && (
+                                        <div className="space-y-1.5">
+                                            {tenantAdjs.map(adj => (
+                                                <div key={adj.id} className="flex items-center gap-2 text-xs bg-white rounded-lg px-3 py-2 border border-amber-200">
+                                                    <span className="font-bold text-blue-600">账期调整</span>
+                                                    <span className="text-slate-500">{adj.originalMonth + 1}月 → {adj.adjustedMonth + 1}月 ¥{adj.amount.toLocaleString()}</span>
+                                                    <span className="text-slate-400">— {adj.reason}</span>
+                                                    <button onClick={() => handleDeleteAdj(adj.id)} className="ml-auto text-rose-400 hover:text-rose-600"><X size={14} /></button>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    )}
+                                    {showAdjForm && (
+                                        <div className="bg-white rounded-lg border border-amber-200 p-3 space-y-2">
+                                            <div className="grid grid-cols-2 gap-2">
+                                                <div>
+                                                    <label className="text-xs text-slate-500">原账期月份</label>
+                                                    <select value={adjForm.origMonth} onChange={e => setAdjForm({...adjForm, origMonth: Number(e.target.value)})} className="w-full border rounded px-2 py-1 text-xs">
+                                                        {Array.from({length:12},(_,i)=>i+1).map(m=><option key={m} value={m}>{m}月</option>)}
+                                                    </select>
+                                                </div>
+                                                <div>
+                                                    <label className="text-xs text-slate-500">目标月份</label>
+                                                    <select value={adjForm.targetMonth} onChange={e => setAdjForm({...adjForm, targetMonth: Number(e.target.value)})} className="w-full border rounded px-2 py-1 text-xs">
+                                                        {Array.from({length:12},(_,i)=>i+1).map(m=><option key={m} value={m}>{m}月</option>)}
+                                                    </select>
+                                                </div>
+                                            </div>
+                                            <div>
+                                                <label className="text-xs text-slate-500">调整金额 (元)</label>
+                                                <input type="number" className="w-full border rounded px-2 py-1 text-xs" value={adjForm.amount || ''} onChange={e => setAdjForm({...adjForm, amount: Number(e.target.value)})} />
+                                            </div>
+                                            <div>
+                                                <label className="text-xs text-slate-500">调整原因</label>
+                                                <input type="text" className="w-full border rounded px-2 py-1 text-xs" placeholder="例：Q1房租延期至Q2" value={adjForm.reason} onChange={e => setAdjForm({...adjForm, reason: e.target.value})} />
+                                            </div>
+                                            <button onClick={handleAddAdj} className="w-full py-1.5 bg-amber-600 text-white rounded text-xs font-bold hover:bg-amber-700">确认添加</button>
+                                        </div>
+                                    )}
+                                    {tenantAdjs.length === 0 && !showAdjForm && (
+                                        <p className="text-xs text-amber-600/60">暂无账期调整，点击上方按钮添加。</p>
+                                    )}
+                                </div>
+                            );
+                        })()}
+                    </section>
+                )}
+
                 <div className="flex justify-between items-center px-8 py-6 border-t border-slate-100 bg-white sticky bottom-0 z-20 rounded-b-xl shadow-lg">
                     <div>{currentTenant.id && <button onClick={() => { if(window.confirm("确定删除?")) { onUpdateTenants(tenants.filter(t => t.id !== currentTenant.id)); setIsEditing(false); } }} className="text-rose-500 font-bold flex items-center gap-2 px-4 py-2 hover:bg-rose-50 rounded-lg"><Trash2 size={18}/> 删除记录</button>}</div>
                     <div className="flex gap-3"><button onClick={() => { setIsEditing(false); setRenewingFromId(null); setFormErrors({}); }} className="px-6 py-2.5 text-slate-600 font-bold">取消</button><button onClick={handleSave} className="px-10 py-2.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-bold flex items-center gap-2 shadow-lg"><Save size={18}/> 保存并退出</button></div>
@@ -2629,6 +2741,11 @@ export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, build
                                                                 </span>
                                                             )}
                                                             {t.isRisk && <ShieldAlert size={14} className="text-red-500" />}
+                                                            {((t.paymentPeriodAdjustments || []).length > 0 || (t.paymentPeriodShiftMonths || 0) !== 0) && (
+                                                                <span className="text-[10px] bg-amber-50 text-amber-700 px-2 py-0.5 rounded-md border border-amber-200 font-bold inline-flex items-center gap-1" title={`${(t.paymentPeriodAdjustments || []).length}笔单月调整${(t.paymentPeriodShiftMonths || 0) !== 0 ? `，整体${t.paymentPeriodShiftMonths! > 0 ? '后移' : '前移'}${Math.abs(t.paymentPeriodShiftMonths!)}月` : ''}`}>
+                                                                    <ArrowLeftRight size={10} /> 账期调整
+                                                                </span>
+                                                            )}
                                                             {t.isSpecialBusiness && (
                                                                 <span className="text-[10px] bg-amber-50 text-amber-700 px-2 py-0.5 rounded-md border border-amber-200 font-bold inline-flex items-center gap-1">
                                                                     <Sparkles size={10} /> 特殊业态
@@ -2730,6 +2847,11 @@ export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, build
                                                                 </span>
                                                             )}
                                                             {t.isRisk && <ShieldAlert size={14} className="text-red-500" />}
+                                                            {((t.paymentPeriodAdjustments || []).length > 0 || (t.paymentPeriodShiftMonths || 0) !== 0) && (
+                                                                <span className="text-[10px] bg-amber-50 text-amber-700 px-2 py-0.5 rounded-md border border-amber-200 font-bold inline-flex items-center gap-1" title={`${(t.paymentPeriodAdjustments || []).length}笔单月调整${(t.paymentPeriodShiftMonths || 0) !== 0 ? `，整体${t.paymentPeriodShiftMonths! > 0 ? '后移' : '前移'}${Math.abs(t.paymentPeriodShiftMonths!)}月` : ''}`}>
+                                                                    <ArrowLeftRight size={10} /> 账期调整
+                                                                </span>
+                                                            )}
                                                             {t.isSpecialBusiness && (
                                                                 <span className="text-[10px] bg-amber-50 text-amber-700 px-2 py-0.5 rounded-md border border-amber-200 font-bold inline-flex items-center gap-1">
                                                                     <Sparkles size={10} /> 特殊业态

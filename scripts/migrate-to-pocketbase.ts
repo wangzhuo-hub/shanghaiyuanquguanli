@@ -1,13 +1,14 @@
 import { createClient } from '@supabase/supabase-js';
 import PocketBase from 'pocketbase';
 
-// 从 App.tsx 中复制的 Supabase 凭证
-const SUPABASE_URL = 'https://drbugbbsvnnheuasgvwg.supabase.co';
-const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImRyYnVnYmJzdm5uaGV1YXNndndnIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjQ0MjI1ODIsImV4cCI6MjA3OTk5ODU4Mn0.fZF27k7dtbzoMK5ZKh_UARPLpy5OxmF9fvVkJMTOIO4';
+// 此脚本为一次性迁移工具，迁移完成后不再需要。
+// 凭据已移除，运行时需设置环境变量：
+//   SUPABASE_URL, SUPABASE_KEY, POCKETBASE_URL, POCKETBASE_EMAIL, POCKETBASE_PASSWORD
+const SUPABASE_URL = process.env.SUPABASE_URL || '';
+const SUPABASE_KEY = process.env.SUPABASE_KEY || '';
 
-// PocketBase 配置（需要根据实际情况修改）
-const POCKETBASE_URL = 'http://127.0.0.1:8090';
-const POCKETBASE_EMAIL = 'admin@example.com';  // 需要修改
+const POCKETBASE_URL = process.env.POCKETBASE_URL || 'http://127.0.0.1:8090';
+const POCKETBASE_EMAIL = process.env.POCKETBASE_EMAIL || '';
 const POCKETBASE_PASSWORD = 'your-password';   // 需要修改
 
 // 项目 ID

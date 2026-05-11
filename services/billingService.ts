@@ -55,6 +55,17 @@ const applyExistingPaymentShiftToMergedBills = (bills: BudgetedBill[], ps: NonNu
     });
 };
 
+/** 最小金额阈值（低于此值视为零，用于舍入和过滤） */
+export const MIN_AMOUNT_THRESHOLD = 0.005;
+/** 日租金计算基准天数（月租金 / 30） */
+export const DAILY_RENT_BASE_DAYS = 30;
+/** 计费循环安全迭代上限 */
+export const BILLING_LOOP_LIMIT = 300;
+
+/** 租约永不到期哨兵日期（无 leaseEnd 时的默认值） */
+export const FAR_FUTURE_DATE = '2099-12-31';
+export const farFutureDate = (): Date => parseDateLocal(FAR_FUTURE_DATE);
+
 export interface BudgetedBill {
     date: Date;
     amount: number;
@@ -88,6 +99,14 @@ const parseDateLocal = (dateInput: string | Date | undefined): Date => {
     return new Date(dateInput);
 };
 
+/** 确保 Date 输出为本地日期字符串 "YYYY-MM-DD"（避免 toISOString UTC 偏移） */
+const toLocalDateString = (d: Date): string => {
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${y}-${m}-${day}`;
+};
+
 /** 按日历月加减月份，收款日落在目标自然月内（避免起租日 28–31 日时用 setMonth 溢出到其他月） */
 export function addCalendarMonths(date: Date, deltaMonths: number): Date {
     const y = date.getFullYear();
@@ -103,7 +122,12 @@ export const getDaysDiff = (start: Date, end: Date): number => {
     // Reset hours to ensure pure date difference
     const s = new Date(start.getFullYear(), start.getMonth(), start.getDate());
     const e = new Date(end.getFullYear(), end.getMonth(), end.getDate());
-    const diffTime = Math.abs(e.getTime() - s.getTime());
+    if (e.getTime() < s.getTime()) {
+        console.warn('[getDaysDiff] 日期反序，已自动交换', { start: start.toISOString(), end: end.toISOString() });
+        const diffTime = s.getTime() - e.getTime();
+        return Math.ceil(diffTime / (1000 * 60 * 60 * 24)) + 1;
+    }
+    const diffTime = e.getTime() - s.getTime();
     return Math.ceil(diffTime / (1000 * 60 * 60 * 24)) + 1;
 };
 
@@ -137,7 +161,7 @@ export const isRentFreeDate = (date: Date, rentFreePeriods: RentFreePeriod[]): b
 export const calculateRentForDuration = (start: Date, end: Date, monthlyRent: number): number => {
     // UPDATED: Use 30-day standard for partial month calculations
     // This ensures that 15 days = 0.5 * Monthly Rent
-    const dailyRent = monthlyRent / 30;
+    const dailyRent = monthlyRent / DAILY_RENT_BASE_DAYS;
     
     let total = 0;
     // Ensure we start with clean dates
@@ -145,7 +169,7 @@ export const calculateRentForDuration = (start: Date, end: Date, monthlyRent: nu
     const finalEnd = new Date(end.getFullYear(), end.getMonth(), end.getDate());
     
     let safety = 0;
-    while (cursor <= finalEnd && safety < 1000) {
+    while (cursor <= finalEnd && safety < BILLING_LOOP_LIMIT) {
         safety++;
         const currentMonthEnd = new Date(cursor.getFullYear(), cursor.getMonth() + 1, 0);
         const segmentEnd = currentMonthEnd < finalEnd ? currentMonthEnd : finalEnd;
@@ -271,7 +295,7 @@ const applyEarlyTerminationExtrasToBills = (tenant: Tenant, bills: BudgetedBill[
     delete target.earlyTerminationExtraAmount;
     delete target.earlyTerminationExtraDetail;
 
-    if (Math.abs(extra) <= 0.005) return;
+    if (Math.abs(extra) <= MIN_AMOUNT_THRESHOLD) return;
 
     const settlementAmount = Math.round(extra);
     bills.push({
@@ -319,13 +343,13 @@ export const applyVacancyBudgetOverlayToTenant = (tenant: Tenant, assumptions: B
     const rfMonths = vac.projectedRentFreeMonths || 0;
     const rfEndStr =
         rfMonths > 0
-            ? new Date(new Date(start).setMonth(start.getMonth() + rfMonths)).toISOString().split('T')[0]
+            ? toLocalDateString(new Date(new Date(start).setMonth(start.getMonth() + rfMonths)))
             : undefined;
 
     const addMonthsStr = (dateStr: string, months: number): string => {
         const d = parseDateLocal(dateStr);
         d.setMonth(d.getMonth() + months);
-        return d.toISOString().split('T')[0];
+        return toLocalDateString(d);
     };
     const firstPayDate = addMonthsStr(vac.projectedSignDate, rfMonths);
 
@@ -394,7 +418,7 @@ export const generateBudgetedBills = (
 
     // Parse lease dates strictly as Local Time to avoid timezone shifts（首期自定义后处理依赖）
     const leaseStart = parseDateLocal(tenant.leaseStart);
-    const leaseEnd = tenant.leaseEnd ? parseDateLocal(tenant.leaseEnd) : new Date('2099-12-31');
+    const leaseEnd = tenant.leaseEnd ? parseDateLocal(tenant.leaseEnd) : farFutureDate();
 
     const terminationDate = tenant.terminationDate ? parseDateLocal(tenant.terminationDate) : null;
     const effectiveLeaseEnd = terminationDate && terminationDate < leaseEnd ? terminationDate : leaseEnd;
@@ -542,7 +566,7 @@ export const generateBudgetedBills = (
                     bill.date.getFullYear(),
                     bill.date.getMonth(),
                     bill.date.getDate(),
-                    bill.originalDate ? bill.originalDate.toISOString().slice(0, 10) : '',
+                    bill.originalDate ? toLocalDateString(bill.originalDate) : '',
                 ].join('-');
                 const existing = billsByDate.get(key);
                 if (existing) {
@@ -577,7 +601,8 @@ export const generateBudgetedBills = (
 
     if (!filledFromUnitMerge && monthlyRent > 0) {
         const existingAssumption = assumptions.find((a) => a.targetId === tenant.id && a.targetType === 'Existing');
-        const billingShift = existingAssumption?.billingCycleShiftMonths || 0;
+        // 仅使用合同级整体偏移（存量调优已迁移到合同管理中）
+        const billingShift = tenant.paymentPeriodShiftMonths || 0;
 
         // 支持新的 freeRentHandling 字段
         const isDeferMode = tenant.freeRentHandling === 'Defer';
@@ -591,7 +616,7 @@ export const generateBudgetedBills = (
             const loopLimitDate = new Date(endDateConstraint);
             loopLimitDate.setFullYear(loopLimitDate.getFullYear() + 2); 
 
-            while (cursor <= effectiveLeaseEnd && cursor <= loopLimitDate && safetyCounter < 300) {
+            while (cursor <= effectiveLeaseEnd && cursor <= loopLimitDate && safetyCounter < BILLING_LOOP_LIMIT) {
                 safetyCounter++;
 
                 // 1. Skip Rent Free Gap
@@ -690,7 +715,7 @@ export const generateBudgetedBills = (
             const loopLimitDate = new Date(endDateConstraint);
             loopLimitDate.setFullYear(loopLimitDate.getFullYear() + 2); 
 
-            while (coverageStart <= effectiveLeaseEnd && safetyCounter < 200) {
+            while (coverageStart <= effectiveLeaseEnd && safetyCounter < BILLING_LOOP_LIMIT) {
                 safetyCounter++;
 
                 const durationMonths = isFirstCycle ? firstCycleMonths : regularCycleMonths;
@@ -788,14 +813,47 @@ export const generateBudgetedBills = (
         }
     }
 
+    // --- 合同级账期调整（Tenant.paymentPeriodAdjustments）：先于预算调整执行 ---
+    const contractPeriodAdjs = tenant.paymentPeriodAdjustments || [];
+    // Pass 1: 目标月份加回金额
+    contractPeriodAdjs.forEach(adj => {
+        if (adj.adjustedYear !== -1 && adj.adjustedMonth !== -1 && adj.amount > 0) {
+            const existingBill = bills.find(b =>
+                b.date.getFullYear() === adj.adjustedYear &&
+                b.date.getMonth() === adj.adjustedMonth
+            );
+            if (existingBill) {
+                existingBill.amount += adj.amount;
+            } else {
+                bills.push({
+                    date: new Date(adj.adjustedYear, adj.adjustedMonth, 1),
+                    amount: adj.amount
+                });
+            }
+        }
+    });
+    // Pass 2: 原始月份扣减
+    contractPeriodAdjs.forEach(adj => {
+        if (adj.originalYear !== -1 && adj.originalMonth !== -1 && adj.amount > 0) {
+            const sourceBill = bills.find(b =>
+                b.date.getFullYear() === adj.originalYear &&
+                b.date.getMonth() === adj.originalMonth
+            );
+            if (sourceBill) {
+                sourceBill.amount -= adj.amount;
+                if (sourceBill.amount < 0) sourceBill.amount = 0;
+            }
+        }
+    });
+
     // --- POST-PROCESS ADJUSTMENTS (Robust 2-Pass Method) ---
     const tenantAdjustments = adjustments.filter(a => a.tenantId === tenant.id);
-    
+
     // Pass 1: Additions
     tenantAdjustments.forEach(adj => {
         if (adj.adjustedYear !== -1 && adj.adjustedMonth !== -1) {
-            const existingBill = bills.find(b => 
-                b.date.getFullYear() === adj.adjustedYear && 
+            const existingBill = bills.find(b =>
+                b.date.getFullYear() === adj.adjustedYear &&
                 b.date.getMonth() === adj.adjustedMonth
             );
 
@@ -920,7 +978,7 @@ export const generateBudgetedBills = (
     }
 
     return bills.filter((b) => {
-        if (Math.abs(b.amount) <= 0.005) return false;
+        if (Math.abs(b.amount) <= MIN_AMOUNT_THRESHOLD) return false;
         if (b.amount < 0 && !b.earlyTerminationExtraDetail) return false;
         return true;
     });
@@ -938,7 +996,7 @@ export const getVirtualTenants = (
     const addMonths = (dateStr: string, months: number): string => {
         const d = parseDateLocal(dateStr);
         d.setMonth(d.getMonth() + months);
-        return d.toISOString().split('T')[0];
+        return toLocalDateString(d);
     };
 
     // 1. Vacancy Assumptions
@@ -971,7 +1029,7 @@ export const getVirtualTenants = (
                         unitIds: [u.id],
                         totalArea: u.area,
                         leaseStart: asm.projectedSignDate,
-                        leaseEnd: end.toISOString().split('T')[0],
+                        leaseEnd: toLocalDateString(end),
                         unitPrice: asm.projectedUnitPrice,
                         monthlyRent: 0, // Will be calculated by billing service
                         paymentCycle: 'Quarterly',
@@ -983,7 +1041,7 @@ export const getVirtualTenants = (
                         status: ContractStatus.Active,
                         rentFreePeriods: asm.projectedRentFreeMonths > 0 ? [{
                             start: asm.projectedSignDate,
-                            end: new Date(new Date(start).setMonth(start.getMonth() + asm.projectedRentFreeMonths)).toISOString().split('T')[0],
+                            end: toLocalDateString(new Date(new Date(start).setMonth(start.getMonth() + asm.projectedRentFreeMonths))),
                             description: 'Budget Rent Free'
                         }] : [],
                         freeRentHandling: 'Defer' // 账期顺延模式
@@ -1023,7 +1081,7 @@ export const getVirtualTenants = (
         }
 
         if (newStart) {
-             const newStartStr = newStart.toISOString().split('T')[0];
+             const newStartStr = toLocalDateString(newStart);
              const newEnd = new Date(newStart);
              newEnd.setFullYear(newEnd.getFullYear() + 3); // 3 year projection
              
@@ -1035,12 +1093,12 @@ export const getVirtualTenants = (
                  id: `virt_${asm.targetType}_${tenant.id}`,
                  name: `${tenant.name} (${asm.targetType === 'Renewal' ? '续签' : '调改'})`,
                  leaseStart: newStartStr,
-                 leaseEnd: newEnd.toISOString().split('T')[0],
+                 leaseEnd: toLocalDateString(newEnd),
                  unitPrice: asm.projectedUnitPrice,
                  monthlyRent: 0,
                  rentFreePeriods: asm.projectedRentFreeMonths > 0 ? [{
                      start: newStartStr,
-                     end: new Date(new Date(newStart).setMonth(newStart.getMonth() + asm.projectedRentFreeMonths)).toISOString().split('T')[0],
+                     end: toLocalDateString(new Date(new Date(newStart).setMonth(newStart.getMonth() + asm.projectedRentFreeMonths))),
                      description: 'Assumption Rent Free'
                  }] : [],
                  firstPaymentDate: firstPayDate,

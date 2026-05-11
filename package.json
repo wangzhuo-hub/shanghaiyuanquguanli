@@ -15,15 +15,12 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@google/genai": "latest",
     "@supabase/supabase-js": "^2.39.7",
-    "cors": "^2.8.6",
     "exceljs": "^4.4.0",
     "express": "^5.2.1",
     "html2canvas": "^1.4.1",
     "jspdf": "^4.1.0",
     "lucide-react": "latest",
-    "node-fetch": "^3.3.2",
     "pocketbase": "^0.21.0",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",

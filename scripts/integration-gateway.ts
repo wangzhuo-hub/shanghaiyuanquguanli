@@ -62,11 +62,14 @@ interface AuthResult {
 }
 
 async function auth(): Promise<void> {
-  if (!ADMIN_EMAIL || !ADMIN_PASSWORD) throw new Error('PB_ADMIN_EMAIL / PB_ADMIN_PASSWORD is required');
+  if (!ADMIN_EMAIL || !ADMIN_PASSWORD) {
+    console.warn('[integration-gateway] PB_ADMIN_EMAIL / PB_ADMIN_PASSWORD not set, running without admin auth');
+    return;
+  }
   try {
     await pb.collection('_superusers').authWithPassword(ADMIN_EMAIL, ADMIN_PASSWORD);
   } catch (_) {
-    await pb.admins.authWithPassword(ADMIN_EMAIL, ADMIN_PASSWORD);
+    try { await pb.admins.authWithPassword(ADMIN_EMAIL, ADMIN_PASSWORD); } catch { /* non-fatal */ }
   }
 }
 

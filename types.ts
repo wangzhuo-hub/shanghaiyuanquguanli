@@ -151,6 +151,11 @@ export interface Tenant {
   /** 提前退租：其它结算调整（元，正数为加收、负数为减免，计入最后一期应收） */
   earlyTerminationOtherAdjustment?: number;
   
+  // 合同级账期调整（在合同管理中操作，所有预算方案自动引用）
+  paymentPeriodAdjustments?: PaymentPeriodAdjustment[];
+  /** 整体账期偏移：正数=后移N个月，负数=前移N个月（例如 -1 = 所有收款日期提前1个月） */
+  paymentPeriodShiftMonths?: number;
+
   // Special requirements
   specialRequirements?: string;
   
@@ -201,6 +206,8 @@ export interface MonthlyTrend {
   month: string;
   occupancyRate: number;
   revenueTarget: number;
+  /** 合同应收 = 当前所有履约合同按条款滚动计算的应收（不受初始化数据覆盖） */
+  contractReceivable?: number;
   revenueCollected: number | null; // Changed to allow null for future months
   avgUnitPrice: number; // Average Rent Unit Price (Daily)
   collectionRate: number | null; // Changed to allow null for future months
@@ -270,6 +277,23 @@ export interface BudgetAssumption {
       toMonth: number;   // 0-11
       isActive: boolean;
   };
+}
+
+/** 合同级账期调整：从原账期月份移动金额到目标月份，存储在 Tenant 上，所有预算方案自动引用 */
+export interface PaymentPeriodAdjustment {
+  id: string;
+  /** 原账期年份（与合同 leaseStart 同年偏移） */
+  originalYear: number;
+  /** 原账期月份 (0-11) */
+  originalMonth: number;
+  /** 目标年份 */
+  adjustedYear: number;
+  /** 目标月份 (0-11) */
+  adjustedMonth: number;
+  /** 移动金额 */
+  amount: number;
+  /** 调整原因 */
+  reason: string;
 }
 
 export interface BudgetAdjustment {
@@ -374,6 +398,7 @@ export interface MonthlyInitData {
     revenueCollected: number;
     occupancyRate: number;
     accumulatedArrears?: number; // 新增：初始化累计欠款（2025年及之前的欠款）
+    initialBudget?: number; // 月度年初预算（从生效预算方案导入或手填）
 }
 
 // New: Invoice Management
@@ -448,7 +473,7 @@ export interface DashboardData {
 
   // New: Yearly Targets Map
   // Key: Year (e.g., 2024), Value: Targets
-  yearlyTargets?: Record<number, { revenue: number, occupancy: number }>;
+  yearlyTargets?: Record<number, { revenue: number, occupancy: number; initialBudget?: number }>;
 
   // Visual/List data
   recentSignings: Tenant[];

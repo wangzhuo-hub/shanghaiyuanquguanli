@@ -14,7 +14,7 @@ import {
     Tenant,
     UnitStatus,
 } from '../types';
-import { BudgetedBill, buildVacancyBudgetAlignmentNote, generateBudgetedBills, getVirtualTenants } from './billingService';
+import { BudgetedBill, buildVacancyBudgetAlignmentNote, FAR_FUTURE_DATE, generateBudgetedBills, getVirtualTenants } from './billingService';
 import {
     importedBudgetRowKey,
     readBudgetCustomerNameLinks,
@@ -41,9 +41,11 @@ export type DashboardMetricOptions = {
     year: number;
     quarter: DashboardQuarter;
     billingSelectedMonth: string;
+    /** 轻量模式：跳过欠款循环、趋势计算等重运算（非仪表盘页面使用） */
+    quickMode?: boolean;
 };
 
-const RECEIVABLE_DEDICATED_SCENARIO_ID_PREFIX = 'invoice_dedicated_';
+export const RECEIVABLE_DEDICATED_SCENARIO_ID_PREFIX = 'invoice_dedicated_';
 
 type BillingCache = {
     buildingById: Map<string, Building>;
@@ -102,7 +104,7 @@ const getContextId = (cache: BillingCache, value: object | undefined): number =>
     return next;
 };
 
-const getActiveScenarioForBudgetYear = (
+export const getActiveScenarioForBudgetYear = (
     scenarios: BudgetScenario[] | undefined,
     year: number
 ): BudgetScenario | undefined => {
@@ -110,10 +112,10 @@ const getActiveScenarioForBudgetYear = (
     return (scenarios || []).find((s) => s.isActive && (s.budgetYear || fallbackYear) === year);
 };
 
-const isReceivableDedicatedScenarioId = (id: string | undefined): boolean =>
+export const isReceivableDedicatedScenarioId = (id: string | undefined): boolean =>
     String(id || '').startsWith(RECEIVABLE_DEDICATED_SCENARIO_ID_PREFIX);
 
-const isReceivableDedicatedScenario = (scenario: BudgetScenario): boolean => {
+export const isReceivableDedicatedScenario = (scenario: BudgetScenario): boolean => {
     const s = scenario as BudgetScenario & { isReceivableActive?: boolean };
     if (s.isReceivableActive) return true;
     const id = String(scenario.id || '').toLowerCase();
@@ -121,7 +123,7 @@ const isReceivableDedicatedScenario = (scenario: BudgetScenario): boolean => {
     return isReceivableDedicatedScenarioId(String(scenario.id)) || id.includes('invoice_dedicated') || /应收.*专用|发票专用/.test(name);
 };
 
-const getReceivableScenarioForYear = (
+export const getReceivableScenarioForYear = (
     scenarios: BudgetScenario[] | undefined,
     year: number
 ): BudgetScenario | undefined => {
@@ -213,8 +215,8 @@ const ensureDedicatedReceivableScenarios = (
             adjustments: [...(active.adjustments || [])],
             isReceivableActive: true,
             baseDataSnapshot: {
-                tenants: JSON.parse(JSON.stringify(activeTenants)),
-                buildings: JSON.parse(JSON.stringify(activeBuildings)),
+                tenants: structuredClone(activeTenants),
+                buildings: structuredClone(activeBuildings),
             },
         };
 
@@ -747,7 +749,7 @@ const calculateTrends = (
             if (isSelfUse) continue;
 
             const achievedDate = tenant.signingDate ? new Date(tenant.signingDate) : new Date(tenant.leaseStart);
-            const leaseEnd = tenant.leaseEnd ? new Date(tenant.leaseEnd) : new Date('2099-12-31');
+            const leaseEnd = tenant.leaseEnd ? new Date(tenant.leaseEnd) : new Date(FAR_FUTURE_DATE);
             const terminationDate = tenant.terminationDate ? new Date(tenant.terminationDate) : null;
             const effectiveEnd = terminationDate && terminationDate < leaseEnd ? terminationDate : leaseEnd;
             if (achievedDate <= endDate && effectiveEnd > endDate) leasedAreaInMonth += tenant.totalArea;
@@ -776,6 +778,15 @@ const calculateTrends = (
             tenants
         );
         const monthlyTargetBilled = monthlyBillingDetails.reduce((sum, d) => sum + d.amountDue, 0);
+        // 合同应收：仅含真实履约合同（排除预算虚拟租户），按条款（免租期、收款周期等）滚动计算
+        const realOnlyDetails = getBillingDetailsForPeriodInternal(
+            year, month,
+            targetCtx.tenants, [],
+            targetSelfUseUnitIds,
+            targetCtx.assumptions, targetCtx.adjustments,
+            cache, contextKey + '|real', tenants
+        );
+        const contractReceivable = realOnlyDetails.reduce((sum, d) => sum + d.amountDue, 0);
         const periodPrefix = `${year}-${String(month + 1).padStart(2, '0')}`;
         // 工作台预算执行的实际收款按真实入账日期归集，不按关联账期分摊。
         const actualFromPaymentDetails = payments
@@ -807,7 +818,7 @@ const calculateTrends = (
             collectionRate = null;
         }
 
-        trends.push({ month: monthLabel, occupancyRate, revenueTarget, revenueCollected, avgUnitPrice, collectionRate });
+        trends.push({ month: monthLabel, occupancyRate, revenueTarget, revenueCollected, avgUnitPrice, collectionRate, contractReceivable });
     }
 
     return trends;
@@ -817,7 +828,7 @@ export const calculateDashboardMetrics = (
     currentData: DashboardData,
     options: DashboardMetricOptions
 ): DashboardMetricResult => {
-    const { year, quarter, billingSelectedMonth } = options;
+    const { year, quarter, billingSelectedMonth, quickMode = false } = options;
     const tenants = currentData.tenants || [];
     const buildings = currentData.buildings || [];
     const payments = currentData.payments || [];
@@ -907,7 +918,7 @@ export const calculateDashboardMetrics = (
           }
         : undefined;
 
-    const fullYearMonthlyTrends = calculateTrends(
+    const fullYearMonthlyTrends = quickMode ? [] : calculateTrends(
         tenants,
         virtualTenants,
         payments,
@@ -923,7 +934,7 @@ export const calculateDashboardMetrics = (
         cache,
         currentData.billingPeriodNotes,
     );
-    const monthlyTrends = calculateTrends(
+    const monthlyTrends = quickMode ? [] : calculateTrends(
         tenants,
         virtualTenants,
         payments,
@@ -939,7 +950,7 @@ export const calculateDashboardMetrics = (
         cache,
         currentData.billingPeriodNotes,
     );
-    const prevYearMonthlyTrends = calculateTrends(
+    const prevYearMonthlyTrends = quickMode ? [] : calculateTrends(
         tenants,
         virtualTenants,
         payments,
@@ -985,29 +996,35 @@ export const calculateDashboardMetrics = (
         .filter((d) => d.month === 12 && Number.isFinite(d.year))
         .sort((a, b) => a.year - b.year);
     const earliestInitDec = initDecEntries[0];
-    // 欠款仅统计从2026年1月1日起（应用启用日期）
+    // 欠款从最早有初始化数据的年份起算（默认不早于 2026）
+    // 优化：复用同一 data 上下文避免重复构建 data 对象，让 BillingCache 生效
+    // 轻量模式跳过欠款循环（最重的计算）
     let accumulatedArrears = 0;
+    if (!quickMode) {
+    // 欠款从 2026年1月起算（应用启用日期）
     const arrearsStartYear = 2026;
     const nowYear = now.getFullYear();
     const nowMonth = now.getMonth();
+    const arrearsDataContext: DashboardData = {
+        ...currentData,
+        buildings: syncedBuildings,
+        tenants,
+        payments,
+        budgetAssumptions: workingAssumptions,
+        budgetAdjustments: workingAdjustments,
+        budgetScenarios: normalizedScenarios,
+    };
     for (let arrearsYear = arrearsStartYear; arrearsYear <= nowYear; arrearsYear++) {
-        const endMonth = arrearsYear === nowYear ? nowMonth - 1 : 11;
+        const endMonth = arrearsYear === nowYear ? nowMonth : 11;
         for (let month = 0; month <= endMonth; month++) {
-            const billingDetails = buildBillingDetailsForPeriod(arrearsYear, month, {
-                ...currentData,
-                buildings: syncedBuildings,
-                tenants,
-                payments,
-                budgetAssumptions: workingAssumptions,
-                budgetAdjustments: workingAdjustments,
-                budgetScenarios: normalizedScenarios,
-            }, cache);
+            const billingDetails = buildBillingDetailsForPeriod(arrearsYear, month, arrearsDataContext, cache);
             billingDetails.forEach((detail) => {
                 if (detail.status === 'Unpaid') accumulatedArrears += detail.amountDue;
                 else if (detail.status === 'Partial') accumulatedArrears += detail.amountDue - detail.amountPaid;
             });
         }
     }
+    } // end if (!quickMode)
 
     let leasedArea = 0;
     tenants.forEach((tenant) => {
@@ -1065,7 +1082,7 @@ export const calculateDashboardMetrics = (
         }
     }
 
-    const currentMonthBilling = buildBillingDetailsForPeriod(billingYear, billingMonth, {
+    const currentMonthBilling = quickMode ? [] : buildBillingDetailsForPeriod(billingYear, billingMonth, {
         ...currentData,
         buildings: syncedBuildings,
         tenants,
@@ -1144,17 +1161,25 @@ export const calculateDashboardMetrics = (
  * 管理员「所有园区经营汇总」会出现财务列为 0、预算分母却含该园区的不一致。
  * 口径：年度指标优先；未填时回退为月度汇总（与 annualBudgetTarget 一致）。
  */
-export const buildKpiSummaryFromProcessedData = (processedData: DashboardData): KpiSnapshotSummary => {
+export const buildKpiSummaryFromProcessedData = (processedData: DashboardData, statsYear?: number): KpiSnapshotSummary => {
     const trends = processedData.monthlyTrends || [];
+    // 实际合同应收 = 预算引擎滚动汇总（与预算收款同一口径）
     const annualBudgetTarget = trends.reduce((sum, trend) => sum + (trend.revenueTarget || 0), 0);
+    // 实际合同应收 = 预算引擎滚动汇总（口径对齐预算收款）；无预算数据时回落手动年度目标
+    const annualRevenueTarget = annualBudgetTarget > 0
+        ? annualBudgetTarget
+        : (processedData.annualRevenueTarget || processedData.monthlyRevenueTarget || 0);
     const annualRevenueCollected = processedData.annualRevenueCollected || 0;
-    const monthlyRollupTarget = processedData.monthlyRevenueTarget || annualBudgetTarget;
-    // 年度应收目标 = 预算执行表中 12 个月预算收款的合计
-    const annualRevenueTarget = monthlyRollupTarget;
+    // 年初预算：从 yearlyTargets[year].initialBudget 读取
+    const year = statsYear || new Date().getFullYear();
+    const yearlyTargets = processedData.yearlyTargets || {};
+    const yearTarget = yearlyTargets[year] || {};
+    const annualInitialBudget = yearTarget.initialBudget || 0;
 
     return {
         annualRevenueTarget,
         annualRevenueCollected,
+        annualInitialBudget,
         annualBudgetTarget,
         annualGoalCompletion:
             annualRevenueTarget > 0
@@ -1178,8 +1203,12 @@ export const normalizeKpiSummaryWithMonthlyTrends = (
 ): KpiSnapshotSummary => {
     const sumFromTrends = (monthlyTrends || []).reduce((sum, t) => sum + (t.revenueTarget || 0), 0);
     const annualBudgetTarget = sumFromTrends > 0 ? sumFromTrends : summary.annualBudgetTarget || 0;
-    // 年度应收目标 = 预算执行表中 12 个月预算收款的合计
-    const annualRevenueTarget = annualBudgetTarget;
+    // 年度应收目标：保留快照中原有的值（可能是人工设定的 yearlyTargets），
+    // 仅在原有值为 0/空时回退到预算滚动的月度汇总。
+    const existingTarget = summary.annualRevenueTarget;
+    const annualRevenueTarget = (existingTarget != null && existingTarget > 0)
+        ? existingTarget
+        : annualBudgetTarget;
     const collected = summary.annualRevenueCollected || 0;
 
     return {

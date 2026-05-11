@@ -51,6 +51,16 @@ export default defineConfig(({ mode }) => {
         },
         build: {
             outDir: 'dist',
+            rollupOptions: {
+                output: {
+                    manualChunks: {
+                        react: ['react', 'react-dom'],
+                        charts: ['recharts'],
+                        excel: ['exceljs'],
+                        pdf: ['jspdf', 'html2canvas'],
+                    },
+                },
+            },
         },
         resolve: {
             alias: {

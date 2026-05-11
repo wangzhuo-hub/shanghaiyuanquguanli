@@ -200,6 +200,7 @@ export function dashboardDataToPbRecords(
             year: Number(yearStr),
             revenue: (targets as any)?.revenue || 0,
             occupancy: (targets as any)?.occupancy || 0,
+            initial_budget: (targets as any)?.initialBudget ?? 0,
             project_id: projectId,
         };
     }
@@ -215,6 +216,7 @@ export function dashboardDataToPbRecords(
             revenue_collected: d.revenueCollected || 0,
             occupancy_rate: d.occupancyRate || 0,
             accumulated_arrears: d.accumulatedArrears || 0,
+            initial_budget: d.initialBudget ?? 0,
             project_id: projectId,
         };
     }

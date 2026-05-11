@@ -5,17 +5,13 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>金蝶地产——招商管理系统</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <!-- SheetJS for Excel Import/Export -->
-    <script src="https://cdn.sheetjs.com/xlsx-0.20.2/package/dist/xlsx.full.min.js"></script>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <style>
       html {
         -webkit-text-size-adjust: 100%;
         text-size-adjust: 100%;
       }
       body {
-        font-family: 'Inter', sans-serif;
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
         background-color: #f8fafc;
         margin: 0;
         min-width: 0;
@@ -41,27 +37,29 @@
     </style>
 <!-- 所有依赖通过 npm + Vite 构建，不使用 CDN importmap -->
 <script>
-// 清理旧的 AI 配置数据，移除 geminiApiKey 字段
+// 清理旧的 AI 配置数据，迁移到 sessionStorage
 (function() {
   try {
     const aiConfigKey = 'ai_config';
+    // 从 localStorage 迁移旧配置到 sessionStorage
     const savedConfig = localStorage.getItem(aiConfigKey);
     if (savedConfig) {
       const config = JSON.parse(savedConfig);
-      // 如果包含 geminiApiKey，删除它
+      // 删除敏感字段
       if (config.geminiApiKey !== undefined) {
         delete config.geminiApiKey;
-        // 如果 provider 是 gemini，改为 qwen
         if (config.provider === 'gemini') {
           config.provider = 'qwen';
         }
-        localStorage.setItem(aiConfigKey, JSON.stringify(config));
-        console.log('AI 配置已更新，移除 Gemini 相关设置');
       }
+      // 迁移到 sessionStorage（更安全：关闭标签页自动清除）
+      sessionStorage.setItem(aiConfigKey, JSON.stringify(config));
+      // 清除 localStorage 中的旧配置
+      localStorage.removeItem(aiConfigKey);
+      console.log('AI 配置已迁移到 sessionStorage');
     }
   } catch (e) {
     console.error('AI 配置清理失败:', e);
-    // 如果清理失败，删除整个配置
     localStorage.removeItem('ai_config');
   }
 })();
@@ -82,7 +80,7 @@
     <div id="root">
       <div style="display: flex; justify-content: center; align-items: center; height: 100vh; flex-direction: column; background: #f8fafc;">
         <div style="width: 50px; height: 50px; border: 4px solid #e2e8f0; border-top-color: #3b82f6; border-radius: 50%; animation: spin 1s linear infinite;"></div>
-        <p style="margin-top: 20px; color: #64748b; font-family: Inter, sans-serif;">加载中...</p>
+        <p style="margin-top: 20px; color: #64748b;">加载中...</p>
       </div>
       <style>
         @keyframes spin {

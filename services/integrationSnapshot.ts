@@ -23,7 +23,7 @@ export type IntegrationFullSnapshotV1 = {
 };
 
 function cloneForJson<T>(v: T): T {
-    return JSON.parse(JSON.stringify(v)) as T;
+    return structuredClone(v);
 }
 
 export function buildIntegrationFullSnapshotV1(

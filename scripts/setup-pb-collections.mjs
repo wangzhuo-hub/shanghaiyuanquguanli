@@ -157,6 +157,7 @@ const COLLECTIONS = [
       { name: 'year', type: 'number', required: true, options: { min: 2020, max: 2050, noDecimal: true } },
       { name: 'revenue', type: 'number', required: false, options: { min: null, max: null, noDecimal: false } },
       { name: 'occupancy', type: 'number', required: false, options: { min: 0, max: 100, noDecimal: false } },
+      { name: 'initial_budget', type: 'number', required: false, options: { min: null, max: null, noDecimal: false } },
       { name: 'project_id', type: 'text', required: false, options: { min: null, max: null, pattern: '' } },
     ],
     indexes: [
@@ -173,6 +174,7 @@ const COLLECTIONS = [
       { name: 'revenue_collected', type: 'number', required: false, options: { min: null, max: null, noDecimal: false } },
       { name: 'occupancy_rate', type: 'number', required: false, options: { min: 0, max: 100, noDecimal: false } },
       { name: 'accumulated_arrears', type: 'number', required: false, options: { min: null, max: null, noDecimal: false } },
+      { name: 'initial_budget', type: 'number', required: false, options: { min: null, max: null, noDecimal: false } },
       { name: 'project_id', type: 'text', required: false, options: { min: null, max: null, pattern: '' } },
     ],
     indexes: [
