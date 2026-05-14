@@ -369,6 +369,22 @@ PocketBase 使用 `snake_case`，类型定义使用 `camelCase`。常用映射�
 | `Tenant.isSpecialBusiness` | `is_special_business` | pb_tenants |
 | `Tenant.freeRentHandling` | `free_rent_handling` | pb_tenants |
 | `PaymentRecord.id` | `original_id` | pb_payments |
+
+> ⚠️ **OpenClaw 智能体写入合同时严禁碰以下字段**（这些字段语义复杂，由前端弹窗在用户交互时生成与维护，错填会让对应合同 **在前端打不开**）：
+>
+> | 字段 | 真实语义 | 智能体如果想表达"租金阶梯/季度账期表" 应写到哪里 |
+> |------|---------|------|
+> | `payment_period_adjustments` | **存量调优·单月账期挪动**。条目必须是 `{id, originalYear, originalMonth, adjustedYear, adjustedMonth, amount, reason}`，缺一即崩。**不是** 租金阶梯，**不是** 应收账期表。 | 阶梯租金请改 `monthly_rent` 主字段并按生效区间生成；季度账期表交给系统自动按 `payment_cycle`/`payment_cycle_months` + `lease_start`/`lease_end` 计算，OpenClaw 无需写。 |
+> | `payment_cycle_changes` | **付款周期变更历史**，由用户在「变更周期」弹窗确认后写入。 | OpenClaw 仅需写 `payment_cycle` 当前值即可，历史由用户操作产生。 |
+> | `name_history` | **客户改名历史**，由用户在「变更名称」弹窗确认后写入。 | OpenClaw 改名时只覆盖 `name`，不要伪造历史记录。 |
+> | `payment_period_shift_months` | **整体账期偏移**（合同卡片 ◀▶ 写入），单位：整数月。 | 写入数字即可，但默认建议为 0，让用户自己调。 |
+> | `key_moments` | 关键节点时间线，由其它脚本写入。 | OpenClaw 不要写。 |
+> | `rent_free_periods` | 免租期数组，结构 `{start, end, description}`。 | 可写，但每条必须含 `start` + `end`。 |
+> | `payment_terms` | 多房号差异化条款（按 unitId 配置 area/unitPrice/monthlyRent/rentFreePeriods）。 | 单房号合同请留 null。 |
+>
+> 网关写入侧后续会加入 schema 校验，建议智能体侧自查后再调用。
+
+
 | `PaymentRecord.tenantId` | `tenant_id` | pb_payments |
 | `PaymentRecord.amount` | `amount` | pb_payments |
 | `PaymentRecord.type` | `type` | pb_payments |

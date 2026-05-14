@@ -3,6 +3,7 @@ import React, { useMemo } from 'react';
 import { TrendingUp, TrendingDown, Target, Edit3, CalendarRange, UserPlus, UserMinus } from 'lucide-react';
 import { DashboardData, Tenant, ContractStatus } from '../types';
 import { formatArea, formatPercent, formatWan } from '../services/numberFormat';
+import { resolveAnnualInitialBudget } from '../services/dashboardMetrics';
 
 interface StatsCardsProps {
   data: DashboardData;
@@ -22,10 +23,6 @@ export const StatsCards: React.FC<StatsCardsProps> = ({ data, onEditTargets, sel
 
   const annualProgress = data.annualRevenueTarget > 0 ? Math.min(100, (data.annualRevenueCollected / data.annualRevenueTarget) * 100) : 0;
 
-  // 年初预算：年度合计来自 yearlyTargets；按月数值来自 initializationData.initialBudget（元）
-  const yearTarget = (data.yearlyTargets || {})[selectedYear] || {};
-  const annualInitialBudget = (yearTarget as { revenue?: number; occupancy?: number; initialBudget?: number }).initialBudget || 0;
-
   const initialBudgetMonthMap = useMemo(() => {
       const map = new Map<number, number>();
       for (const d of data.initializationData || []) {
@@ -36,15 +33,11 @@ export const StatsCards: React.FC<StatsCardsProps> = ({ data, onEditTargets, sel
       return map;
   }, [data.initializationData, selectedYear]);
 
-  const hasMonthlyInitialBudget = initialBudgetMonthMap.size > 0;
-  const initialBudgetFooterSum = useMemo(() => {
-      if (hasMonthlyInitialBudget) {
-          let sum = 0;
-          for (let m = 1; m <= 12; m++) sum += initialBudgetMonthMap.get(m) ?? 0;
-          return sum;
-      }
-      return annualInitialBudget;
-  }, [hasMonthlyInitialBudget, initialBudgetMonthMap, annualInitialBudget]);
+  /** 与 KPI 快照 / 管理员「所有园区经营汇总」中年初预算列同源 */
+  const initialBudgetFooterSum = useMemo(
+      () => resolveAnnualInitialBudget(data.yearlyTargets, data.initializationData, selectedYear),
+      [data.yearlyTargets, data.initializationData, selectedYear]
+  );
 
   // Occupancy Target Gap
   const occupancyGap = data.annualOccupancyTarget - data.occupancyRate;
@@ -135,24 +128,31 @@ export const StatsCards: React.FC<StatsCardsProps> = ({ data, onEditTargets, sel
     };
   }, [tenants, selectedYear]);
 
+  // 年初预算年度总值（用于完成率分母）
+  const totalInitialBudget = useMemo(
+      () => Array.from({ length: 12 }, (_, i) => initialBudgetMonthMap.get(i + 1) ?? 0).reduce((s, v) => s + v, 0),
+      [initialBudgetMonthMap]
+  );
+
   // Calculate Monthly Breakdown Data with YoY comparison
   const monthlyBreakdown = useMemo(() => {
       let cumulativeCollected = 0;
-      let cumulativeBudget = 0;
+      let cumulativeInitialBudget = 0;
       return Array.from({ length: 12 }, (_, i) => {
           const trend = data.monthlyTrends[i];
           const contractReceivable = trend?.contractReceivable ?? trend?.revenueTarget ?? 0;
-          const budget = contractReceivable;
           const actual = trend?.revenueCollected || 0;
           const hasActual = trend?.revenueCollected !== null;
-          
+          const monthInitialBudget = initialBudgetMonthMap.get(i + 1) ?? 0;
+
           if (hasActual) {
               cumulativeCollected += actual;
           }
-          cumulativeBudget += budget;
+          cumulativeInitialBudget += monthInitialBudget;
 
-          const monthlyRate = budget > 0 && hasActual ? (actual / budget) * 100 : 0;
-          const cumulativeProgress = cumulativeBudget > 0 ? (cumulativeCollected / cumulativeBudget) * 100 : 0;
+          // 完成率 = 实收 / 年初预算
+          const monthlyRate = monthInitialBudget > 0 && hasActual ? (actual / monthInitialBudget) * 100 : 0;
+          const cumulativeProgress = totalInitialBudget > 0 ? (cumulativeCollected / totalInitialBudget) * 100 : 0;
 
           // Get previous year data for YoY comparison
           const prevYearData = data.prevYearMonthlyTrends?.[i];
@@ -165,7 +165,7 @@ export const StatsCards: React.FC<StatsCardsProps> = ({ data, onEditTargets, sel
           return {
               month: i + 1,
               monthName: trend?.month || `${i + 1}月`,
-              budget,
+              budget: contractReceivable,
               actual: hasActual ? actual : null,
               monthlyRate,
               cumulativeProgress,
@@ -174,27 +174,29 @@ export const StatsCards: React.FC<StatsCardsProps> = ({ data, onEditTargets, sel
               yoy
           };
       });
-  }, [data.monthlyTrends, data.prevYearMonthlyTrends]);
+  }, [data.monthlyTrends, data.prevYearMonthlyTrends, initialBudgetMonthMap, totalInitialBudget]);
 
   const budgetExecutionTotal = useMemo(() => {
-      const totalBudget = monthlyBreakdown.reduce((sum, month) => sum + month.budget, 0);
+      const totalContractReceivable = monthlyBreakdown.reduce((sum, month) => sum + month.budget, 0);
       const actualMonths = monthlyBreakdown.filter(month => month.hasActual);
-      const actualBudget = actualMonths.reduce((sum, month) => sum + month.budget, 0);
+      const actualBudgetMonths = actualMonths.filter(m => initialBudgetMonthMap.has(m.month));
+      const actualInitialBudget = actualBudgetMonths.reduce((sum, m) => sum + (initialBudgetMonthMap.get(m.month) ?? 0), 0);
       const totalActual = actualMonths.reduce((sum, month) => sum + (month.actual || 0), 0);
       const comparablePrevActual = actualMonths.reduce((sum, month) => sum + month.prevActual, 0);
       const yearPrevActual = monthlyBreakdown.reduce((sum, month) => sum + month.prevActual, 0);
 
       return {
-          totalBudget,
+          totalBudget: totalContractReceivable,
           totalActual,
           comparablePrevActual,
           yearPrevActual,
-          monthlyRate: actualBudget > 0 ? (totalActual / actualBudget) * 100 : 0,
-          cumulativeProgress: totalBudget > 0 ? (totalActual / totalBudget) * 100 : 0,
+          // 完成率 = 实收 / 年初预算
+          monthlyRate: actualInitialBudget > 0 ? (totalActual / actualInitialBudget) * 100 : 0,
+          cumulativeProgress: totalInitialBudget > 0 ? (totalActual / totalInitialBudget) * 100 : 0,
           yoy: comparablePrevActual > 0 ? ((totalActual - comparablePrevActual) / comparablePrevActual) * 100 : 0,
           hasActual: actualMonths.length > 0,
       };
-  }, [monthlyBreakdown]);
+  }, [monthlyBreakdown, initialBudgetMonthMap, totalInitialBudget]);
 
   return (
     <div className="space-y-4 md:space-y-6">

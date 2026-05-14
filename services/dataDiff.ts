@@ -128,6 +128,7 @@ export function dashboardDataToPbRecords(
             lease_end: t.leaseEnd,
             move_in_date: t.moveInDate || '',
             unit_price: t.unitPrice || 0,
+            unit_price_mode: t.unitPriceMode || 'daily',
             monthly_rent: t.monthlyRent || 0,
             rent_free_periods: t.rentFreePeriods || [],
             payment_cycle: t.paymentCycle || 'Monthly',
@@ -155,6 +156,13 @@ export function dashboardDataToPbRecords(
             actual_parking_spaces: t.actualParkingSpaces ?? t.parkingSpaces ?? 0,
             parking_unit_price: t.parkingUnitPrice || 0,
             key_moments: t.keyMoments || [],
+            // 历史/审计：客户改名记录、付款周期变更记录
+            name_history: t.nameHistory || [],
+            payment_cycle_changes: t.paymentCycleChanges || [],
+            // 合同级账期调整 —— 单月微调记录 + 整体平移（合同卡片 ◀▶ 写入的字段）。
+            // 缺失这两项时，diffPbRecords 对账期平移无任何变更可报，导致保存后刷新回退。
+            payment_period_adjustments: t.paymentPeriodAdjustments || [],
+            payment_period_shift_months: t.paymentPeriodShiftMonths ?? 0,
             project_id: projectId,
         };
     }

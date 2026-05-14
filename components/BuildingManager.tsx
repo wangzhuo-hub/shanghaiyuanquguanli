@@ -109,13 +109,30 @@ export const BuildingManager: React.FC<BuildingManagerProps> = ({ buildings, ten
     const vacantArea = Math.max(0, leasableArea - leasedArea);
     const rate = leasableArea > 0 ? (leasedArea / leasableArea) * 100 : 0;
 
+    /** 户数：非 Site 楼宇中非自用单元；已租/待租与单元状态一致（与平面图、计费引擎同步的 Occupied） */
+    let leasableUnits = 0;
+    let leasedUnits = 0;
+    let vacantUnits = 0;
+    buildings.forEach((b) => {
+        if (b.type === 'Site') return;
+        b.units.forEach((u) => {
+            if (u.isSelfUse) return;
+            leasableUnits += 1;
+            if (u.status === UnitStatus.Occupied) leasedUnits += 1;
+            else vacantUnits += 1;
+        });
+    });
+
     return {
         totalArea: Number(totalArea.toFixed(2)),
         selfUseArea: Number(selfUseArea.toFixed(2)),
         leasableArea: Number(leasableArea.toFixed(2)),
         leasedArea: Number(leasedArea.toFixed(2)),
         vacantArea: Number(vacantArea.toFixed(2)),
-        rate
+        rate,
+        leasableUnits,
+        leasedUnits,
+        vacantUnits,
     };
   }, [buildings, tenants]);
 
@@ -137,13 +154,17 @@ export const BuildingManager: React.FC<BuildingManagerProps> = ({ buildings, ten
       });
 
       const rate = leasableArea > 0 ? (occupiedArea / leasableArea) * 100 : 0;
+      const leasableUnits = activeBuilding.units.filter((u) => !u.isSelfUse).length;
+      const leasedUnits = activeBuilding.units.filter((u) => !u.isSelfUse && u.status === UnitStatus.Occupied).length;
       return {
           totalUnits,
           totalArea: Number(totalArea.toFixed(2)),
           leasableArea: Number(leasableArea.toFixed(2)),
           occupiedArea: Number(occupiedArea.toFixed(2)),
           rate,
-          selfUseArea: Number(selfUseArea.toFixed(2))
+          selfUseArea: Number(selfUseArea.toFixed(2)),
+          leasableUnits,
+          leasedUnits,
       };
   })() : null;
 
@@ -772,25 +793,63 @@ export const BuildingManager: React.FC<BuildingManagerProps> = ({ buildings, ten
 
   return (
     <div className="space-y-6">
-      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3 mb-6">
+      <div className="mb-6 grid grid-cols-2 items-stretch gap-3 md:grid-cols-3 lg:grid-cols-6">
         {[
           { label: '园区总面积', value: globalStats.totalArea, unit: '㎡', icon: <Maximize size={18}/>, color: 'bg-slate-50 text-slate-600' },
           { label: '自用面积', value: globalStats.selfUseArea, unit: '㎡', icon: <Coffee size={18}/>, color: 'bg-slate-50 text-slate-500' },
-          { label: '可出租面积', value: globalStats.leasableArea, unit: '㎡', icon: <Unlock size={18}/>, color: 'bg-blue-50 text-blue-600' },
-          { label: '已出租面积', value: globalStats.leasedArea, unit: '㎡', icon: <ShieldCheck size={18}/>, color: 'bg-emerald-50 text-emerald-600' },
-          { label: '待出租面积', value: globalStats.vacantArea, unit: '㎡', icon: <LayoutGrid size={18}/>, color: 'bg-amber-50 text-amber-600' },
+          {
+              label: '可出租面积',
+              value: globalStats.leasableArea,
+              unit: '㎡',
+              icon: <Unlock size={18}/>,
+              color: 'bg-blue-50 text-blue-600',
+              household: globalStats.leasableUnits,
+              householdHint: '非自用可招商单元数（不含场地资产）',
+          },
+          {
+              label: '已出租面积',
+              value: globalStats.leasedArea,
+              unit: '㎡',
+              icon: <ShieldCheck size={18}/>,
+              color: 'bg-emerald-50 text-emerald-600',
+              household: globalStats.leasedUnits,
+              householdHint: '单元状态为「已租」的户数（与平面图一致）',
+          },
+          {
+              label: '待出租面积',
+              value: globalStats.vacantArea,
+              unit: '㎡',
+              icon: <LayoutGrid size={18}/>,
+              color: 'bg-amber-50 text-amber-600',
+              household: globalStats.vacantUnits,
+              householdHint: '空置 + 预留等非「已租」可招商单元数',
+          },
           { label: '当前出租率', value: globalStats.rate, unit: '%', icon: <Percent size={18}/>, color: 'bg-sky-600 text-white shadow-md' },
         ].map((stat, i) => (
-          <div key={i} className={`p-4 rounded-xl border border-slate-200/60 shadow-sm flex flex-col justify-between ${stat.color}`}>
-            <div className="flex justify-between items-center mb-1">
+          <div
+              key={i}
+              title={'householdHint' in stat ? stat.householdHint : undefined}
+              className={`p-4 rounded-xl border border-slate-200/60 shadow-sm flex h-full min-h-[124px] flex-col ${stat.color}`}
+          >
+            <div className="mb-1 flex shrink-0 justify-between items-center">
               <span className="text-[11px] font-bold uppercase tracking-wider opacity-80">{stat.label}</span>
               <span className="opacity-70">{stat.icon}</span>
             </div>
-            <div className="flex items-baseline gap-1">
-              <span className="text-xl font-bold tabular-nums">
-                {formatNumber(Number(stat.value || 0))}
-              </span>
-              <span className="text-[10px] font-medium opacity-70">{stat.unit}</span>
+            <div className="flex min-h-0 flex-1 flex-col justify-end">
+              <div className="flex items-baseline gap-1">
+                <span className="text-xl font-bold tabular-nums leading-none">
+                  {formatNumber(Number(stat.value || 0))}
+                </span>
+                <span className="text-[10px] font-medium opacity-70">{stat.unit}</span>
+              </div>
+            </div>
+            <div
+                className={`mt-1.5 min-h-[1.25rem] shrink-0 text-[11px] font-semibold tabular-nums leading-tight ${
+                    'household' in stat && typeof stat.household === 'number' ? 'opacity-90' : 'opacity-0'
+                }`}
+                aria-hidden={!('household' in stat && typeof stat.household === 'number')}
+            >
+              {'household' in stat && typeof stat.household === 'number' ? `${stat.household} 户` : '\u00a0'}
             </div>
           </div>
         ))}
@@ -860,13 +919,20 @@ export const BuildingManager: React.FC<BuildingManagerProps> = ({ buildings, ten
 
              const rate = bLeasable > 0 ? (bSignedArea / bLeasable) * 100 : 0;
              const isSite = b.type === 'Site';
+             const bLeasableUnits = b.units.filter((u) => !u.isSelfUse).length;
+             const bLeasedUnits = b.units.filter((u) => !u.isSelfUse && u.status === UnitStatus.Occupied).length;
 
              return (
                 <button
                     key={b.id}
                     type="button"
                     onClick={() => setActiveBuildingId(b.id)}
-                    className={`px-4 py-3 md:px-5 rounded-t-lg font-medium transition-colors flex flex-col items-start gap-1 min-w-[120px] md:min-w-[140px] flex-shrink-0 ${
+                    title={
+                        isSite
+                            ? `场地资产 · ${b.units.length} 个登记单元`
+                            : `第 1 行：签约率 = 合同已生效承租面积 ÷ 可出租面积（均不含自用）。\n第 2 行：面积为已租/可租㎡；户数为非自用单元中「已租」套数 / 可租套数（与平面图单元状态一致）。`
+                    }
+                    className={`px-4 py-3 md:px-5 rounded-t-lg font-medium transition-colors flex flex-col items-start gap-1 min-w-[120px] md:min-w-[168px] flex-shrink-0 ${
                     activeBuildingId === b.id
                         ? 'bg-white border-x border-t border-slate-200 text-blue-600 relative top-[1px]'
                         : 'bg-slate-100 text-slate-500 hover:bg-slate-200'
@@ -876,9 +942,27 @@ export const BuildingManager: React.FC<BuildingManagerProps> = ({ buildings, ten
                         {isSite ? <MapPin size={16} className="text-orange-500"/> : <Home size={16} />}
                         <span className="truncate max-w-[80px] md:max-w-none">{b.name}</span>
                     </div>
-                    <span className={`text-xs px-1.5 py-0.5 rounded ${isSite ? 'bg-orange-100 text-orange-700' : 'bg-slate-200 text-slate-600'}`}>
-                        {isSite ? '类型: 场地' : `签约率: ${formatPercent(rate)}`}
-                    </span>
+                    {isSite ? (
+                        <div className={`text-xs px-1.5 py-0.5 rounded leading-snug bg-orange-100 text-orange-700`}>
+                            <div>类型: 场地</div>
+                            {b.units.length > 0 && (
+                                <div className="text-[11px] mt-0.5 tabular-nums">{b.units.length} 单元</div>
+                            )}
+                        </div>
+                    ) : (
+                        <div
+                            className={`text-xs px-1.5 py-1 rounded leading-snug w-full max-w-[260px] ${
+                                activeBuildingId === b.id ? 'bg-sky-50 text-blue-800' : 'bg-slate-200 text-slate-600'
+                            }`}
+                        >
+                            <div className="font-semibold tabular-nums">签约率: {formatPercent(rate)}</div>
+                            <div className="text-[11px] mt-0.5 tabular-nums leading-snug opacity-95">
+                                已租/可租 {formatNumber(bSignedArea)}/{formatNumber(bLeasable)}㎡
+                                <span className="mx-1 text-slate-400">·</span>
+                                户 {bLeasedUnits}/{bLeasableUnits}
+                            </div>
+                        </div>
+                    )}
                 </button>
             );
         })}
@@ -899,6 +983,7 @@ export const BuildingManager: React.FC<BuildingManagerProps> = ({ buildings, ten
                         <span className="hidden md:inline w-px h-3 bg-slate-300"></span>
                         <span className={buildingStats.selfUseArea > 0 ? 'text-slate-800 font-medium' : ''}>
                             可租: {formatArea(buildingStats.leasableArea)}
+                            <span className="text-slate-400 font-normal text-xs ml-1">（{buildingStats.leasableUnits} 户）</span>
                         </span>
                         {buildingStats.selfUseArea > 0 && (
                             <span className="text-xs bg-gray-100 text-gray-600 px-1 rounded border border-gray-200">
@@ -909,6 +994,9 @@ export const BuildingManager: React.FC<BuildingManagerProps> = ({ buildings, ten
                             <>
                                 <span className="hidden md:inline w-px h-3 bg-slate-300"></span>
                                 <span>签约出租率: <strong className="text-blue-600">{formatPercent(Number(buildingStats.rate || 0))}</strong></span>
+                                <span className="text-slate-400 text-xs">
+                                    （已租 {buildingStats.leasedUnits} / 可租 {buildingStats.leasableUnits} 户）
+                                </span>
                             </>
                         )}
                     </div>

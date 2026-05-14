@@ -328,7 +328,7 @@ export const AIContractRecognitionModal: React.FC<AIContractRecognitionModalProp
 
     // 如果有单价和面积但没有月租，自动计算
     if (tenantData.unitPrice && tenantData.totalArea && !tenantData.monthlyRent) {
-      tenantData.monthlyRent = Math.round(tenantData.unitPrice * (365 / 12) * tenantData.totalArea);
+      tenantData.monthlyRent = Math.round(tenantData.unitPrice * (365 / 12) * tenantData.totalArea * 100) / 100;
     }
 
     onImport(tenantData);

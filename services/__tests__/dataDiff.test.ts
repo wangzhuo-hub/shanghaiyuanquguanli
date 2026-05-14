@@ -158,6 +158,37 @@ describe('dataDiff', () => {
         ).toEqual({ 't1###2026-04': '已催收' });
     });
 
+    // 回归用例：合同卡片 ◀▶ 平移 / 单月账期调整 / 名称变更 / 付款周期变更 / 单价模式
+    // 这些字段曾在 dataDiff.ts 的 tenant 映射中缺失，导致 diff 无变化、保存后刷新回退。
+    it('修改 paymentPeriodShiftMonths → 产生 update，changedFields 包含 payment_period_shift_months', () => {
+        const baseline = dashboardDataToPbRecords(baseData(), 'p1');
+        const modified = baseData();
+        (modified.tenants as any)[0].paymentPeriodShiftMonths = -2;
+        const payload = diffPbRecords(baseline, dashboardDataToPbRecords(modified, 'p1'), baseMeta());
+        expect(payload.pb_tenants.updates).toHaveLength(1);
+        expect(payload.pb_tenants.updates[0]).toMatchObject({
+            originalId: 't1',
+            changedFields: { payment_period_shift_months: -2 },
+        });
+    });
+
+    it('新增 paymentPeriodAdjustments / nameHistory / paymentCycleChanges / unitPriceMode → 均产生 update', () => {
+        const baseline = dashboardDataToPbRecords(baseData(), 'p1');
+        const modified = baseData();
+        const t = (modified.tenants as any)[0];
+        t.paymentPeriodAdjustments = [{ originalMonth: '2026-05', shiftMonths: 1, reason: '测试' }];
+        t.nameHistory = [{ from: '张三', to: '张三（旧）', date: '2026-05-01' }];
+        t.paymentCycleChanges = [{ effectiveDate: '2026-06-01', fromCycle: 'Monthly', toCycle: 'Quarterly', toCycleMonths: 3 }];
+        t.unitPriceMode = 'monthly';
+        const payload = diffPbRecords(baseline, dashboardDataToPbRecords(modified, 'p1'), baseMeta());
+        expect(payload.pb_tenants.updates).toHaveLength(1);
+        const changed = payload.pb_tenants.updates[0].changedFields;
+        expect(changed.payment_period_adjustments).toEqual(t.paymentPeriodAdjustments);
+        expect(changed.name_history).toEqual(t.nameHistory);
+        expect(changed.payment_cycle_changes).toEqual(t.paymentCycleChanges);
+        expect(changed.unit_price_mode).toBe('monthly');
+    });
+
     it('amount_delta 预算调整：PB 行使用 null 代替 originalYear/Month -1（满足 original_month 0–11 约束）', () => {
         const data = baseData();
         data.budgetAdjustments = [

@@ -247,7 +247,7 @@ export function receivableBudgetDisplay(item: BillingDetail): number {
     if (x.deferredToPeriod && x.deferredAmount != null && x.deferredAmount > 0) {
         v += x.deferredAmount;
     }
-    return Math.round(v);
+    return Math.round(v * 100) / 100;
 }
 
 /**

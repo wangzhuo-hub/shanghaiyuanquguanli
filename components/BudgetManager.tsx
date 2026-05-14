@@ -21,6 +21,7 @@ import {
     type BudgetTableSnapshot,
 } from '../services/budgetTableImport';
 import { receivableBudgetMonthForBill } from '../services/receivableListHelpers';
+import { buildReceivableContextForScenario, buildContractOnlyReceivableForPeriod } from '../services/dashboardMetrics';
 import {
     monthOverlapsRentFree,
     formatYearRentFreeSummary,
@@ -337,7 +338,7 @@ export const BudgetManager: React.FC<BudgetManagerProps> = ({
               adjustments: propAdjustments
           };
       }
-      
+
       const scenario = scenarios.find(s => s.id === activeScenarioId);
       if (!scenario) return {
           buildings: propBuildings,
@@ -346,11 +347,29 @@ export const BudgetManager: React.FC<BudgetManagerProps> = ({
           adjustments: propAdjustments
       };
 
+      // 与「财务报表 → 应收明细」、工作台「合同应收」共用同一套合并逻辑：
+      //  · 假设：以方案为底，根级 Existing/Vacancy 按同 target 覆盖（live wins）
+      //  · 调整：以方案为底，根级按同 id 覆盖
+      //  · 租户/楼宇：优先方案快照，避免快照外的实时变更影响纯方案视图
+      // 这样「实际合同口径」预算表 = 工作台「合同应收」 = 财务报表「应收租金」三处口径一致。
+      const merged = buildReceivableContextForScenario(
+          scenario,
+          propTenants,
+          propBuildings,
+          propAssumptions,
+          propAdjustments,
+      );
+      // 为兼容 BudgetManager 的「续签/高风险退租」扩展账单展示，保留方案中非 Existing/Vacancy 的假设
+      // （Renewal / RiskTermination — 这些只影响虚拟续签账单，不会进入 buildBillingDetailsForPeriod 的 realOnlyDetails，
+      // 所以不会破坏与工作台/财务报表的对账，只让设定页/详情表能继续显示）。
+      const extraAssumptions = (scenario.assumptions || []).filter(
+          (a) => a.targetType === 'Renewal' || a.targetType === 'RiskTermination',
+      );
       return {
-          buildings: scenario.baseDataSnapshot?.buildings || propBuildings,
-          tenants: scenario.baseDataSnapshot?.tenants || propTenants,
-          assumptions: scenario.assumptions,
-          adjustments: scenario.adjustments
+          buildings: merged.buildings,
+          tenants: merged.tenants,
+          assumptions: [...merged.assumptions, ...extraAssumptions],
+          adjustments: merged.adjustments,
       };
   }, [activeScenarioId, scenarios, propBuildings, propTenants, propAssumptions, propAdjustments]);
 
@@ -411,14 +430,45 @@ export const BudgetManager: React.FC<BudgetManagerProps> = ({
   const handleCreateScenario = () => {
       const trimmedName = newScenarioName.trim();
       if (!trimmedName) { alert("请输入方案名称"); return; }
-      if (trimmedName.length < 2) { alert("方案名称至少需要2个字符"); return; }
-      if (/^\d+$/.test(trimmedName)) { alert("方案名称不能为纯数字"); return; }
+      // 防止与「应收专用方案」前缀冲突
+      if (/^invoice_dedicated_/i.test(trimmedName)) {
+          alert("方案名称不能以 invoice_dedicated_ 开头（系统保留）。");
+          return;
+      }
+      // 同年度方案名称去重，避免下拉混淆
+      const dupName = scenarios.some(
+          (s) => (s.budgetYear || currentYear) === newScenarioYear && s.name.trim() === trimmedName,
+      );
+      if (dupName) { alert(`${newScenarioYear}年度已存在同名方案 “${trimmedName}”，请换一个名字。`); return; }
+
+      // 新方案默认基于「实际履约合同」推算账单（含免租期、收款周期、账期调整等设置）：
+      //  · Existing/Renewal/RiskTermination 的合同级假设（单价调整、付款转移、续签策略等）继承
+      //  · 全部 budgetAdjustments（账期调整、金额调整）继承
+      //  · Vacancy（空置去化）不继承——空置预测是「年初预算 (Live)」的前瞻测算，新方案默认不计入
+      const inheritedAssumptions: BudgetAssumption[] = (propAssumptions || [])
+          .filter((a) => a.targetType !== 'Vacancy')
+          .map((a) => ({ ...a, id: a.id || `${a.targetType}_${a.targetId}` }));
+      const inheritedAdjustments: BudgetAdjustment[] = (propAdjustments || []).map((a) => ({ ...a }));
+
       const newScenario: BudgetScenario = {
-          id: `scenario_${Date.now()}`, name: newScenarioName, budgetYear: newScenarioYear, description: newScenarioDesc, createdAt: new Date().toISOString(), isActive: false,
-          assumptions: [], adjustments: [],
-          baseDataSnapshot: useSnapshot ? { tenants: JSON.parse(JSON.stringify(propTenants)), buildings: JSON.parse(JSON.stringify(propBuildings)) } : undefined
+          id: `scenario_${Date.now()}`,
+          name: trimmedName,
+          budgetYear: newScenarioYear,
+          description: newScenarioDesc,
+          createdAt: new Date().toISOString(),
+          isActive: false,
+          assumptions: inheritedAssumptions,
+          adjustments: inheritedAdjustments,
+          baseDataSnapshot: useSnapshot
+              ? { tenants: JSON.parse(JSON.stringify(propTenants)), buildings: JSON.parse(JSON.stringify(propBuildings)) }
+              : undefined,
       };
-      onUpdateScenarios([...scenarios, newScenario]); setScenarioYearFilter(newScenarioYear); setActiveScenarioId(newScenario.id); setShowScenarioModal(false); setNewScenarioName(''); setNewScenarioDesc('');
+      onUpdateScenarios([...scenarios, newScenario]);
+      setScenarioYearFilter(newScenarioYear);
+      setActiveScenarioId(newScenario.id);
+      setShowScenarioModal(false);
+      setNewScenarioName('');
+      setNewScenarioDesc('');
   };
   const handleDeleteScenario = (id: string) => {
       if (String(id).startsWith('invoice_dedicated_')) {
@@ -433,7 +483,17 @@ export const BudgetManager: React.FC<BudgetManagerProps> = ({
   };
   const startRenaming = () => { const scenario = scenarios.find(s => s.id === activeScenarioId); if (scenario) { setTempScenarioName(scenario.name); setIsRenaming(true); } };
   const saveRenaming = () => { if (tempScenarioName.trim()) { onRenameScenario(activeScenarioId, tempScenarioName); } setIsRenaming(false); };
-  const handleActivateCurrentScenario = () => { const scenario = scenarios.find(s => s.id === activeScenarioId); if (scenario) { onActivateScenario(scenario); } };
+  const handleActivateCurrentScenario = () => {
+    const scenario = scenarios.find(s => s.id === activeScenarioId);
+    if (!scenario) return;
+    const assumptionCount = Array.isArray(scenario.assumptions) ? scenario.assumptions.length : 0;
+    const adjustmentCount = Array.isArray(scenario.adjustments) ? scenario.adjustments.length : 0;
+    if (assumptionCount === 0 && adjustmentCount === 0) {
+      alert(`方案「${scenario.name || scenario.id}」没有任何预算假设与调整数据，激活后预算将全部为空。\n请先在该方案下补充假设/调整数据。`);
+      return;
+    }
+    onActivateScenario(scenario);
+  };
   const handleSetReceivableScenario = () => {
       const scenario = scenarios.find((s) => s.id === activeScenarioId);
       if (!scenario) return;
@@ -443,14 +503,48 @@ export const BudgetManager: React.FC<BudgetManagerProps> = ({
       });
       onUpdateScenarios(updated);
   };
+  /**
+   * 用当前实时合同/楼宇重建方案快照（P0-4 修复）。
+   * - 不修改任何 assumptions / adjustments / isActive，仅同步 baseDataSnapshot
+   * - 方案创建后新签的合同因此会进入预算可见集合
+   * 提示：刷新后无法恢复创建时刻的"历史合同"列表，请在用户明确确认后再执行。
+   */
+  const handleRefreshScenarioSnapshot = () => {
+      const scenario = scenarios.find((s) => s.id === activeScenarioId);
+      if (!scenario) return;
+      const oldCount = scenario.baseDataSnapshot?.tenants?.length ?? 0;
+      const newCount = propTenants.length;
+      const confirmMsg = `将用当前 ${newCount} 个合同重建方案「${scenario.name || scenario.id}」的快照（旧快照含 ${oldCount} 个合同，将被覆盖）。\n\n` +
+          '该操作只刷新合同/楼宇快照，不会修改预算假设、调整或激活状态。是否继续？';
+      if (!confirm(confirmMsg)) return;
+      const updated = scenarios.map((s) =>
+          s.id === scenario.id
+              ? {
+                    ...s,
+                    baseDataSnapshot: {
+                        tenants: JSON.parse(JSON.stringify(propTenants)),
+                        buildings: JSON.parse(JSON.stringify(propBuildings)),
+                    },
+                }
+              : s,
+      );
+      onUpdateScenarios(updated);
+  };
   const confirmCloudSave = () => {
     if (!operatorName) return;
     const scenario = scenarios.find(s => s.id === activeScenarioId);
-    if (scenario && !scenario.assumptions?.length && !scenario.adjustments?.length) {
-      alert('当前方案没有预算假设数据，请先生成预算假设再保存。');
+    // 允许「仅含合同快照」方案上云：snapshot 本身已构成可对照的预算基线，
+    // 假设/调整为空只代表「按合同实滚」，仍是有效预算口径。
+    if (
+        scenario &&
+        !scenario.assumptions?.length &&
+        !scenario.adjustments?.length &&
+        !scenario.baseDataSnapshot?.tenants?.length
+    ) {
+      alert('当前方案没有预算假设、调整或合同快照，无法上传。请至少勾选「保存当前快照」或编辑预算假设。');
       return;
     }
-    const scenarioName = activeScenarioId === 'current' ? '年初预算方案' : scenario?.name || '未命名方案';
+    const scenarioName = activeScenarioId === 'current' ? '当前合同履约预算' : scenario?.name || '未命名方案';
     onSaveBudgetToCloud(scenarioName, operatorName); setShowCloudModal(false);
   };
 
@@ -459,7 +553,7 @@ export const BudgetManager: React.FC<BudgetManagerProps> = ({
       () =>
           tenants.filter((t) => {
               const endYear = new Date(t.leaseEnd).getFullYear();
-              return (endYear === currentYear || endYear === nextYear) && t.status !== ContractStatus.Terminated;
+              return (endYear === currentYear || endYear === nextYear) && t.status !== ContractStatus.Terminated && t.status !== ContractStatus.Expired;
           }),
       [tenants, currentYear, nextYear]
   );
@@ -626,13 +720,35 @@ export const BudgetManager: React.FC<BudgetManagerProps> = ({
       const selfUseUnitIds = new Set<string>();
       buildings.forEach(b => b.units.forEach(u => { if (u.isSelfUse) selfUseUnitIds.add(u.id); }));
 
+      // 合同应收单源入口：与工作台 calculateTrends.contractReceivable / 财务报表 contractAmountDue
+      // 三处共用同一函数 buildContractOnlyReceivableForPeriod。effectiveData 在 Live 模式 = 实时数据，
+      // 在方案模式 = 方案快照合并数据；budgetScenarios 传空数组阻止再次解析方案，避免双重叠加。
+      const contractOnlyCtx: Parameters<typeof buildContractOnlyReceivableForPeriod>[2] = {
+          tenants,
+          buildings,
+          payments,
+          initializationData: [],
+          budgetAssumptions: budgetAssumptions,
+          budgetAdjustments: budgetAdjustments,
+          budgetScenarios: [],
+      };
+      const contractOnlyByMonth: Array<Map<string, number>> = Array.from({ length: 12 }, (_, m) => {
+          return buildContractOnlyReceivableForPeriod(year, m, contractOnlyCtx).byTenantId;
+      });
+
       tenants.forEach(t => {
-          if (t.status === ContractStatus.Terminated) return;
+          if (t.status === ContractStatus.Terminated || t.status === ContractStatus.Expired) {
+              return;
+          }
           const isSelfUse = t.unitIds.some(uid => selfUseUnitIds.has(uid));
-          if (isSelfUse) return;
+          if (isSelfUse) {
+              return;
+          }
           // 特殊业态：合同不滚动账单，应收金额由「财务报表 → 特殊业态收入录入」按月手工录入；
           // 预算明细同理不再按合同自动列入。
-          if (t.isSpecialBusiness) return;
+          if (t.isSpecialBusiness) {
+              return;
+          }
 
           const leaseEndYear = new Date(t.leaseEnd).getFullYear();
           const isExpiringThisYear = leaseEndYear === year;
@@ -673,10 +789,11 @@ export const BudgetManager: React.FC<BudgetManagerProps> = ({
               }
           }
 
-          tenantBills.forEach((bill) => {
-              const { year: y, monthIndex: m } = receivableBudgetMonthForBill(bill, t);
-              if (y === year && m >= 0 && m < 12) monthlyValues[m].amount += bill.amount;
-          });
+          // 合同应收：直接读单源入口结果，确保与工作台 / 财务报表完全一致；
+          // tenantBills 仍然保留供下面「续签 / 高风险退租」假设扩展和复核字段使用。
+          for (let m = 0; m < 12; m++) {
+              monthlyValues[m].amount = contractOnlyByMonth[m].get(t.id) ?? 0;
+          }
 
           // ACTUAL DATA CALCULATION FOR TENANT
           // 与财务报表「收款明细」一致：优先按关联账期 period 归属，未填账期才按入账月份归属。
@@ -809,7 +926,11 @@ export const BudgetManager: React.FC<BudgetManagerProps> = ({
           });
       });
 
-      vacantUnits.forEach(u => {
+      // 「年初预算 (Live)」要展示空置去化的预测（含 projectedSignDate 等假设），其他新建预算方案默认仅基于
+      // 「实际履约合同」推算账单（含免租、收款周期、账期调整），所以跳过空置去化整段，确保
+      // 全年预算总额 = 实际合同应收，与工作台「合同应收」/财务报表口径完全一致。
+      const includeVacancyProjections = activeScenarioId === 'current';
+      if (includeVacancyProjections) vacantUnits.forEach(u => {
           const assumption = budgetAssumptions.find(a => a.targetId === u.unitId && a.targetType === 'Vacancy');
           let monthlyValues = Array(12).fill(null).map(() => ({ amount: 0, actual: 0, isAdjustedIn:false, isAdjustedOut:false, adjustmentDetail:'' }));
           let monthlyLeasedArea = Array(12).fill(0);
@@ -919,7 +1040,7 @@ export const BudgetManager: React.FC<BudgetManagerProps> = ({
     const fmtArea = (n: number) => (Math.abs(n) < 0.005 ? undefined : Number(n.toFixed(2)));
     const scenarioLabel =
         activeScenarioId === 'current'
-            ? '年初预算方案 (Live)'
+            ? '当前合同履约预算情况 (Live)'
             : (scenarios.find((s) => s.id === activeScenarioId)?.name || activeScenarioId);
 
     const thinSide: ExcelJS.Border = { style: 'thin', color: { argb: 'FFCBD5E1' } };
@@ -1595,18 +1716,27 @@ export const BudgetManager: React.FC<BudgetManagerProps> = ({
       const monthlyBudgetTotals = Array(12).fill(0);
       const monthlyActualTotals = Array(12).fill(0);
       const monthlyOccupiedArea = Array(12).fill(0);
-      
+      // 拆分「实际履约合同应收」与「空置去化预测」用于头部小计展示，便于与
+      // 工作台/财务报表的「合同应收」对账（合同应收 = 全年预算总额 - 空置去化预测）
+      let realContractTotal = 0;
+      let vacancyForecastTotal = 0;
+
       monthlyData.forEach(row => {
+          let rowSum = 0;
           row.monthlyValues.forEach((val: any, idx: number) => {
               monthlyBudgetTotals[idx] += val.amount;
               monthlyActualTotals[idx] += val.actual || 0;
+              rowSum += val.amount;
           });
           row.monthlyLeasedArea.forEach((area: number, idx: number) => {
               monthlyOccupiedArea[idx] += area;
           });
+          if (row.category === '空置去化') vacancyForecastTotal += rowSum;
+          else realContractTotal += rowSum;
       });
       const grandBudgetTotal = monthlyBudgetTotals.reduce((a, b) => a + b, 0);
       const grandActualTotal = monthlyActualTotals.reduce((a, b) => a + b, 0);
+      const isLiveScenario = activeScenarioId === 'current';
 
       // Total leasable area calculation
       const totalLeasableArea = buildings.reduce((total, b) => 
@@ -1629,8 +1759,37 @@ export const BudgetManager: React.FC<BudgetManagerProps> = ({
                     </div>
                     <div className="flex items-center gap-4">
                         <div className="text-right hidden md:block border-r pr-4 border-slate-200">
-                            <span className="text-xs text-slate-500 block">全年预算总额</span>
-                            <span className="text-lg font-bold text-slate-800">{formatCurrency(grandBudgetTotal)}</span>
+                            <span className="text-xs text-slate-500 block">
+                                {isLiveScenario ? '全年预算总额' : '全年合同应收（实际履约）'}
+                            </span>
+                            <span
+                                className="text-lg font-bold text-slate-800"
+                                title={
+                                    isLiveScenario
+                                        ? `年初预算 (Live) = 实际履约合同应收 ${formatCurrency(realContractTotal)} + 空置去化预测 ${formatCurrency(vacancyForecastTotal)}`
+                                        : '新建预算方案默认仅按实际履约合同推算（含免租期、收款周期、账期调整），与工作台「合同应收」/财务报表「应收租金」口径完全一致；如需查看空置去化预测，请切换到「年初预算方案 (Live)」。'
+                                }
+                            >
+                                {formatCurrency(grandBudgetTotal)}
+                            </span>
+                            {isLiveScenario && vacancyForecastTotal > 0.005 && (
+                                <span className="block text-[10px] text-slate-400 mt-0.5 tabular-nums">
+                                    含空置去化预测 {formatCurrency(vacancyForecastTotal)}
+                                </span>
+                            )}
+                            {!isLiveScenario && (() => {
+                                const cur = scenarios.find((s) => s.id === activeScenarioId);
+                                const isReceivableActive = !!cur?.isReceivableActive;
+                                return isReceivableActive ? (
+                                    <span className="block text-[10px] text-sky-600 mt-0.5 font-bold">
+                                        🧾 应收专用 · 工作台/财务报表均按本方案口径计算
+                                    </span>
+                                ) : (
+                                    <span className="block text-[10px] text-emerald-600 mt-0.5">
+                                        与工作台「合同应收」一致 · 点「设为应收专用」让本方案接管
+                                    </span>
+                                );
+                            })()}
                         </div>
                         {isExec && (
                              <div className="text-right hidden md:block">
@@ -2050,9 +2209,9 @@ export const BudgetManager: React.FC<BudgetManagerProps> = ({
                            <option key={y} value={y}>{y}预算</option>
                        ))}
                    </select>
-                   <select value={activeScenarioId} onChange={e => setActiveScenarioId(e.target.value)} className="bg-white border border-slate-300 rounded px-3 py-1.5 text-sm min-w-[240px] outline-none focus:ring-2 focus:ring-blue-200 cursor-pointer shadow-sm">
-                       <option value="current">🟡 年初预算方案 (Live)</option>
-                     {scenarios.filter(s => !String(s.id).startsWith('invoice_dedicated_') && (s.budgetYear || currentYear) === scenarioYearFilter).map(s => (<option key={s.id} value={s.id}>{s.name} ({s.budgetYear || currentYear}) {s.isActive ? '(✅年初预算生效中)' : ''} {s.isReceivableActive ? '(🧾应收专用)' : ''}</option>))}
+                   <select value={activeScenarioId} onChange={e => setActiveScenarioId(e.target.value)} className="bg-white border border-slate-300 rounded px-3 py-1.5 text-sm min-w-[260px] outline-none focus:ring-2 focus:ring-blue-200 cursor-pointer shadow-sm" title={activeScenarioId === 'current' ? '当前合同履约预算 (Live) 含「空置去化预测」；切换到其他新建方案则仅含实际履约合同（与工作台/财务报表口径一致）' : '新建预算方案：仅按实际履约合同推算（含免租期、收款周期、账期调整），与工作台「合同应收」/财务报表「应收租金」一致'}>
+                       <option value="current">🟡 当前合同履约预算情况 (Live)</option>
+                     {scenarios.filter(s => !String(s.id).startsWith('invoice_dedicated_') && (s.budgetYear || currentYear) === scenarioYearFilter).map(s => (<option key={s.id} value={s.id}>{s.name} ({s.budgetYear || currentYear}) {s.isActive ? '(✅年初预算生效中)' : ''} {s.isReceivableActive ? '(🧾应收专用)' : ''} · 实际合同口径</option>))}
                    </select>
                    {activeScenarioId !== 'current' && (
                        <div className="flex items-center gap-1">
@@ -2092,7 +2251,7 @@ export const BudgetManager: React.FC<BudgetManagerProps> = ({
                   </button>
               )}
                {activeScenarioId !== 'current' && !scenarios.find(s => s.id === activeScenarioId)?.isActive && (
-                   <button onClick={handleActivateCurrentScenario} className="flex items-center gap-1 px-3 py-1.5 bg-emerald-600 text-white rounded-lg text-xs font-bold hover:bg-emerald-700 shadow-sm"><Play size={14} /> 设为{scenarioYearFilter}年初预算方案</button>
+                   <button onClick={handleActivateCurrentScenario} className="flex items-center gap-1 px-3 py-1.5 bg-emerald-600 text-white rounded-lg text-xs font-bold hover:bg-emerald-700 shadow-sm"><Play size={14} /> 推送为{scenarioYearFilter}年工作台KPI基准</button>
                )}
            </div>
        </div>
@@ -2119,15 +2278,47 @@ export const BudgetManager: React.FC<BudgetManagerProps> = ({
 
        {showScenarioModal && (
            <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/40 backdrop-blur-sm p-4">
-               <div className="bg-white rounded-xl shadow-xl w-full max-w-sm p-6 animate-in zoom-in-50 duration-200">
-                   <h3 className="text-lg font-bold text-slate-800 mb-4">新建预算方案</h3>
+               <div className="bg-white rounded-xl shadow-xl w-full max-w-md p-6 animate-in zoom-in-50 duration-200">
+                   <h3 className="text-lg font-bold text-slate-800 mb-1">新建预算方案</h3>
+                   <p className="text-xs text-slate-500 mb-4">
+                       新建方案默认按「实际履约合同」推算账单（含免租期、收款周期、账期调整等），<strong className="text-slate-700">不包含空置去化预测</strong>；如需空置去化预测请使用「年初预算方案 (Live)」。
+                   </p>
                    <div className="space-y-4">
-                      <div><label className="block text-sm font-medium text-slate-700 mb-1">预算年份</label><select className="w-full border rounded p-2" value={newScenarioYear} onChange={e => setNewScenarioYear(Number(e.target.value))}>{Array.from(new Set([currentYear, currentYear + 1, currentYear + 2, ...scenarios.map(s => s.budgetYear || currentYear)])).sort((a,b)=>a-b).map(y => <option key={y} value={y}>{y}年</option>)}</select></div>
-                      <div><label className="block text-sm font-medium text-slate-700 mb-1">方案名称</label><input type="text" className="w-full border rounded p-2" value={newScenarioName} onChange={e => setNewScenarioName(e.target.value)} placeholder="例如: 2027年度保守方案" autoFocus /></div>
-                       <div><label className="block text-sm font-medium text-slate-700 mb-1">描述 (可选)</label><textarea className="w-full border rounded p-2 text-sm" rows={3} value={newScenarioDesc} onChange={e => setNewScenarioDesc(e.target.value)} placeholder="备注此方案的关键假设..." /></div>
-                       <div className="flex items-center gap-2"><input type="checkbox" id="snapshot" checked={useSnapshot} onChange={e => setUseSnapshot(e.target.checked)} className="rounded text-blue-600" /><label htmlFor="snapshot" className="text-sm text-slate-600">保存当前租户与楼宇数据快照 (推荐)</label></div>
+                      <div>
+                          <label className="block text-sm font-medium text-slate-700 mb-1">预算年份</label>
+                          <select className="w-full border rounded p-2" value={newScenarioYear} onChange={e => setNewScenarioYear(Number(e.target.value))}>
+                              {Array.from(new Set([currentYear, currentYear + 1, currentYear + 2, ...scenarios.map(s => s.budgetYear || currentYear)])).sort((a,b)=>a-b).map(y => <option key={y} value={y}>{y}年</option>)}
+                          </select>
+                      </div>
+                      <div>
+                          <label className="block text-sm font-medium text-slate-700 mb-1">方案名称</label>
+                          <input
+                              type="text"
+                              className="w-full border rounded p-2"
+                              value={newScenarioName}
+                              onChange={e => setNewScenarioName(e.target.value)}
+                              onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); handleCreateScenario(); } }}
+                              placeholder="例如: 2027 保守方案 / Q4 复盘"
+                              autoFocus
+                          />
+                      </div>
+                       <div>
+                           <label className="block text-sm font-medium text-slate-700 mb-1">描述 (可选)</label>
+                           <textarea className="w-full border rounded p-2 text-sm" rows={3} value={newScenarioDesc} onChange={e => setNewScenarioDesc(e.target.value)} placeholder="备注此方案的关键假设..." />
+                       </div>
+                       <div className="flex items-center gap-2">
+                           <input type="checkbox" id="snapshot" checked={useSnapshot} onChange={e => setUseSnapshot(e.target.checked)} className="rounded text-blue-600" />
+                           <label htmlFor="snapshot" className="text-sm text-slate-600">保存当前租户与楼宇数据快照 (推荐)</label>
+                       </div>
                        <p className="text-xs text-slate-400">勾选快照将锁定当前的租赁状态，使方案不受后续实际运营数据变化的影响，适合做静态测算。</p>
-                       <div className="flex justify-end gap-2 pt-2"><button onClick={() => setShowScenarioModal(false)} className="px-4 py-2 border rounded text-slate-600 hover:bg-slate-50">取消</button><button onClick={handleCreateScenario} className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700">创建</button></div>
+                       <div className="border border-blue-100 bg-blue-50 rounded p-2 text-[11px] text-blue-800 leading-relaxed">
+                           ✅ 系统会自动继承当前的合同级假设（单价调整、付款转移等）与全部预算调整（账期/金额）。
+                           创建后总额会与工作台「合同应收」、财务报表「应收租金」口径一致。
+                       </div>
+                       <div className="flex justify-end gap-2 pt-2">
+                           <button onClick={() => setShowScenarioModal(false)} className="px-4 py-2 border rounded text-slate-600 hover:bg-slate-50">取消</button>
+                           <button onClick={handleCreateScenario} className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700">创建</button>
+                       </div>
                    </div>
                </div>
            </div>
@@ -2138,7 +2329,7 @@ export const BudgetManager: React.FC<BudgetManagerProps> = ({
                <div className="bg-white rounded-xl shadow-xl w-full max-w-sm p-6 animate-in zoom-in-50 duration-200">
                    <h3 className="text-lg font-bold text-slate-800 mb-4 flex items-center gap-2"><CloudUpload size={20}/> 备份至云端</h3>
                    <div className="space-y-4">
-                       <div className="bg-blue-50 p-3 rounded text-sm text-blue-800">即将保存: <strong>{activeScenarioId === 'current' ? '年初预算方案 (Live)' : scenarios.find(s=>s.id===activeScenarioId)?.name}</strong></div>
+                       <div className="bg-blue-50 p-3 rounded text-sm text-blue-800">即将保存: <strong>{activeScenarioId === 'current' ? '当前合同履约预算 (Live)' : scenarios.find(s=>s.id===activeScenarioId)?.name}</strong></div>
                        <div><label className="block text-sm font-medium text-slate-700 mb-1">操作人员姓名 <span className="text-red-500">*</span></label><input type="text" className="w-full border rounded p-2" value={operatorName} onChange={e => setOperatorName(e.target.value)} placeholder="请输入您的姓名" /></div>
                        <div className="flex justify-end gap-2 pt-2"><button onClick={() => setShowCloudModal(false)} className="px-4 py-2 border rounded text-slate-600 hover:bg-slate-50">取消</button><button onClick={confirmCloudSave} disabled={!operatorName.trim()} className="px-4 py-2 bg-emerald-600 text-white rounded hover:bg-emerald-700 disabled:opacity-50">确认上传</button></div>
                    </div>

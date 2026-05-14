@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { buildBillingDetailsForPeriod, calculateDashboardMetrics } from '../dashboardMetrics';
+import {
+    buildBillingDetailsForPeriod,
+    buildKpiSummaryFromProcessedData,
+    calculateDashboardMetrics,
+    resolveAnnualInitialBudget,
+} from '../dashboardMetrics';
 import { writeImportedBudgetTable, type BudgetTableSnapshot } from '../budgetTableImport';
 import {
     ContractStatus,
@@ -376,13 +381,15 @@ describe('buildBillingDetailsForPeriod receivable scenario vs live assumptions',
             budgetScenarios: [dedicated2026(0)],
             budgetAssumptions: [existingAsm(-2)],
         });
-        // 首期收款日 2026-01-01：无偏移时账单在 2026-01；提前 2 个月则落在 2025-11，故对比 2025 年 11 月
-        const nov2025NoLive = buildBillingDetailsForPeriod(2025, 10, dataScenarioOnly).find((d) => d.tenantId === 'tenant-junke')
+        // 查询 2026-01 且当年命中应收专用方案时：根级 `billingCycleShiftMonths=-2` 必须覆盖快照内同 target 的偏移，
+        // 使合并后的首期滚动金额与「仅方案快照、根级假设为空」不同（具体落月随 generateBudgetedBills 规则变化，故只比对两口径差异）。
+        const jan2026ScenarioOnly = buildBillingDetailsForPeriod(2026, 0, dataScenarioOnly).find((d) => d.tenantId === 'tenant-junke')
             ?.amountDue ?? 0;
-        const nov2025Merged = buildBillingDetailsForPeriod(2025, 10, dataWithLiveShift).find((d) => d.tenantId === 'tenant-junke')
+        const jan2026Merged = buildBillingDetailsForPeriod(2026, 0, dataWithLiveShift).find((d) => d.tenantId === 'tenant-junke')
             ?.amountDue ?? 0;
-        expect(nov2025NoLive).toBeLessThan(0.005);
-        expect(nov2025Merged).toBeGreaterThan(0.005);
+        expect(jan2026ScenarioOnly).toBeGreaterThan(0.005);
+        expect(jan2026Merged).toBeGreaterThan(0.005);
+        expect(jan2026Merged).not.toBeCloseTo(jan2026ScenarioOnly, 0.01);
     });
 });
 
@@ -470,5 +477,186 @@ describe('buildBillingDetailsForPeriod orphan payment tenantId', () => {
         const data = dashboardData(undefined, { tenants: [current], payments });
         const jan = buildBillingDetailsForPeriod(2026, 0, data).find((d) => d.tenantId === 'junke-current');
         expect(jan?.amountPaid ?? 0).toBeGreaterThan(240000);
+    });
+});
+
+describe('monthly trend contractReceivable matches finance receivable engine', () => {
+    /** 用户截图：预算管理「实际合同口径」=工作台「合同应收」=财务报表「应收租金」三处必须一致 */
+    it('uses receivable scenario context (not active scenario) for contractReceivable, matching finance', () => {
+        const t = tenant({
+            id: 'tenant-x',
+            paymentCycle: 'Monthly',
+            paymentCycleMonths: 1,
+            firstPaymentDate: '2026-01-01',
+            firstPaymentMonths: 1,
+            monthlyRent: 100000,
+        });
+        const buildings = dashboardData().buildings!;
+        // 「年初预算方案」生效（含一条 Existing 调价：单价提到 5 元/㎡·天 → 月租 100×5×30=15,000，但
+        // 由于调价区间不覆盖 2026 全年，对原账单影响保持为 0；保留它仅为模拟「active 与 receivable 不同」的真实场景）
+        const yearStart: BudgetScenario = {
+            id: 'scenario_yearstart',
+            name: '年初预算方案',
+            budgetYear: 2026,
+            description: '',
+            createdAt: '2026-01-01T00:00:00.000Z',
+            isActive: true,
+            isReceivableActive: false,
+            assumptions: [
+                {
+                    id: 'asm-yearstart-existing',
+                    targetType: 'Existing',
+                    targetId: 'tenant-x',
+                    targetName: t.name,
+                    strategy: 'Renewal',
+                    projectedSignDate: '2026-01-01',
+                    projectedUnitPrice: 0,
+                    projectedRentFreeMonths: 0,
+                    paymentShift: { isActive: true, amount: 100000, fromYear: 2026, fromMonth: 0, toYear: 2026, toMonth: 5 },
+                },
+            ],
+            adjustments: [],
+            baseDataSnapshot: { tenants: [t], buildings },
+        };
+        // 「实际合同口径方案」既是 receivable，又没有任何 Existing 假设：合同应保持原状，不做付款转移
+        const actualReceivable: BudgetScenario = {
+            id: 'scenario_actual',
+            name: '发票/实收专用方案',
+            budgetYear: 2026,
+            description: '',
+            createdAt: '2026-01-02T00:00:00.000Z',
+            isActive: false,
+            isReceivableActive: true,
+            assumptions: [],
+            adjustments: [],
+            baseDataSnapshot: { tenants: [t], buildings },
+        };
+        const data = dashboardData(undefined, {
+            tenants: [t],
+            budgetScenarios: [yearStart, actualReceivable],
+        });
+        const result = calculateDashboardMetrics(data, {
+            year: 2026,
+            quarter: 'All',
+            billingSelectedMonth: '2026-01',
+        });
+        const trends = result.processedData.monthlyTrends || [];
+        // 工作台「预算执行」表 / KPI 中的 contractReceivable 应等于 receivable 方案下的滚动应收。
+        // 1 月：原本应收 100,000，年初预算方案的 paymentShift 把 1 月转到 6 月（→1 月归零、6 月翻倍）。
+        // 修复后 contractReceivable 取 receivable 方案视角，1 月应保留 100,000、6 月仍为 100,000。
+        const jan = trends.find((m) => m.month === '1月');
+        const jun = trends.find((m) => m.month === '6月');
+        expect(jan?.contractReceivable ?? 0).toBeGreaterThan(80000);
+        expect(jun?.contractReceivable ?? 0).toBeGreaterThan(80000);
+        expect(jun?.contractReceivable ?? 0).toBeLessThan(150000);
+    });
+});
+
+describe('buildBillingDetailsForPeriod attaches contractAmountDue for three-way alignment', () => {
+    /** 单测目的：保证 buildBillingDetailsForPeriod 返回的每行 BillingDetail.contractAmountDue
+     *  与工作台 calculateTrends.contractReceivable / 预算管理「每月应收」三处使用同一个"纯合同口径"。
+     *  缓缴备注修改了 amountDue，但 contractAmountDue 必须保持合同滚动的原值。 */
+    it('contractAmountDue 保持合同纯口径，不被缓缴/导入预算覆盖', () => {
+        // 使用深圳园区 projectId 使「应收月偏移 = 0」（账单日与覆盖期同一自然月），
+        // 简化断言：Feb 的覆盖 Feb 的应收。
+        const t = tenant({
+            id: 'tenant-x',
+            projectId: 'shenzhen_park',
+            paymentCycle: 'Monthly',
+            paymentCycleMonths: 1,
+            firstPaymentDate: '2026-02-01',
+            firstPaymentMonths: 1,
+            monthlyRent: 100000,
+            leaseStart: '2026-02-01',
+            leaseEnd: '2026-12-31',
+        });
+        const buildings = dashboardData().buildings!;
+        const receivableScenario: BudgetScenario = {
+            id: 'scenario_actual',
+            name: '应收款专用方案',
+            budgetYear: 2026,
+            description: '',
+            createdAt: '2026-01-02T00:00:00.000Z',
+            isActive: false,
+            isReceivableActive: true,
+            assumptions: [],
+            adjustments: [],
+            baseDataSnapshot: { tenants: [t], buildings },
+        };
+        // 写入一条缓缴备注：把 2026-02 的 100,000 挪到 2026-03。
+        const deferNoteKey = '__defer__tenant-x_2026_1_2026_2_test123';
+        const deferNote = JSON.stringify({
+            tenantId: 'tenant-x',
+            fromYear: 2026,
+            fromMonth: 1,
+            toYear: 2026,
+            toMonth: 2,
+            amount: 100000,
+        });
+        const data = dashboardData({ [deferNoteKey]: deferNote }, {
+            tenants: [t],
+            budgetScenarios: [receivableScenario],
+        });
+        const febDetails = buildBillingDetailsForPeriod(2026, 1, data);
+        const febRow = febDetails.find((d) => d.tenantId === 'tenant-x');
+        expect(febRow).toBeDefined();
+        // 实际核销金额（amountDue）= 缓出后 0
+        expect(febRow!.amountDue).toBeLessThan(0.005);
+        // 合同应收 contractAmountDue 必须仍是 100,000（与工作台一致，未被缓缴影响）
+        expect(febRow!.contractAmountDue ?? 0).toBeGreaterThan(99999);
+        expect(febRow!.contractAmountDue ?? 0).toBeLessThan(100001);
+
+        // 对账：工作台 contractReceivable 应等于 febRow.contractAmountDue 之和
+        const result = calculateDashboardMetrics(data, {
+            year: 2026,
+            quarter: 'All',
+            billingSelectedMonth: '2026-02',
+        });
+        const trends = result.processedData.monthlyTrends || [];
+        const febTrend = trends.find((m) => m.month === '2月');
+        const dashContract = febTrend?.contractReceivable ?? 0;
+        const financeContractSum = febDetails.reduce((sum, d) => sum + (d.contractAmountDue ?? 0), 0);
+        expect(Math.abs(dashContract - financeContractSum)).toBeLessThan(0.5);
+    });
+});
+
+describe('resolveAnnualInitialBudget（与预算执行表合计 / KPI 同源）', () => {
+    it('无月度年初预算时回落 yearlyTargets.initialBudget', () => {
+        expect(
+            resolveAnnualInitialBudget({ 2026: { revenue: 0, occupancy: 0, initialBudget: 21_710_000 } }, [], 2026)
+        ).toBe(21_710_000);
+    });
+
+    it('任一月有 initialBudget 时用 12 个月之和（缺月按 0）', () => {
+        const init = [
+            { year: 2026, month: 1, revenueTarget: 0, revenueCollected: 0, occupancyRate: 0, initialBudget: 10_000_000 },
+            { year: 2026, month: 3, revenueTarget: 0, revenueCollected: 0, occupancyRate: 0, initialBudget: 11_710_000 },
+        ];
+        expect(
+            resolveAnnualInitialBudget({ 2026: { revenue: 0, occupancy: 0, initialBudget: 99_999_999 } }, init, 2026)
+        ).toBe(21_710_000);
+    });
+
+    it('buildKpiSummaryFromProcessedData 使用该口径', () => {
+        const base = dashboardData(undefined, {
+            yearlyTargets: { 2026: { revenue: 0, occupancy: 0, initialBudget: 1 } },
+            initializationData: [
+                {
+                    year: 2026,
+                    month: 1,
+                    revenueTarget: 0,
+                    revenueCollected: 0,
+                    occupancyRate: 0,
+                    initialBudget: 5_000_000,
+                },
+            ],
+        });
+        const { processedData } = calculateDashboardMetrics(base, {
+            year: 2026,
+            quarter: 'All',
+            billingSelectedMonth: '2026-01',
+        });
+        const summary = buildKpiSummaryFromProcessedData(processedData, 2026);
+        expect(summary.annualInitialBudget).toBe(5_000_000);
     });
 });

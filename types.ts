@@ -111,8 +111,10 @@ export interface Tenant {
   moveInDate?: string;
 
   // Rent
-  unitPrice?: number; // Price per sqm per DAY
+  unitPrice?: number; // Price per sqm per DAY (or per MONTH if unitPriceMode='monthly')
+  unitPriceMode?: 'daily' | 'monthly'; // defaults to 'daily'
   monthlyRent: number; // Total monthly rent (calculated)
+  projectId?: string;  // 所属园区
 
   unitTerms?: LeaseUnitTerm[];
   paymentTerms?: LeaseUnitTerm[];
@@ -233,6 +235,13 @@ export interface BillingDetail {
   budgetAlignmentNote?: string;
   /** 当月推算应收实际采用的租户条款（应收专用方案快照与实时合同合并后）；合同概要弹窗应对齐此对象而非仅根 tenants */
   billingTermsTenant?: Tenant;
+  /**
+   * 「合同应收」纯口径金额：仅基于应收专用方案快照 + 根级假设/调整滚动合同账单，不含缓缴 / 导入预算覆盖 /
+   * 特殊业态手工应收 / 手工应收行等结算侧后处理。用于让财务页面同时呈现「合同应收」与「实际核销金额」，
+   * 并保证工作台「合同应收」、预算管理「每月应收」、财务报表「合同应收」三处口径一致。
+   * 缺省/手工合成行 fallback 为 0。
+   */
+  contractAmountDue?: number;
 }
 
 export interface ParkingStatDetail {

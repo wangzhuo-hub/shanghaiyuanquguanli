@@ -226,7 +226,7 @@ export const ContractSummaryModal: React.FC<ContractSummaryModalProps> = ({
         );
         return {
             rawDateAmtSet: new Set(
-                raw.map((b) => `${b.date.getFullYear()}-${b.date.getMonth()}-${b.date.getDate()}|${Math.round(b.amount)}`),
+                raw.map((b) => `${b.date.getFullYear()}-${b.date.getMonth()}-${b.date.getDate()}|${b.amount.toFixed(2)}`),
             ),
             rawDateSet: new Set(raw.map((b) => `${b.date.getFullYear()}-${b.date.getMonth()}-${b.date.getDate()}`)),
         };
@@ -496,7 +496,7 @@ export const ContractSummaryModal: React.FC<ContractSummaryModalProps> = ({
                                                         !hasAccrualMonthMatchInYearBills;
                                                     const rowHighlight = accrualMatch || dateMatch || coverageOnlyMatch;
                                                     const dateKey = `${b.date.getFullYear()}-${b.date.getMonth()}-${b.date.getDate()}`;
-                                                    const dateAmtKey = `${dateKey}|${Math.round(b.amount)}`;
+                                                    const dateAmtKey = `${dateKey}|${b.amount.toFixed(2)}`;
                                                     const isBudgetNew =
                                                         !!rawYearBillDiffSets && !rawYearBillDiffSets.rawDateSet.has(dateKey);
                                                     const isBudgetChanged =

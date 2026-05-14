@@ -56,15 +56,45 @@ const applyExistingPaymentShiftToMergedBills = (bills: BudgetedBill[], ps: NonNu
 };
 
 /** 最小金额阈值（低于此值视为零，用于舍入和过滤） */
+/** 根据 unitPriceMode 将单价转换为月租金 */
+const monthlyRentFromUnitPrice = (unitPrice: number, area: number, mode?: 'daily' | 'monthly'): number => {
+    if (mode === 'monthly') return unitPrice * area;
+    return (unitPrice * area * 365) / 12;
+};
+
 export const MIN_AMOUNT_THRESHOLD = 0.005;
 /** 日租金计算基准天数（月租金 / 30） */
 export const DAILY_RENT_BASE_DAYS = 30;
+/** 金额保留两位小数（避免 Math.round 取整丢失日租精度） */
+const round2 = (n: number): number => Math.round(n * 100) / 100;
 /** 计费循环安全迭代上限 */
 export const BILLING_LOOP_LIMIT = 300;
 
 /** 租约永不到期哨兵日期（无 leaseEnd 时的默认值） */
 export const FAR_FUTURE_DATE = '2099-12-31';
 export const farFutureDate = (): Date => parseDateLocal(FAR_FUTURE_DATE);
+
+/**
+ * 当月应收账期园区清单。上海 / 北京默认账期是「应收月的前一个自然月」（账单日 = 覆盖期开始月 − 1），
+ * 深圳园区则在「应收月当月」生成账单（账单日 = 覆盖期开始月）。
+ *
+ * NOTE：仅作用于系统自动推算的账单日；用户显式填写的 `firstPaymentDate` 仍按原值落账，
+ * 由用户决定具体收款日。后续如需扩展为更多园区，可改为通过 `ParkInfo` 配置项注入。
+ */
+export const SAME_MONTH_RECEIVABLE_PROJECT_IDS: ReadonlySet<string> = new Set(['shenzhen_park']);
+
+/**
+ * 计算「账单日」相对「覆盖期开始日」的月份偏移。
+ * - 上海 / 北京等默认园区：返回 `-1`，账单日落在覆盖期前一个自然月（即「应收月的前一个月」）。
+ * - 深圳园区：返回 `0`，账单日与覆盖期开始日同一自然月（即「应收月当月」产生应收）。
+ */
+export function getReceivableMonthOffsetForTenant(
+    tenant: Pick<Tenant, 'projectId'>,
+): number {
+    const projectId = (tenant.projectId || '').trim();
+    if (projectId && SAME_MONTH_RECEIVABLE_PROJECT_IDS.has(projectId)) return 0;
+    return -1;
+}
 
 export interface BudgetedBill {
     date: Date;
@@ -87,7 +117,7 @@ export type GenerateBudgetedBillsOptions = {
 
 // Helper to parse "YYYY-MM-DD" string into a Local Date object (00:00:00)
 // This avoids UTC offsets issues where "2026-06-01" becomes "2026-05-31" in some timezones
-const parseDateLocal = (dateInput: string | Date | undefined): Date => {
+export const parseDateLocal = (dateInput: string | Date | undefined): Date => {
     if (!dateInput) return new Date(); // Fallback
     if (dateInput instanceof Date) return new Date(dateInput.getFullYear(), dateInput.getMonth(), dateInput.getDate());
     
@@ -97,6 +127,47 @@ const parseDateLocal = (dateInput: string | Date | undefined): Date => {
         return new Date(parts[0], parts[1] - 1, parts[2]);
     }
     return new Date(dateInput);
+};
+
+/**
+ * 合同「单月账期调整」按收款日自然月匹配账单。
+ * 先尝试 hintYear + month；若无精确年匹配且同月有多笔，取与 hintYear（或 anchorYear）最接近的年份，
+ * 缓解 UI 误把 originalYear 写成「操作当年」导致只加不减、金额堆叠成数倍的问题。
+ */
+const resolveBillForContractPeriodMonth = (
+    bills: BudgetedBill[],
+    month0: number,
+    hintYear: number,
+    anchorYear?: number,
+): BudgetedBill | undefined => {
+    const inMonth = bills
+        .filter((b) => b.date.getMonth() === month0)
+        .sort((a, b) => a.date.getTime() - b.date.getTime());
+    if (inMonth.length === 0) return undefined;
+    const exact = inMonth.find((b) => b.date.getFullYear() === hintYear);
+    if (exact) return exact;
+    const pivot = anchorYear ?? hintYear;
+    let best = inMonth[0];
+    let bestDist = Math.abs(best.date.getFullYear() - pivot);
+    for (let i = 1; i < inMonth.length; i++) {
+        const cand = inMonth[i];
+        const d = Math.abs(cand.date.getFullYear() - pivot);
+        if (d < bestDist || (d === bestDist && cand.date.getTime() < best.date.getTime())) {
+            best = cand;
+            bestDist = d;
+        }
+    }
+    return best;
+};
+
+/** 已知原收款日及目标自然月(0-11)，推算目标收款日（用于原月无账单、仅写了目标月的情形） */
+const syntheticReceivableDateForShiftedMonth = (sourceBill: BudgetedBill, targetMonth0: number): Date => {
+    const sy = sourceBill.date.getFullYear();
+    const sm = sourceBill.date.getMonth();
+    const tm = targetMonth0;
+    let ty = sy;
+    if (tm < sm) ty += 1;
+    return new Date(ty, tm, 1);
 };
 
 /** 确保 Date 输出为本地日期字符串 "YYYY-MM-DD"（避免 toISOString UTC 偏移） */
@@ -158,34 +229,65 @@ export const isRentFreeDate = (date: Date, rentFreePeriods: RentFreePeriod[]): b
     });
 };
 
+/**
+ * 计算合同月结束日：从 start 的 day-of-month 到次月同日-1天。
+ * 若 anchorDay 在次月不存在（如31日在2月），回退到次月最后一天。
+ */
+const getContractMonthEnd = (start: Date, anchorDay: number): Date => {
+    const y = start.getFullYear();
+    const m = start.getMonth();
+    const next = new Date(y, m + 1, anchorDay);
+    // JS Date 溢出：new Date(2026,1,31)→ Mar 3，此时 getMonth()≠target
+    if (next.getMonth() !== (m + 1) % 12) {
+        return new Date(y, m + 2, 0); // 次月最后一天
+    }
+    next.setDate(next.getDate() - 1);
+    return next;
+};
+
 export const calculateRentForDuration = (start: Date, end: Date, monthlyRent: number): number => {
-    // UPDATED: Use 30-day standard for partial month calculations
-    // This ensures that 15 days = 0.5 * Monthly Rent
-    const dailyRent = monthlyRent / DAILY_RENT_BASE_DAYS;
-    
     let total = 0;
-    // Ensure we start with clean dates
     let cursor = new Date(start.getFullYear(), start.getMonth(), start.getDate());
     const finalEnd = new Date(end.getFullYear(), end.getMonth(), end.getDate());
-    
+    const anchorDay = start.getDate();
+
     let safety = 0;
     while (cursor <= finalEnd && safety < BILLING_LOOP_LIMIT) {
         safety++;
-        const currentMonthEnd = new Date(cursor.getFullYear(), cursor.getMonth() + 1, 0);
-        const segmentEnd = currentMonthEnd < finalEnd ? currentMonthEnd : finalEnd;
-        
-        const isFirstDay = cursor.getDate() === 1;
-        const isLastDay = segmentEnd.getDate() === currentMonthEnd.getDate();
-        
-        // If it covers the full month (1st to Last Day), charge exactly Monthly Rent
-        // This avoids issues where 31-day months would charge 31/30 * Rent
-        if (isFirstDay && isLastDay) {
+
+        // 日历月边界
+        const calendarMonthEnd = new Date(cursor.getFullYear(), cursor.getMonth() + 1, 0);
+        // 合同月边界（从 anchorDay 到次月 anchorDay-1）
+        const contractMonthEnd = getContractMonthEnd(cursor, anchorDay);
+
+        // 取更远的边界作为本段结束（尽量一次跳完整月）
+        const naturalEnd = contractMonthEnd > calendarMonthEnd ? contractMonthEnd : calendarMonthEnd;
+        const segmentEnd = naturalEnd < finalEnd ? naturalEnd : finalEnd;
+
+        const isFullCalendarMonth =
+            cursor.getDate() === 1 &&
+            segmentEnd.getTime() === calendarMonthEnd.getTime();
+
+        const isFullContractMonth =
+            cursor.getDate() === anchorDay &&
+            segmentEnd.getTime() === contractMonthEnd.getTime();
+
+        if (isFullCalendarMonth || isFullContractMonth) {
             total += monthlyRent;
         } else {
-            const days = getDaysDiff(cursor, segmentEnd);
-            total += days * dailyRent;
+            // 按天计算：逐月拆分，每月用当月实际天数做日租基数
+            let dayCursor = new Date(cursor);
+            while (dayCursor <= segmentEnd) {
+                const monthEnd = new Date(dayCursor.getFullYear(), dayCursor.getMonth() + 1, 0);
+                const segEnd = monthEnd < segmentEnd ? monthEnd : segmentEnd;
+                const days = getDaysDiff(dayCursor, segEnd);
+                const daysInMonth = monthEnd.getDate(); // 当月实际天数
+                total += days * (monthlyRent / daysInMonth);
+                dayCursor = new Date(segEnd);
+                dayCursor.setDate(dayCursor.getDate() + 1);
+            }
         }
-        
+
         cursor = new Date(segmentEnd);
         cursor.setDate(cursor.getDate() + 1);
     }
@@ -223,7 +325,7 @@ export const computeEarlyTerminationFreeRentClawbackAmount = (tenant: Tenant): n
 
     let monthlyRent = tenant.monthlyRent || 0;
     if (monthlyRent === 0 && tenant.unitPrice && tenant.totalArea) {
-        monthlyRent = (tenant.unitPrice * tenant.totalArea * 365) / 12;
+        monthlyRent = monthlyRentFromUnitPrice(tenant.unitPrice, tenant.totalArea, tenant.unitPriceMode);
     }
     if (monthlyRent <= 0) return 0;
 
@@ -354,9 +456,11 @@ export const applyVacancyBudgetOverlayToTenant = (tenant: Tenant, assumptions: B
     const firstPayDate = addMonthsStr(vac.projectedSignDate, rfMonths);
 
     const unitPrice = vac.projectedUnitPrice ?? tenant.unitPrice;
+    // projectedUnitPrice 始终为天单价；仅当回落至 tenant.unitPrice 时需考虑 unitPriceMode
+    const priceMode = vac.projectedUnitPrice != null ? 'daily' : tenant.unitPriceMode;
     let monthlyRent = tenant.monthlyRent || 0;
     if (unitPrice != null && tenant.totalArea) {
-        monthlyRent = (unitPrice * tenant.totalArea * 365) / 12;
+        monthlyRent = monthlyRentFromUnitPrice(unitPrice, tenant.totalArea, priceMode);
     }
 
     const rentFreePeriods =
@@ -425,10 +529,12 @@ export const generateBudgetedBills = (
 
     let monthlyRent = tenant.monthlyRent || 0;
     if (monthlyRent === 0 && tenant.unitPrice && tenant.totalArea) {
-        monthlyRent = (tenant.unitPrice * tenant.totalArea * 365) / 12;
+        monthlyRent = monthlyRentFromUnitPrice(tenant.unitPrice, tenant.totalArea, tenant.unitPriceMode);
     }
 
     const applyEarlyTerm = options?.applyEarlyTerminationSettlement !== false;
+    /** 应收账期月份偏移：上海/北京 = -1（前一个月），深圳 = 0（当月）。 */
+    const receivableMonthOffset = getReceivableMonthOffsetForTenant(tenant);
 
     // 付款周期变更：将租期按变更点拆分为多个时间段，每段用对应周期独立生成账单
     const cycleChanges = tenant.paymentCycleChanges && tenant.paymentCycleChanges.length > 0
@@ -509,8 +615,10 @@ export const generateBudgetedBills = (
         const next = new Date(date);
         const wholeMonths = Math.trunc(months);
         const fractionalMonths = months - wholeMonths;
-        if (wholeMonths > 0) next.setMonth(next.getMonth() + wholeMonths);
-        if (fractionalMonths > 0) next.setDate(next.getDate() + Math.round(fractionalMonths * 30));
+        // `!== 0` 而非 `> 0`：合同卡片 ◀ 前移按钮写入的 paymentPeriodShiftMonths 为负数，
+        // 走 generateBills 时 shiftMonths 也会是负数，旧逻辑下负值路径不动，前移完全失效。
+        if (wholeMonths !== 0) next.setMonth(next.getMonth() + wholeMonths);
+        if (fractionalMonths !== 0) next.setDate(next.getDate() + Math.round(fractionalMonths * 30));
         return next;
     };
 
@@ -538,7 +646,7 @@ export const generateBudgetedBills = (
             const termMonthly =
                 term.monthlyRent && term.monthlyRent > 0
                     ? term.monthlyRent
-                    : ((term.unitPrice || 0) * term.area * 365) / 12;
+                    : monthlyRentFromUnitPrice((term.unitPrice || 0), term.area, tenant.unitPriceMode);
             const termBills = generateBudgetedBills(
                 {
                     ...tenant,
@@ -601,8 +709,10 @@ export const generateBudgetedBills = (
 
     if (!filledFromUnitMerge && monthlyRent > 0) {
         const existingAssumption = assumptions.find((a) => a.targetId === tenant.id && a.targetType === 'Existing');
-        // 仅使用合同级整体偏移（存量调优已迁移到合同管理中）
-        const billingShift = tenant.paymentPeriodShiftMonths || 0;
+        // 预算假设 `billingCycleShiftMonths`（预算页）与合同 `paymentPeriodShiftMonths`（合同中心）叠加；
+        // 应收明细 / 核销依赖根级假设覆盖应收方案快照时，此处必须读到假设偏移。
+        const billingShift =
+            (existingAssumption?.billingCycleShiftMonths ?? 0) + (tenant.paymentPeriodShiftMonths || 0);
 
         // 支持新的 freeRentHandling 字段
         const isDeferMode = tenant.freeRentHandling === 'Defer';
@@ -631,8 +741,11 @@ export const generateBudgetedBills = (
 
                 if (cursor > effectiveLeaseEnd) break;
 
-                // 2. Determine Bill Date (1 month prior, calendar-safe)
-                let billDate = addCalendarMonths(new Date(cursor.getFullYear(), cursor.getMonth(), cursor.getDate()), -1);
+                // 2. Determine Bill Date：默认覆盖期前 1 个月（上海/北京），深圳改为覆盖期当月（receivableMonthOffset=0）。
+                let billDate = addCalendarMonths(
+                    new Date(cursor.getFullYear(), cursor.getMonth(), cursor.getDate()),
+                    receivableMonthOffset,
+                );
                 
                 if (isFirstCycle && tenant.firstPaymentDate) {
                     billDate = parseDateLocal(tenant.firstPaymentDate);
@@ -642,8 +755,18 @@ export const generateBudgetedBills = (
                 const targetVirtualMonths = isFirstCycle ? firstCycleMonths : regularCycleMonths;
                 let collectedVirtualMonths = 0;
                 let segmentCursor = new Date(cursor);
-                
-                while (collectedVirtualMonths < targetVirtualMonths && segmentCursor <= effectiveLeaseEnd) {
+
+                // 防止 Defer 模式下逐日推进失控（深圳园区 13 年租约 + 长免租期可达 4000+ 天）。
+                // 5 年（1825 天）足够覆盖任何合理单期账单 + 免租跳跃，超出则跳出避免阻塞主线程。
+                const INNER_DAY_LIMIT = 365 * 5;
+                let innerIter = 0;
+
+                // 1e-9 容差修正浮点累积误差（如 28×1/28≠1.0），避免多累一天导致覆盖期偏移
+                while (collectedVirtualMonths + 1e-9 < targetVirtualMonths && segmentCursor <= effectiveLeaseEnd) {
+                    if (innerIter++ >= INNER_DAY_LIMIT) {
+                        console.warn('[generateBudgetedBills] Defer 模式内层循环超过 5 年逐日推进上限，强制跳出。tenantId=', tenant.id);
+                        break;
+                    }
                     if (!isRentFreeDate(segmentCursor, tenant.rentFreePeriods)) {
                         const daysInMonth = new Date(segmentCursor.getFullYear(), segmentCursor.getMonth() + 1, 0).getDate();
                         collectedVirtualMonths += (1 / daysInMonth);
@@ -661,7 +784,7 @@ export const generateBudgetedBills = (
                     finalBillableMonths = Math.round(collectedVirtualMonths);
                 }
 
-                let grossAmount = Math.round(finalBillableMonths * monthlyRent);
+                let grossAmount = round2(finalBillableMonths * monthlyRent);
 
                 // Assumption Payment Shift
                 if (existingAssumption?.paymentShift?.isActive) {
@@ -684,12 +807,14 @@ export const generateBudgetedBills = (
                 }
 
                 if (grossAmount > 0) {
-                    if (billingShift !== 0) {
+                    // 用户显式设定了首期支付日时，账期平移（billingShift）不覆盖首期，
+                    // 仅对后续自动推算的账单生效，确保两个设定并行生效
+                    if (billingShift !== 0 && !(isFirstCycle && !!tenant.firstPaymentDate)) {
                         billDate = addCalendarMonths(billDate, billingShift);
                     }
                     bills.push({
                         date: billDate,
-                        amount: Math.round(grossAmount),
+                        amount: round2(grossAmount),
                         coverageStart: new Date(coverageStart),
                         coverageEnd: new Date(coverageEnd),
                     });
@@ -706,7 +831,7 @@ export const generateBudgetedBills = (
             const leaseStartDay = new Date(leaseStart.getFullYear(), leaseStart.getMonth(), leaseStart.getDate());
             let currentBillDate = tenant.firstPaymentDate
                 ? parseDateLocal(tenant.firstPaymentDate)
-                : addCalendarMonths(leaseStartDay, -1);
+                : addCalendarMonths(leaseStartDay, receivableMonthOffset);
 
             let coverageStart = new Date(leaseStart);
             let isFirstCycle = true;
@@ -788,12 +913,13 @@ export const generateBudgetedBills = (
                 }
 
                 if (finalAmount > 0) {
-                    if (billingShift !== 0) {
+                    // 用户显式设定了首期支付日时，账期平移不覆盖首期
+                    if (billingShift !== 0 && !(isFirstCycle && !!tenant.firstPaymentDate)) {
                         finalBillDate = addCalendarMonths(finalBillDate, billingShift);
                     }
                     bills.push({
                         date: finalBillDate,
-                        amount: Math.round(finalAmount),
+                        amount: round2(finalAmount),
                         coverageStart: new Date(coverageStart),
                         coverageEnd: new Date(effectiveCoverageEnd),
                     });
@@ -803,7 +929,7 @@ export const generateBudgetedBills = (
                 coverageStart.setDate(coverageStart.getDate() + 1);
                 currentBillDate = addCalendarMonths(
                     new Date(coverageStart.getFullYear(), coverageStart.getMonth(), coverageStart.getDate()),
-                    -1
+                    receivableMonthOffset,
                 );
                 
                 isFirstCycle = false;
@@ -814,37 +940,40 @@ export const generateBudgetedBills = (
     }
 
     // --- 合同级账期调整（Tenant.paymentPeriodAdjustments）：先于预算调整执行 ---
+    // 单笔原子移动：先定位原收款日账单并扣减，再加到目标月（避免「先加后减」时原月匹配失败导致金额堆叠数倍）。
     const contractPeriodAdjs = tenant.paymentPeriodAdjustments || [];
-    // Pass 1: 目标月份加回金额
-    contractPeriodAdjs.forEach(adj => {
-        if (adj.adjustedYear !== -1 && adj.adjustedMonth !== -1 && adj.amount > 0) {
-            const existingBill = bills.find(b =>
-                b.date.getFullYear() === adj.adjustedYear &&
-                b.date.getMonth() === adj.adjustedMonth
-            );
-            if (existingBill) {
-                existingBill.amount += adj.amount;
-            } else {
-                bills.push({
-                    date: new Date(adj.adjustedYear, adj.adjustedMonth, 1),
-                    amount: adj.amount
-                });
-            }
+    for (const adj of contractPeriodAdjs) {
+        if (!(adj.amount > 0)) continue;
+        const oy = Number(adj.originalYear);
+        const om = Number(adj.originalMonth);
+        const ay = Number(adj.adjustedYear);
+        const am = Number(adj.adjustedMonth);
+        if (oy === -1 || om === -1 || ay === -1 || am === -1) continue;
+        if (!Number.isFinite(oy) || !Number.isFinite(om) || !Number.isFinite(ay) || !Number.isFinite(am)) {
+            console.warn('[generateBudgetedBills] 跳过无效合同账期调整（年月非数字）', adj);
+            continue;
         }
-    });
-    // Pass 2: 原始月份扣减
-    contractPeriodAdjs.forEach(adj => {
-        if (adj.originalYear !== -1 && adj.originalMonth !== -1 && adj.amount > 0) {
-            const sourceBill = bills.find(b =>
-                b.date.getFullYear() === adj.originalYear &&
-                b.date.getMonth() === adj.originalMonth
-            );
-            if (sourceBill) {
-                sourceBill.amount -= adj.amount;
-                if (sourceBill.amount < 0) sourceBill.amount = 0;
-            }
+
+        const sourceBill = resolveBillForContractPeriodMonth(bills, om, oy);
+        if (!sourceBill) {
+            console.warn('[generateBudgetedBills] 合同账期调整未找到原收款月账单，已跳过（避免误加金额）', adj);
+            continue;
         }
-    });
+
+        let destBill = resolveBillForContractPeriodMonth(bills, am, ay, sourceBill.date.getFullYear());
+        if (!destBill) {
+            const syntheticDate = syntheticReceivableDateForShiftedMonth(sourceBill, am);
+            destBill = {
+                date: syntheticDate,
+                amount: 0,
+            };
+            bills.push(destBill);
+        }
+
+        sourceBill.amount -= adj.amount;
+        if (sourceBill.amount < 0) sourceBill.amount = 0;
+        destBill.amount += adj.amount;
+    }
 
     // --- POST-PROCESS ADJUSTMENTS (Robust 2-Pass Method) ---
     const tenantAdjustments = adjustments.filter(a => a.tenantId === tenant.id);
@@ -900,7 +1029,7 @@ export const generateBudgetedBills = (
         for (let i = 1; i < bills.length; i++) {
             if (bills[i].date.getTime() < bills[minIdx].date.getTime()) minIdx = i;
         }
-        bills[minIdx].amount = Math.round(fra);
+        bills[minIdx].amount = round2(fra);
         if (tenant.firstReceivableStartDate) {
             bills[minIdx].coverageStart = parseDateLocal(tenant.firstReceivableStartDate);
         }
@@ -966,7 +1095,7 @@ export const generateBudgetedBills = (
                                 }
                             });
                         }
-                        bills[idx].amount = Math.max(0, Math.round(adjustedAmount - adjustedDeduction));
+                        bills[idx].amount = Math.max(0, round2(adjustedAmount - adjustedDeduction));
                     }
                 }
             }

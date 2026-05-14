@@ -107,13 +107,14 @@ const hasMeaningfulDashboardPayload = (d: DashboardData): boolean =>
 type AdminParkMetric = {
     projectId: string;
     name: string;
-    annualInitialBudget: number;    // 年初预算（手填或从生效预算方案导入）
-    annualRevenueTarget: number;    // 实际合同应收（预算引擎滚动，口径=预算收款）
+    annualInitialBudget: number;         // 年初预算（Excel导入月度汇总）
+    annualContractReceivable: number;    // 实际合同应收（纯合同滚动，与预算表「全年合同应收」同口径）
+    annualRevenueTarget: number;         // 预算目标（导入Excel或含空置滚动）
     annualRevenueCollected: number;
-    annualGoalCompletion: number;   // 完成率 = 实收 / 实际合同应收
-    annualBudgetTarget: number;     // 预算收款（口径同实际合同应收）
-    annualBudgetCompletion: number; // 预算执行率 = 实收 / 预算收款
-    budgetDeviation: number;        // 预算偏差 = (实际合同应收 - 年初预算) / 年初预算
+    annualGoalCompletion: number;        // 完成率 = 实收 / 实际合同应收
+    annualBudgetTarget: number;          // 预算收款
+    annualBudgetCompletion: number;      // 预算执行率 = 实收 / 预算收款
+    budgetDeviation: number;             // 预算偏差 = (合同应收 - 年初预算) / 年初预算
     occupancyRate: number;
     annualOccupancyTarget: number;
     tenantCount: number;
@@ -425,20 +426,56 @@ const App: React.FC = () => {
     loadData();
   }, []);
 
-  // 仅防抖写入本地缓存；持久化到 PocketBase 由右上角「保存」触发
+  // 防抖写入本地缓存 + 自动同步到 PocketBase
+  // ⚠️ 跨园区竞态防护（曾经导致北京 pb_tenants 被深圳数据整批覆盖）：
+  //   1. switchProject 是 async — setCloudConfig 后 await fetchCloudBackup 期间 React 会渲染一次，
+  //      此时 cloudConfig.projectId = 新园区，但 data 还是旧园区。本 effect 会用旧 data + 新 projectId
+  //      起一个 2 秒定时器；若 fetchCloudBackup > 2s，定时器先到，旧数据会被以 "新 projectId" 跨园区写入。
+  //   2. 用 currentProjectIdRef 在定时器内做"projectId 仍然是 effect 启动时那个"的快速校验；
+  //      不一致就放弃本次写入（switchProject 会触发下一轮带正确 data 的 effect）。
+  //   3. baselineSnapshotRef.current = null 表示 switchProject 正在拉数据（baseline 尚未捕获），
+  //      此时既不写 localStorage 也不写云端，避免污染目标园区本地缓存。
+  const autoSaveTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  const currentProjectIdRef = React.useRef<string>(cloudConfig.projectId || '');
+  React.useEffect(() => {
+    currentProjectIdRef.current = cloudConfig.projectId || '';
+  }, [cloudConfig.projectId]);
   useEffect(() => {
-    if (data) {
-      const timer = setTimeout(() => {
-        try {
-            if (isKpiPreviewRef.current) return;
-            localStorage.setItem(getParkStorageKey(cloudConfig.projectId), JSON.stringify(data));
-            setLastSaved(new Date().toLocaleTimeString());
-        } catch (e) {
-            console.error("Local save failed", e);
-        }
-      }, 2000); 
-      return () => clearTimeout(timer);
-    }
+    if (!data) return;
+    if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current);
+    const projectIdAtEffectStart = cloudConfig.projectId;
+    autoSaveTimerRef.current = setTimeout(async () => {
+      try {
+          if (isKpiPreviewRef.current) return;
+          // 园区切换中（baseline 还没拉回来）— 这一刻 data 一定是上一园区的，绝不能写本园区。
+          if (!baselineSnapshotRef.current) return;
+          // 园区在 2 秒间被切走了（setCloudConfig 触发 effect 但 data 还没刷到目标园区）。
+          if (currentProjectIdRef.current !== projectIdAtEffectStart) return;
+          localStorage.setItem(getParkStorageKey(projectIdAtEffectStart), JSON.stringify(data));
+          setLastSaved(new Date().toLocaleTimeString());
+          if (isCloudConnected) {
+              const nextSnapshot = dashboardDataToPbRecords(data, projectIdAtEffectStart || '');
+              const payload = diffPbRecords(baselineSnapshotRef.current, nextSnapshot, recordMeta);
+              const summary = payloadCount(payload);
+              if (summary.total > 0) {
+                  // 二次防御：写云之前再核对一次 projectId，避开 await 期间被切走的极端情况。
+                  if (currentProjectIdRef.current !== projectIdAtEffectStart) return;
+                  const res = await saveIncrementalToCloud(payload, cloudConfig, recordMeta);
+                  if (res.errors.length > 0) console.warn('[auto-save] 部分失败:', res.errors);
+                  if (res.conflicts.length > 0) console.warn('[auto-save] 冲突，将在下次手动保存时处理:', res.conflicts.length);
+                  if (res.errors.length === 0 && res.conflicts.length === 0) {
+                      // 三次防御：刷新基线之前再确认 projectId 没变，防止把当前园区基线刷成上一园区。
+                      if (currentProjectIdRef.current === projectIdAtEffectStart) {
+                          await refreshAfterSave(data);
+                      }
+                  }
+              }
+          }
+      } catch (e) {
+          console.error("Auto-save failed", e);
+      }
+    }, 2000);
+    return () => { if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current); };
   }, [data, cloudConfig.projectId]);
 
   useEffect(() => {
@@ -1162,7 +1199,7 @@ const App: React.FC = () => {
           let price = t.unitPrice;
           if ((price === undefined || price === 0) && t.totalArea > 0) { price = (t.monthlyRent * 12) / (t.totalArea * 365); }
           price = price || 0;
-          const newMonthlyRent = Math.round(price * (365 / 12) * newTotalArea);
+          const newMonthlyRent = Math.round(price * (365 / 12) * newTotalArea * 100) / 100;
           return { ...t, totalArea: newTotalArea, monthlyRent: newMonthlyRent, unitPrice: price };
       });
 
@@ -1693,26 +1730,32 @@ const App: React.FC = () => {
       });
       const summary = buildKpiSummaryFromProcessedData(processedData, selectedYear);
       const annualInitialBudget = summary.annualInitialBudget || 0;
+      // 合同应收优先取新字段，旧快照回退到 annualRevenueTarget
+      const annualContractReceivable = summary.annualContractReceivable || summary.annualRevenueTarget || 0;
       return {
           projectId: park.projectId,
           name: park.name || park.projectId,
           ...summary,
           annualInitialBudget,
+          annualContractReceivable,
           budgetDeviation: annualInitialBudget > 0
-              ? ((summary.annualRevenueTarget - annualInitialBudget) / annualInitialBudget) * 100
+              ? ((annualContractReceivable - annualInitialBudget) / annualInitialBudget) * 100
               : 0,
       };
   };
 
   const buildParkMetricFromSnapshot = (park: ParkInfo, summary: KpiSnapshotSummary): AdminParkMetric => {
       const annualInitialBudget = summary.annualInitialBudget || 0;
+      // 合同应收优先取新字段，旧快照回退到 annualRevenueTarget
+      const annualContractReceivable = summary.annualContractReceivable || summary.annualRevenueTarget || 0;
       return {
           projectId: park.projectId,
           name: park.name || park.projectId,
           ...summary,
           annualInitialBudget,
+          annualContractReceivable,
           budgetDeviation: annualInitialBudget > 0
-              ? ((summary.annualRevenueTarget - annualInitialBudget) / annualInitialBudget) * 100
+              ? ((annualContractReceivable - annualInitialBudget) / annualInitialBudget) * 100
               : 0,
       };
   };
@@ -1774,7 +1817,7 @@ const App: React.FC = () => {
           cancelled = true;
           window.clearTimeout(timer);
       };
-  }, [authUser, authorizedParks, cloudConfig.pocketbaseUrl, selectedYear]);
+  }, [authUser, authorizedParks, cloudConfig.pocketbaseUrl, selectedYear, cloudConfig.projectId]);
 
   useEffect(() => {
       if (!canAccessSystemSettings && activeTab === 'settings') {
@@ -1810,6 +1853,7 @@ const App: React.FC = () => {
   const adminSummaryTotals = useMemo(() => {
       const totals = adminParkMetrics.reduce((acc, item) => {
           acc.annualInitialBudget += item.annualInitialBudget;
+          acc.annualContractReceivable += item.annualContractReceivable;
           acc.annualRevenueTarget += item.annualRevenueTarget;
           acc.annualRevenueCollected += item.annualRevenueCollected;
           acc.annualBudgetTarget += item.annualBudgetTarget;
@@ -1820,6 +1864,7 @@ const App: React.FC = () => {
           return acc;
       }, {
           annualInitialBudget: 0,
+          annualContractReceivable: 0,
           annualRevenueTarget: 0,
           annualRevenueCollected: 0,
           annualBudgetTarget: 0,
@@ -1830,14 +1875,14 @@ const App: React.FC = () => {
       });
       return {
           ...totals,
-          annualGoalCompletion: totals.annualRevenueTarget > 0
-              ? Math.min(100, (totals.annualRevenueCollected / totals.annualRevenueTarget) * 100)
+          annualGoalCompletion: totals.annualContractReceivable > 0
+              ? Math.min(100, (totals.annualRevenueCollected / totals.annualContractReceivable) * 100)
               : 0,
           annualBudgetCompletion: totals.annualBudgetTarget > 0
               ? Math.min(100, (totals.annualRevenueCollected / totals.annualBudgetTarget) * 100)
               : 0,
           budgetDeviation: totals.annualInitialBudget > 0
-              ? ((totals.annualRevenueTarget - totals.annualInitialBudget) / totals.annualInitialBudget) * 100
+              ? ((totals.annualContractReceivable - totals.annualInitialBudget) / totals.annualInitialBudget) * 100
               : 0,
           occupancyRate: totals.totalArea > 0 ? totals.occupancyWeightedArea / totals.totalArea : 0,
           annualOccupancyTarget: totals.totalArea > 0 ? totals.occupancyTargetWeightedArea / totals.totalArea : 0,
@@ -2166,7 +2211,7 @@ const App: React.FC = () => {
                        </div>
                        <div className="bg-white/10 rounded-xl p-3 border border-white/10 min-w-0">
                          <div className="text-xs text-slate-300">实际合同应收</div>
-                         <div className="text-xl font-bold mt-1">{formatWan(adminSummaryTotals.annualRevenueTarget, 0)}</div>
+                         <div className="text-xl font-bold mt-1">{formatWan(adminSummaryTotals.annualContractReceivable, 0)}</div>
                          <div className="text-xs text-slate-400 mt-1">实收 {formatWan(adminSummaryTotals.annualRevenueCollected, 0)}</div>
                        </div>
                        <div className="bg-white/10 rounded-xl p-3 border border-white/10 min-w-0">
@@ -2206,7 +2251,7 @@ const App: React.FC = () => {
                                <tr key={item.projectId} className={item.projectId === cloudConfig.projectId ? 'bg-sky-500/10' : ''}>
                                  <td className="px-3 py-2 font-medium">{item.name}</td>
                                  <td className="px-3 py-2 text-right tabular-nums">{item.annualInitialBudget > 0 ? formatWan(item.annualInitialBudget, 0) : '—'}</td>
-                                 <td className="px-3 py-2 text-right tabular-nums">{formatWan(item.annualRevenueTarget, 0)}</td>
+                                 <td className="px-3 py-2 text-right tabular-nums">{formatWan(item.annualContractReceivable, 0)}</td>
                                  <td className="px-3 py-2 text-right tabular-nums">{formatWan(item.annualRevenueCollected, 0)}</td>
                                  <td className="px-3 py-2 text-right tabular-nums">{formatPct(item.annualGoalCompletion, 0)}</td>
                                  <td className={`px-3 py-2 text-right tabular-nums ${item.budgetDeviation >= 0 ? 'text-sky-400' : 'text-red-400'}`}>

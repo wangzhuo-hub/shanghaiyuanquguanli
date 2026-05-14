@@ -12,7 +12,7 @@ import {
     BudgetAssumption,
     BudgetAdjustment,
 } from '../types';
-import { BadgeCheck, Plus, ArrowRightLeft, Check, X, AlertCircle, Banknote, Wallet, TrendingUp, ArrowDownRight, CreditCard, Trash2, Edit2, Download, Upload, FileSpreadsheet, Calendar, ListChecks, Clock, Receipt, RotateCcw, ChevronDown, ChevronUp, ChevronLeft, ChevronRight, FileText, Sparkles, Save, Undo2 } from 'lucide-react';
+import { BadgeCheck, Plus, ArrowRightLeft, Check, X, AlertCircle, Banknote, Wallet, TrendingUp, ArrowDownRight, CreditCard, Trash2, Edit2, Download, Upload, FileSpreadsheet, Calendar, ListChecks, Clock, Receipt, RotateCcw, ChevronDown, ChevronUp, ChevronLeft, ChevronRight, FileText, Sparkles, Save, Undo2, Info } from 'lucide-react';
 import {
     getRentCollectionRemark,
     deferReceivableShellClass,
@@ -40,6 +40,7 @@ import {
 } from '../services/receivableListHelpers';
 import { formatCurrency, roundMoney2 } from '../services/numberFormat';
 import { ContractSummaryModal, type ContractSummaryContent, resolveTenantAssetLabels } from './ContractSummaryModal';
+import * as XLSX from 'xlsx';
 
 /** 核销展示：待核销 → 已缓缴（原账期调出）→ 已核销和收款 */
 const WRITEOFF_LABELS = {
@@ -47,6 +48,16 @@ const WRITEOFF_LABELS = {
   settled: '已核销和收款',
   deferred: '已缓缴',
 } as const;
+
+/** 与顶部「结算侧调整」卡片同口径：展示应收 − 合同滚动（合同列「—」的合成行按基数 0） */
+function receivableRowSettlementDelta(item: BillingDetail): number {
+    const hideContract =
+        isManualArTenantId(item.tenantId) ||
+        isSpecialBusinessArTenantId(item.tenantId) ||
+        isDeferInDisplayTenantId(item.tenantId);
+    const contractBase = hideContract ? 0 : (item.contractAmountDue ?? 0);
+    return roundMoney2(receivableBudgetDisplay(item) - contractBase);
+}
 
 function nextReceivableMonthLabel(yyyyMm: string): string {
   const parts = yyyyMm.split('-');
@@ -75,6 +86,33 @@ function parseBillingPeriods(periodRaw?: string): string[] {
 function normalizeBillingPeriods(periodRaw?: string): string | undefined {
   const list = parseBillingPeriods(periodRaw);
   return list.length > 0 ? list.join(',') : undefined;
+}
+
+function downloadFinanceXlsx(filename: string, rows: Record<string, unknown>[], sheetName = 'Sheet1') {
+  const ws = XLSX.utils.json_to_sheet(rows);
+  const wb = XLSX.utils.book_new();
+  const safeSheet = sheetName.replace(/[:\\/?*[\]]/g, '_').slice(0, 31) || 'Sheet';
+  XLSX.utils.book_append_sheet(wb, ws, safeSheet);
+  XLSX.writeFile(wb, filename);
+}
+
+function paymentRecordTypeLabel(type: PaymentRecord['type']): string {
+  switch (type) {
+    case 'Rent':
+      return '租金';
+    case 'Deposit':
+      return '押金收取';
+    case 'DepositRefund':
+      return '押金退还';
+    case 'DepositToRent':
+      return '押金转租金';
+    case 'ManagementFee':
+      return '物业费';
+    case 'ParkingFee':
+      return '停车费';
+    default:
+      return '其他';
+  }
 }
 
 interface FinanceManagerProps {
@@ -197,10 +235,35 @@ const ReceivableCard: React.FC<{
                 )}
             </div>
         </div>
+        {(() => {
+            const d = receivableRowSettlementDelta(item);
+            if (Math.abs(d) <= 0.005) return null;
+            return (
+                <div className="mb-2 flex items-center justify-between rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-xs">
+                    <span className="font-semibold text-amber-900">结算调整</span>
+                    <span className="font-mono tabular-nums font-bold text-amber-950">
+                        {d > 0.005 ? '+' : ''}
+                        {formatCurrency(d)}
+                    </span>
+                </div>
+            );
+        })()}
         <div className="grid grid-cols-3 gap-2 text-xs text-center bg-slate-50 p-2 rounded mb-3">
             <div>
-                <div className="text-slate-400">应收</div>
+                <div className="text-slate-400">实际核销</div>
                 <div className="font-semibold text-slate-700">{formatCurrency(receivableBudgetDisplay(item))}</div>
+                {(() => {
+                    const contractOnly = item.contractAmountDue ?? 0;
+                    const actual = receivableBudgetDisplay(item);
+                    if (Math.abs(contractOnly - actual) > 0.005 && contractOnly > 0.005) {
+                        return (
+                            <div className="text-[9px] text-slate-500 font-normal mt-0.5" title="合同滚动推算的纯口径（含缓缴前）">
+                                合同 {formatCurrency(contractOnly)}
+                            </div>
+                        );
+                    }
+                    return null;
+                })()}
                 {hasDeferOut && (item.amountDue ?? 0) < 0.005 && (
                     <div className="text-[9px] text-slate-400 font-normal mt-0.5">原账面已全部缓出</div>
                 )}
@@ -656,15 +719,59 @@ export const FinanceManager: React.FC<FinanceManagerProps> = ({
       const budgetReceivable = sumBudgetReceivableForFinance(currentReceivables); // 含手工
       const pendingCollection = currentReceivables.reduce((sum, r) => sum + getRemainingReceivable(r), 0);
       const actualReceived = roundMoney2(Math.max(0, budgetReceivable - pendingCollection));
+      // 「合同应收」口径汇总：仅取每行 contractAmountDue（合成行如缓缴调入/手工应收/特殊业态 fallback 0），
+      // 与工作台 contractReceivable 同源，方便用户在财务页面一眼看到两个口径的差额来源。
+      const contractReceivableTotal = roundMoney2(
+          currentReceivables.reduce((sum, r) => sum + (r.contractAmountDue ?? 0), 0)
+      );
+      /** 系统账单行的合同滚动合计（不含手工应收行），与 systemReceivable 对账可得缓缴等结算侧调整 */
+      const systemContractReceivableTotal = roundMoney2(
+          currentReceivables
+              .filter((r) => !isManualArTenantId(r.tenantId))
+              .reduce((sum, r) => sum + (r.contractAmountDue ?? 0), 0)
+      );
+      const workbenchSettlementDelta = roundMoney2(systemReceivable - systemContractReceivableTotal);
 
       return {
           budgetReceivable,
+          contractReceivableTotal,
           systemReceivable,
+          systemContractReceivableTotal,
+          workbenchSettlementDelta,
           manualReceivable,
           actualReceived,
           pendingCollection,
       };
   }, [currentReceivables]);
+
+  const receivableSystemFootSums = useMemo(() => {
+      let paid = 0;
+      let pending = 0;
+      for (const r of currentReceivables) {
+          if (isManualArTenantId(r.tenantId)) continue;
+          paid += getEffectivePaidAmount(r);
+          pending += getRemainingReceivable(r);
+      }
+      return { paid: roundMoney2(paid), pending: roundMoney2(pending) };
+  }, [currentReceivables, payments, tenants, receivableMonth]);
+
+  const receivableManualFootSums = useMemo(() => {
+      let paid = 0;
+      let pending = 0;
+      let bill = 0;
+      for (const r of currentReceivables) {
+          if (!isManualArTenantId(r.tenantId)) continue;
+          bill += receivableBudgetDisplay(r);
+          paid += getEffectivePaidAmount(r);
+          pending += getRemainingReceivable(r);
+      }
+      return { bill: roundMoney2(bill), paid: roundMoney2(paid), pending: roundMoney2(pending) };
+  }, [currentReceivables, payments, tenants, receivableMonth]);
+
+  const totalSettlementDeltaFoot = useMemo(
+      () => roundMoney2(monthStats.budgetReceivable - monthStats.contractReceivableTotal),
+      [monthStats.budgetReceivable, monthStats.contractReceivableTotal],
+  );
 
   const availableYears = useMemo(() => {
       const years = new Set<number>();
@@ -1080,8 +1187,39 @@ export const FinanceManager: React.FC<FinanceManagerProps> = ({
                       </div>
                   )}
               </td>
+              <td className="px-4 py-3 align-middle text-center whitespace-nowrap text-slate-600">
+                  {isManualArTenantId(item.tenantId) || isSpecialBusinessArTenantId(item.tenantId) || isDeferInDisplayTenantId(item.tenantId)
+                      ? <span className="text-slate-300">—</span>
+                      : formatCurrency(item.contractAmountDue ?? 0)}
+              </td>
+              <td
+                  className={`px-3 py-3 align-middle text-center whitespace-nowrap border-l-2 border-amber-300 bg-amber-50/40 ${
+                      Math.abs(receivableRowSettlementDelta(item)) > 0.005
+                          ? 'bg-amber-100/70 font-semibold text-amber-950'
+                          : 'text-slate-600'
+                  }`}
+                  title={
+                      '本列不可单独删除：值为「实际核销展示 − 合同滚动」的差额。\n' +
+                      '若认为异常，请按来源处理——\n' +
+                      '· 缓缴录错：本行「缓缴撤销」或上方「撤回核销与缓缴」批量清理后重算；\n' +
+                      '· 导入预算/表外覆盖：回「预算管理」或导入存档改正；\n' +
+                      '· 特殊业态/手工行：在对应录入或手工应收行改金额；\n' +
+                      '· 合同条款与推算不一致：在「合同录入」保存触发重算；\n' +
+                      '· 看行内红字 budgetAlignmentNote 提示对账。'
+                  }
+              >
+                  {(() => {
+                      const d = receivableRowSettlementDelta(item);
+                      return (
+                          <>
+                              {d > 0.005 ? '+' : ''}
+                              {formatCurrency(d)}
+                          </>
+                      );
+                  })()}
+              </td>
               <td className="px-4 py-3 align-middle text-center whitespace-nowrap">
-                  <div className="text-slate-800">{formatCurrency(receivableBudgetDisplay(item))}</div>
+                  <div className="text-slate-800 font-semibold">{formatCurrency(receivableBudgetDisplay(item))}</div>
                   {hasDeferOut && (item.amountDue ?? 0) < 0.005 && (
                       <div className="text-[10px] text-slate-400 mt-0.5">原账面应收已全部缓出</div>
                   )}
@@ -1152,13 +1290,88 @@ export const FinanceManager: React.FC<FinanceManagerProps> = ({
       );
   };
 
+  const receivableSectionExportTitle = (section: 'pending' | 'deferred' | 'settled'): string => {
+      if (section === 'pending') return WRITEOFF_LABELS.pending;
+      if (section === 'deferred') return `${WRITEOFF_LABELS.deferred}（原账期调出）`;
+      return WRITEOFF_LABELS.settled;
+  };
+
+  const handleExportReceivables = () => {
+      const rows: Record<string, unknown>[] = [];
+      const appendSection = (section: 'pending' | 'deferred' | 'settled', entries: { item: BillingDetail }[]) => {
+          const title = receivableSectionExportTitle(section);
+          for (const { item } of entries) {
+              const remarkTid = realTenantIdFromDeferInDisplayTenantId(item.tenantId) ?? item.tenantId;
+              const remark = getRentCollectionRemark(billingPeriodNotes, remarkTid, receivableMonth);
+              const paid = getEffectivePaidAmount(item);
+              const remaining = getRemainingReceivable(item);
+              let lineType = '合同账单';
+              if (isSpecialBusinessArTenantId(item.tenantId)) lineType = '特殊业态';
+              else if (isManualArTenantId(item.tenantId)) lineType = '手工应收';
+              const deferOut = (item.deferredAmount ?? 0) > 0.005 && !!item.deferredToPeriod;
+              const isSynthetic = isManualArTenantId(item.tenantId) || isSpecialBusinessArTenantId(item.tenantId) || isDeferInDisplayTenantId(item.tenantId);
+              const settlementAdj = receivableRowSettlementDelta(item);
+              rows.push({
+                  账期: receivableMonth,
+                  核销分组: title,
+                  行类型: lineType,
+                  客户名称: item.tenantName,
+                  合同应收: isSynthetic ? '' : roundMoney2(item.contractAmountDue ?? 0),
+                  结算调整: roundMoney2(settlementAdj),
+                  实际核销金额: roundMoney2(receivableBudgetDisplay(item)),
+                  已收金额: roundMoney2(paid),
+                  待收余额: remaining > 0.005 ? roundMoney2(remaining) : 0,
+                  缓出至账期: deferOut ? item.deferredToPeriod : '',
+                  缓出金额元: deferOut ? roundMoney2(item.deferredAmount ?? 0) : '',
+                  备注: remark,
+              });
+          }
+      };
+      appendSection('pending', displayReceivableSections.unsettled);
+      appendSection('deferred', displayReceivableSections.deferred);
+      appendSection('settled', [...displayReceivableSections.settledThisMonth, ...displayReceivableSections.prepaid]);
+      if (rows.length === 0) {
+          alert('当前无应收数据可导出（请调整月份或筛选条件）');
+          return;
+      }
+      downloadFinanceXlsx(`应收核销_${receivableMonth}.xlsx`, rows, '应收核销');
+  };
+
+  const handleExportPayments = () => {
+      const flat: PaymentRecord[] = [];
+      for (const mk of sortedMonths) {
+          flat.push(...(groupedPayments[mk] ?? []));
+      }
+      if (flat.length === 0) {
+          alert('当前筛选条件下无收款记录可导出');
+          return;
+      }
+      const rows = flat.map((p) => ({
+          入账月份: p.date.slice(0, 7),
+          流水号: p.id,
+          付款方: p.tenantName,
+          款项类型: paymentRecordTypeLabel(p.type),
+          金额: roundMoney2(p.amount),
+          收款日期: p.date,
+          关联账期: p.period || '',
+          备注: p.remarks ?? '',
+      }));
+      downloadFinanceXlsx(`收款明细_${selectedYear}年度.xlsx`, rows, '收款明细');
+  };
+
   const listView = mobileReceivableOnly ? 'Receivables' : activeView;
+
+  const showWorkbenchSettlementCard = Math.abs(monthStats.workbenchSettlementDelta) > 0.005;
 
   return (
     <div className="space-y-4 md:space-y-6">
       
       {/* Revised Financial Overview Cards */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 md:gap-4">
+      <div
+          className={`grid grid-cols-2 gap-3 md:gap-4 ${
+              showWorkbenchSettlementCard ? 'md:grid-cols-3 xl:grid-cols-5' : 'md:grid-cols-4'
+          }`}
+      >
               <div className="bg-white p-3 rounded-xl border border-blue-100 shadow-sm flex flex-col justify-between items-center text-center relative overflow-hidden">
                   <div className="absolute top-0 right-0 p-2 opacity-10"><Wallet size={32} className="text-blue-600"/></div>
                   <div className="text-xs text-slate-500 font-bold mb-1 uppercase tracking-wider whitespace-nowrap">本年累计租金收款</div>
@@ -1166,28 +1379,64 @@ export const FinanceManager: React.FC<FinanceManagerProps> = ({
                   <div className="text-[10px] text-blue-400 mt-1 whitespace-nowrap">{selectedYear}年度</div>
               </div>
               <div
-                  className="bg-white p-3 rounded-xl border border-slate-200 shadow-sm flex flex-col justify-between items-center text-center"
+                  className="bg-white p-3 rounded-xl border border-slate-200 shadow-sm flex flex-col justify-between items-center text-center min-w-0"
                   title={
-                      monthStats.manualReceivable > 0
-                          ? `本月应收 ¥${monthStats.budgetReceivable.toLocaleString()} ` +
-                            `= 系统账单 ¥${monthStats.systemReceivable.toLocaleString()} ` +
-                            `+ 手工应收 ¥${monthStats.manualReceivable.toLocaleString()}\n` +
-                            `（系统账单部分与「工作台 当月应收总额」一致）`
-                          : `本月应收 ¥${monthStats.budgetReceivable.toLocaleString()}（与「工作台 当月应收总额」一致，未录入手工应收行）`
+                      `本月系统账单应收 ¥${monthStats.systemReceivable.toLocaleString()}（与「工作台 当月应收总额」一致，未计入手工应收行）` +
+                      (monthStats.manualReceivable > 0.005
+                          ? `\n财务报表应收合计（含手工行）¥${monthStats.budgetReceivable.toLocaleString()}（手工 ¥${monthStats.manualReceivable.toLocaleString()}）`
+                          : '') +
+                      (showWorkbenchSettlementCard
+                          ? `\n合同滚动（系统账单行）¥${monthStats.systemContractReceivableTotal.toLocaleString()}；结算侧调整见旁卡。`
+                          : `\n合同滚动（全量行）¥${monthStats.contractReceivableTotal.toLocaleString()}。`)
                   }
               >
                   <div className="text-xs text-slate-500 font-medium mb-1 whitespace-nowrap">本月应收租金</div>
-                  <div className="text-base md:text-lg font-bold text-slate-800 whitespace-nowrap">{formatCurrency(monthStats.budgetReceivable)}</div>
-                  {monthStats.manualReceivable > 0 ? (
-                      <div className="text-[10px] text-slate-400 whitespace-nowrap mt-0.5">
-                          系统 <span className="text-slate-600 font-semibold">{formatCurrency(monthStats.systemReceivable)}</span>
-                          <span className="mx-1">+</span>
-                          手工 <span className="text-amber-600 font-semibold">{formatCurrency(monthStats.manualReceivable)}</span>
+                  <div className="text-base md:text-lg font-bold text-slate-800 whitespace-nowrap tabular-nums">
+                      {formatCurrency(monthStats.systemReceivable)}
+                  </div>
+                  <div className="text-[10px] text-slate-400 mt-0.5 text-center leading-snug px-0.5">
+                      系统账单（与工作台一致）
+                      {showWorkbenchSettlementCard && (
+                          <span className="block text-slate-400 mt-0.5">
+                              合同滚动 + 旁卡「结算侧调整」≈ 本项（系统账单）
+                          </span>
+                      )}
+                  </div>
+                  {monthStats.manualReceivable > 0.005 && (
+                      <div className="text-[10px] text-amber-600 mt-1 inline-flex items-center gap-1 justify-center flex-wrap">
+                          <Info size={10} className="shrink-0" />
+                          <span>
+                              财务报表另含手工{' '}
+                              <span className="font-semibold tabular-nums">{formatCurrency(monthStats.manualReceivable)}</span>
+                          </span>
                       </div>
-                  ) : (
-                      <div className="text-[10px] text-slate-400 whitespace-nowrap">系统账单（与工作台一致）</div>
                   )}
               </div>
+              {showWorkbenchSettlementCard && (
+                  <div
+                      className="bg-white p-3 rounded-xl border border-amber-100 shadow-sm flex flex-col justify-between items-center text-center min-w-0"
+                      title={
+                          `「结算侧调整」= 本月系统账单应收 − 合同滚动（系统行），用于解释差额来源。\n` +
+                          '该金额已包含在左侧「本月应收租金」的系统账单内，不是在其基础上再加一笔；勿与「待收」相加。'
+                      }
+                  >
+                      <div className="text-xs text-amber-800/90 font-medium mb-1 flex items-center gap-1 whitespace-nowrap">
+                          <Clock size={12} className="shrink-0" />
+                          结算侧调整
+                      </div>
+                      <div
+                          className={`text-base md:text-lg font-bold whitespace-nowrap tabular-nums ${
+                              monthStats.workbenchSettlementDelta >= 0 ? 'text-amber-700' : 'text-sky-700'
+                          }`}
+                      >
+                          {monthStats.workbenchSettlementDelta > 0.005 ? '+' : ''}
+                          {formatCurrency(monthStats.workbenchSettlementDelta)}
+                      </div>
+                      <div className="text-[10px] text-amber-700/90 mt-0.5 leading-snug px-0.5">
+                          相对合同滚动 · 已计入系统账单
+                      </div>
+                  </div>
+              )}
               <div className="bg-white p-3 rounded-xl border border-slate-200 shadow-sm flex flex-col justify-between items-center text-center">
                   <div className="text-xs text-slate-500 font-medium mb-1 whitespace-nowrap">本月实收租金</div>
                   <div className="text-base md:text-lg font-bold text-emerald-600 whitespace-nowrap">{formatCurrency(monthStats.actualReceived)}</div>
@@ -1195,9 +1444,30 @@ export const FinanceManager: React.FC<FinanceManagerProps> = ({
               </div>
               <div className="bg-white p-3 rounded-xl border border-slate-200 shadow-sm flex flex-col justify-between items-center text-center">
                   <div className="text-xs text-slate-500 font-medium mb-1 whitespace-nowrap">本月待收租金</div>
-                  <div className="text-base md:text-lg font-bold text-amber-600 whitespace-nowrap">{formatCurrency(Math.max(0, monthStats.pendingCollection))}</div>
+                  <div className="text-base md:text-lg font-bold text-amber-600 whitespace-nowrap tabular-nums">
+                      {formatCurrency(Math.max(0, monthStats.pendingCollection))}
+                  </div>
                   <div className="text-[10px] text-amber-400 font-medium whitespace-nowrap">Pending</div>
+                  <div className="text-[10px] text-slate-400 mt-0.5 max-w-[200px] leading-snug">
+                      与「实收」加总 = 核销口径应收
+                  </div>
               </div>
+      </div>
+
+      <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-[11px] text-slate-600 leading-relaxed">
+          <span className="font-semibold text-slate-700">加总核对：</span>
+          本月实收{' '}
+          <span className="tabular-nums font-medium text-slate-800">{formatCurrency(monthStats.actualReceived)}</span>
+          {' + '}
+          本月待收{' '}
+          <span className="tabular-nums font-medium text-slate-800">{formatCurrency(Math.max(0, monthStats.pendingCollection))}</span>
+          {' = '}
+          <span className="tabular-nums font-semibold text-slate-900">{formatCurrency(monthStats.budgetReceivable)}</span>
+          （核销各行「展示应收」合计，与表格一致
+          {monthStats.manualReceivable > 0.005 ? `；含手工应收 ${formatCurrency(monthStats.manualReceivable)}` : '；无手工应收时与左侧系统账单相同'}）。
+          <span className="block mt-1 text-slate-500">
+              「结算侧调整」仅说明<strong className="text-slate-700">系统账单与合同滚动</strong>的差额，<strong className="text-amber-800">已包含在「本月应收」内</strong>，勿再与待收、实收相加。
+          </span>
       </div>
 
       {/* Main View Toggle & Toolbar */}
@@ -1225,6 +1495,14 @@ export const FinanceManager: React.FC<FinanceManagerProps> = ({
                  </select>
                  <button onClick={() => { setShowDepositTransfer(true); setShowForm(false); setIsEditing(false); }} className="px-3 py-1.5 bg-white border border-slate-200 text-slate-700 rounded-lg hover:bg-slate-50 text-sm flex items-center gap-1 flex-1 md:flex-none justify-center whitespace-nowrap"><ArrowRightLeft size={14} /> 转租金</button>
                  <button onClick={() => { const now = new Date().toISOString().split('T')[0]; setShowForm(true); setShowDepositTransfer(false); setIsEditing(false); setCurrentPayment({ date: now, type: 'Rent', period: now.slice(0, 7) }); }} className="px-3 py-1.5 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 text-sm flex items-center gap-1 shadow-sm flex-1 md:flex-none justify-center whitespace-nowrap"><Plus size={14} /> 记账</button>
+                 <button
+                     type="button"
+                     onClick={handleExportPayments}
+                     className="px-3 py-1.5 bg-white border border-slate-200 text-slate-700 rounded-lg hover:bg-slate-50 text-sm flex items-center gap-1 flex-1 md:flex-none justify-center whitespace-nowrap"
+                     title="导出当前年度与筛选条件下的收款明细（Excel）"
+                 >
+                     <Download size={14} /> 导出
+                 </button>
              </div>
         ) : !mobileReceivableOnly && activeView === 'SpecialBusiness' ? (
              <div className="flex flex-col sm:flex-row flex-wrap gap-2 items-stretch sm:items-center w-full md:w-auto justify-end">
@@ -1300,6 +1578,14 @@ export const FinanceManager: React.FC<FinanceManagerProps> = ({
                          className="px-3 py-1.5 text-sm font-medium rounded-lg border border-blue-200 bg-blue-50 text-blue-700 hover:bg-blue-100 disabled:opacity-40 disabled:pointer-events-none whitespace-nowrap"
                      >
                          批量核销 ({batchSelectedIds.size})
+                     </button>
+                     <button
+                         type="button"
+                         onClick={handleExportReceivables}
+                         className="px-3 py-1.5 text-sm font-medium rounded-lg border border-slate-200 bg-white text-slate-700 hover:bg-slate-50 whitespace-nowrap inline-flex items-center gap-1"
+                         title="导出当前账期与筛选条件下的应收核销列表（Excel）"
+                     >
+                         <Download size={14} /> 导出
                      </button>
                      <div
                          className="flex items-center gap-1 bg-white border border-slate-200 rounded-lg p-1 whitespace-nowrap"
@@ -1614,7 +1900,7 @@ export const FinanceManager: React.FC<FinanceManagerProps> = ({
                     <div className="bg-blue-50/50 p-3 border-b border-blue-100 flex flex-wrap items-center gap-2 text-sm text-blue-700">
                         <AlertCircle size={16} className="shrink-0" />
                         <span>
-                            此界面按「应收款专用方案」生成应收账单（与预算管理「当年生效方案」中各在租客户的系统推算月度应收一致，不含「待租单元」空置去化行；存量含账期/金额调整，续租新签按实际合同）。支持分次核销；勾选多行后可批量核销。非合同类收入请使用「特殊业态收入录入」。
+                            三列金额口径 ·「合同应收」= 应收款专用方案合同滚动。「结算调整」= 实际核销 − 合同滚动（与顶部「结算侧调整」卡片一致，整列琥珀底提示）。「实际核销金额」= 合同 + 结算调整（核销/收款依据）。两值不同说明有挪账。
                         </span>
                     </div>
                     <table className="w-full text-sm text-left">
@@ -1622,7 +1908,14 @@ export const FinanceManager: React.FC<FinanceManagerProps> = ({
                             <tr>
                                 <th className="px-2 py-3 w-10 text-center">选</th>
                                 <th className="px-4 py-3">客户名称</th>
-                                <th className="px-4 py-3 text-center whitespace-nowrap">应收租金 (预算)</th>
+                                <th className="px-4 py-3 text-center whitespace-nowrap" title="按合同条款滚动推算的本月应收（与工作台/预算口径一致）">合同应收</th>
+                                <th
+                                    className="px-3 py-3 text-center whitespace-nowrap bg-amber-50 text-amber-950 border-l-2 border-amber-400 font-semibold"
+                                    title="本列不可单独删除。差额来自缓缴/导入预算/特殊业态等；悬停数据格查看清理路径。"
+                                >
+                                    结算调整
+                                </th>
+                                <th className="px-4 py-3 text-center whitespace-nowrap" title="含缓缴 / 导入预算 / 特殊业态 / 手工应收行 等结算侧调整">实际核销金额</th>
                                 <th className="px-4 py-3 text-center whitespace-nowrap">已收金额</th>
                                 <th className="px-4 py-3 text-center whitespace-nowrap">待收余额</th>
                                 <th className="px-4 py-3 min-w-[200px]">备注</th>
@@ -1635,7 +1928,7 @@ export const FinanceManager: React.FC<FinanceManagerProps> = ({
                                     {displayReceivableSections.unsettled.length > 0 && (
                                         <>
                                             <tr className="bg-amber-50/60">
-                                                <td colSpan={7} className="px-4 py-2 text-xs font-bold text-amber-900/90 border-t border-amber-100/80">
+                                                <td colSpan={9} className="px-4 py-2 text-xs font-bold text-amber-900/90 border-t border-amber-100/80">
                                                     {WRITEOFF_LABELS.pending}
                                                 </td>
                                             </tr>
@@ -1645,7 +1938,7 @@ export const FinanceManager: React.FC<FinanceManagerProps> = ({
                                     {displayReceivableSections.deferred.length > 0 && (
                                         <>
                                             <tr className="bg-indigo-50/60">
-                                                <td colSpan={7} className="px-4 py-2 text-xs font-bold text-indigo-900/90 border-t border-indigo-100/80">
+                                                <td colSpan={9} className="px-4 py-2 text-xs font-bold text-indigo-900/90 border-t border-indigo-100/80">
                                                     {WRITEOFF_LABELS.deferred}（原账期挂账已调至其他月份）
                                                 </td>
                                             </tr>
@@ -1655,7 +1948,7 @@ export const FinanceManager: React.FC<FinanceManagerProps> = ({
                                     {(displayReceivableSections.settledThisMonth.length + displayReceivableSections.prepaid.length) > 0 && (
                                         <>
                                             <tr className="bg-emerald-50/50">
-                                                <td colSpan={7} className="px-4 py-2 text-xs font-bold text-emerald-900/90 border-t border-emerald-100/80">
+                                                <td colSpan={9} className="px-4 py-2 text-xs font-bold text-emerald-900/90 border-t border-emerald-100/80">
                                                     {WRITEOFF_LABELS.settled}
                                                 </td>
                                             </tr>
@@ -1665,9 +1958,82 @@ export const FinanceManager: React.FC<FinanceManagerProps> = ({
                                     )}
                                 </>
                             ) : (
-                                <tr><td colSpan={7} className="p-8 text-center text-slate-400">该月份暂无应收账单</td></tr>
+                                <tr><td colSpan={9} className="p-8 text-center text-slate-400">该月份暂无应收账单</td></tr>
                             )}
                         </tbody>
+                        {receivableFiltered.length > 0 && (
+                            <tfoot className="border-t-2 border-slate-300">
+                                <tr className="bg-sky-50/90 text-sm">
+                                    <td colSpan={2} className="px-4 py-2.5 text-right text-xs font-bold text-slate-800">
+                                        系统账单小计（与「本月应收」·工作台）
+                                    </td>
+                                    <td className="px-4 py-2.5 text-center font-semibold tabular-nums text-slate-700 whitespace-nowrap">
+                                        {formatCurrency(monthStats.systemContractReceivableTotal)}
+                                    </td>
+                                    <td className="border-l-2 border-amber-400 bg-amber-100/85 px-3 py-2.5 text-center text-xs font-bold tabular-nums text-amber-950 whitespace-nowrap">
+                                        {monthStats.workbenchSettlementDelta > 0.005 ? '+' : ''}
+                                        {formatCurrency(monthStats.workbenchSettlementDelta)}
+                                    </td>
+                                    <td className="px-4 py-2.5 text-center text-sm font-bold tabular-nums text-slate-900 whitespace-nowrap">
+                                        {formatCurrency(monthStats.systemReceivable)}
+                                    </td>
+                                    <td className="px-4 py-2.5 text-center text-xs tabular-nums text-slate-600 whitespace-nowrap">
+                                        {formatCurrency(receivableSystemFootSums.paid)}
+                                    </td>
+                                    <td className="px-4 py-2.5 text-center text-xs tabular-nums text-slate-600 whitespace-nowrap">
+                                        {formatCurrency(receivableSystemFootSums.pending)}
+                                    </td>
+                                    <td colSpan={2} className="px-2 py-2.5 text-[10px] leading-snug text-slate-500">
+                                        不含手工应收行；「结算调整」小计与顶部卡片一致
+                                    </td>
+                                </tr>
+                                {monthStats.manualReceivable > 0.005 && (
+                                    <tr className="bg-amber-50/60 text-sm border-t border-amber-200">
+                                        <td colSpan={2} className="px-4 py-2.5 text-right text-xs font-bold text-amber-950">
+                                            手工应收等小计
+                                        </td>
+                                        <td className="px-4 py-2.5 text-center text-slate-400 whitespace-nowrap">—</td>
+                                        <td className="border-l-2 border-amber-300 bg-amber-50/90 px-3 py-2.5 text-center text-xs font-semibold tabular-nums text-amber-950 whitespace-nowrap">
+                                            {formatCurrency(receivableManualFootSums.bill)}
+                                        </td>
+                                        <td className="px-4 py-2.5 text-center text-sm font-semibold tabular-nums text-amber-950 whitespace-nowrap">
+                                            {formatCurrency(receivableManualFootSums.bill)}
+                                        </td>
+                                        <td className="px-4 py-2.5 text-center text-xs tabular-nums text-slate-600 whitespace-nowrap">
+                                            {formatCurrency(receivableManualFootSums.paid)}
+                                        </td>
+                                        <td className="px-4 py-2.5 text-center text-xs tabular-nums text-slate-600 whitespace-nowrap">
+                                            {formatCurrency(receivableManualFootSums.pending)}
+                                        </td>
+                                        <td colSpan={2} className="px-2 py-2.5 text-[10px] text-amber-900/80">
+                                            合同列无合同滚动口径
+                                        </td>
+                                    </tr>
+                                )}
+                                <tr className="bg-slate-200/95 text-sm font-bold text-slate-900 border-t border-slate-400">
+                                    <td colSpan={2} className="px-4 py-2.5 text-right text-xs">全表合计</td>
+                                    <td className="px-4 py-2.5 text-center tabular-nums whitespace-nowrap">
+                                        {formatCurrency(monthStats.contractReceivableTotal)}
+                                    </td>
+                                    <td className="border-l-2 border-amber-400 bg-amber-100/70 px-3 py-2.5 text-center text-xs tabular-nums text-amber-950 whitespace-nowrap">
+                                        {totalSettlementDeltaFoot > 0.005 ? '+' : ''}
+                                        {formatCurrency(totalSettlementDeltaFoot)}
+                                    </td>
+                                    <td className="px-4 py-2.5 text-center tabular-nums whitespace-nowrap">
+                                        {formatCurrency(monthStats.budgetReceivable)}
+                                    </td>
+                                    <td className="px-4 py-2.5 text-center tabular-nums text-emerald-800 whitespace-nowrap">
+                                        {formatCurrency(monthStats.actualReceived)}
+                                    </td>
+                                    <td className="px-4 py-2.5 text-center tabular-nums text-amber-800 whitespace-nowrap">
+                                        {formatCurrency(Math.max(0, monthStats.pendingCollection))}
+                                    </td>
+                                    <td colSpan={2} className="px-2 py-2.5 text-[10px] font-normal text-slate-600 leading-snug">
+                                        实收+待收=核销合计；与顶部卡片核对
+                                    </td>
+                                </tr>
+                            </tfoot>
+                        )}
                     </table>
                             </div>
                         </div>

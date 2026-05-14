@@ -167,9 +167,9 @@ export function syncTenantFromBuildingImportRow(
     }
 
     if (typeof monthlyRent === 'number' && monthlyRent > 0) {
-        patch.monthlyRent = Math.round(monthlyRent);
+        patch.monthlyRent = Math.round(monthlyRent * 100) / 100;
     } else if (typeof unitPrice === 'number' && unitPrice > 0 && typeof totalArea === 'number' && totalArea > 0) {
-        patch.monthlyRent = Math.round(unitPrice * (365 / 12) * totalArea);
+        patch.monthlyRent = Math.round(unitPrice * (365 / 12) * totalArea * 100) / 100;
         patch.unitPrice = Number(unitPrice.toFixed(2));
         patch.totalArea = Number(totalArea.toFixed(2));
     } else if (typeof totalArea === 'number' && totalArea > 0) {

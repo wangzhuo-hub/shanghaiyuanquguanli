@@ -89,7 +89,7 @@ export async function computeKpi(
     };
 
     const { processedData, fullYearMonthlyTrends } = calculateDashboardMetrics(rawData, options);
-    const summary = buildKpiSummaryFromProcessedData(processedData);
+    const summary = buildKpiSummaryFromProcessedData(processedData, year);
     const normalized = normalizeKpiSummaryWithMonthlyTrends(summary, fullYearMonthlyTrends);
 
     // 提取季度趋势（与前端 selectedQuarter='All' 一致）

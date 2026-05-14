@@ -837,9 +837,21 @@ export const checkPocketBaseConnection = async (url: string): Promise<boolean> =
     }
 };
 
-/** PocketBase filter 字符串安全转义（防止注入） */
+/**
+ * PocketBase filter 字符串安全转义（防止注入）。
+ * 旧实现只转义 `\` 和 `"`，碰到 `'`、换行、回车、`\0` 时会破坏 filter 语法或被用于注入。
+ * 这里补全 PocketBase filter DSL 关心的特殊字符。
+ */
 const escFilter = (value: string): string =>
-    String(value || '').replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+    String(value ?? '')
+        .replace(/\\/g, '\\\\')
+        .replace(/"/g, '\\"')
+        .replace(/'/g, "\\'")
+        .replace(/\r/g, '\\r')
+        .replace(/\n/g, '\\n')
+        .replace(/\t/g, '\\t')
+        // eslint-disable-next-line no-control-regex
+        .replace(/\u0000/g, '');
 
 /** 与 pb_billing_period_notes 中单条记录的 original_id 对应，存 notes_json.version */
 const DASHBOARD_DATA_VERSION_OID = 'dashboard_data_version';
@@ -916,16 +928,56 @@ export const saveToPocketBase = async (
         }
         await pb!.collection(collection).create(payload);
     };
+    /**
+     * 全量覆盖一个集合（按 original_id 进行 upsert，最后再删除多余旧行）。
+     *
+     * 旧实现「先全部删除，再全部新建」——任何一条 create 失败都会让该集合的数据
+     * 彻底丢失（先删后建的中间窗口为空）。改为：
+     *   1) 读取旧行，按 original_id 建立映射
+     *   2) 对每条新行：若 original_id 命中→update；否则→create；同时记录命中的 originalId
+     *   3) 把未命中、即新列表里没有的旧行删除
+     * 任意一步抛错都不会出现"空集合"，最坏情况是旧+新混存，便于补救。
+     */
     const replaceCollection = async (collection: string, rows: Record<string, any>[]) => {
         const oldRows = await pb!.collection(collection).getFullList({
             filter: `project_id = "${escFilter(projectId)}"`,
-            fields: 'id',
+            fields: 'id,original_id',
         });
-        for (const row of oldRows) {
-            await pb!.collection(collection).delete(row.id);
+        // 用 original_id 做 key；缺失 original_id 的行（如 yearly_targets / monthly_init_data
+        // 这类无业务主键的集合）退化为按 PocketBase id 进行的 delete-then-create。
+        const hasOriginalId = (r: Record<string, any>) => typeof r?.original_id === 'string' && r.original_id !== '';
+        const oldByOid = new Map<string, string>();
+        const oldWithoutOid: string[] = [];
+        for (const r of oldRows) {
+            if (hasOriginalId(r)) oldByOid.set(String(r.original_id), r.id);
+            else oldWithoutOid.push(r.id);
         }
+
+        const seenOids = new Set<string>();
         for (const row of rows) {
-            await pb!.collection(collection).create(row);
+            if (hasOriginalId(row)) {
+                const oid = String(row.original_id);
+                seenOids.add(oid);
+                const oldId = oldByOid.get(oid);
+                if (oldId) {
+                    await pb!.collection(collection).update(oldId, row);
+                } else {
+                    await pb!.collection(collection).create(row);
+                }
+            } else {
+                // 无 original_id 的集合：直接 create；旧行在后面统一删除。
+                await pb!.collection(collection).create(row);
+            }
+        }
+
+        // 删除：1) 命名集合中 original_id 不在新列表的旧行；2) 整个无主键集合的旧行。
+        for (const [oid, oldId] of oldByOid.entries()) {
+            if (!seenOids.has(oid)) {
+                await pb!.collection(collection).delete(oldId);
+            }
+        }
+        for (const oldId of oldWithoutOid) {
+            await pb!.collection(collection).delete(oldId);
         }
     };
 
@@ -967,6 +1019,7 @@ export const saveToPocketBase = async (
             lease_end: t.leaseEnd,
             move_in_date: t.moveInDate || '',
             unit_price: t.unitPrice || 0,
+            unit_price_mode: t.unitPriceMode || 'daily',
             monthly_rent: t.monthlyRent || 0,
             rent_free_periods: t.rentFreePeriods || [],
             payment_cycle: t.paymentCycle || 'Monthly',
@@ -1112,7 +1165,11 @@ export const saveToPocketBase = async (
             });
         }
 
-        const versionBeforeWrite = skipVersionCheck ? await readCloudSaveVersion(projectId) : expectedVersion;
+        // 始终从服务端读取最新版本号，再 +1：
+        // 旧实现在 skipVersionCheck=false 时使用内存中的 expectedVersion，
+        // 两个并发保存（双方都在 894 处通过了版本校验）会写入相同的 newVersion，
+        // 导致后续保存无法检测出实际的版本冲突。
+        const versionBeforeWrite = await readCloudSaveVersion(projectId);
         const newVersion = versionBeforeWrite + 1;
         await upsertByOriginalId('pb_billing_period_notes', DASHBOARD_DATA_VERSION_OID, {
             original_id: DASHBOARD_DATA_VERSION_OID,
@@ -1232,6 +1289,8 @@ export const fetchPocketBaseBackup = async (
                 leaseEnd: t.lease_end,
                 moveInDate: t.move_in_date || '',
                 unitPrice: t.unit_price || 0,
+                unitPriceMode: t.unit_price_mode || 'daily',
+                projectId: t.project_id || '',
                 monthlyRent: t.monthly_rent || 0,
                 rentFreePeriods: Array.isArray(t.rent_free_periods) ? t.rent_free_periods : [],
                 paymentCycle: t.payment_cycle || 'Monthly',
@@ -1271,7 +1330,20 @@ export const fetchPocketBaseBackup = async (
                 keyMoments: Array.isArray(t.key_moments) ? t.key_moments : [],
                 nameHistory: Array.isArray(t.name_history) ? t.name_history : [],
                 paymentCycleChanges: Array.isArray(t.payment_cycle_changes) ? t.payment_cycle_changes : [],
-                paymentPeriodAdjustments: Array.isArray(t.payment_period_adjustments) ? t.payment_period_adjustments : [],
+                // 过滤掉非法形态的账期调整条目（例如 OpenClaw 误填的「租金阶梯」或「季度账期表」），
+                // 防止编辑弹窗渲染时因缺失 amount/originalYear 等字段而崩溃。
+                paymentPeriodAdjustments: Array.isArray(t.payment_period_adjustments)
+                    ? t.payment_period_adjustments.filter(
+                          (adj: any) =>
+                              adj &&
+                              typeof adj === 'object' &&
+                              typeof adj.originalYear === 'number' &&
+                              typeof adj.originalMonth === 'number' &&
+                              typeof adj.adjustedYear === 'number' &&
+                              typeof adj.adjustedMonth === 'number' &&
+                              typeof adj.amount === 'number'
+                      )
+                    : [],
                 paymentPeriodShiftMonths: typeof t.payment_period_shift_months === 'number' ? t.payment_period_shift_months : 0,
             })),
             payments: paymentsRows.map((p: any) => ({
@@ -1765,6 +1837,7 @@ export type KpiSnapshotSummary = {
     annualRevenueCollected: number;
     annualInitialBudget: number;
     annualBudgetTarget: number;
+    annualContractReceivable: number;
     annualGoalCompletion: number;
     annualBudgetCompletion: number;
     occupancyRate: number;
