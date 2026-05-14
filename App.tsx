@@ -103,6 +103,36 @@ const hasMeaningfulDashboardPayload = (d: DashboardData): boolean =>
     (d.invoices?.length ?? 0) > 0 ||
     (d.initializationData?.length ?? 0) > 0 ||
     (d.budgetAssumptions?.length ?? 0) > 0;
+/** 校验 data 中的租户 projectId 是否与当前园区一致，防止跨园区数据覆盖 */
+const validateDataProjectConsistency = (
+    data: DashboardData,
+    expectedProjectId: string,
+    sampleSize = 10
+): { consistent: boolean; mismatchCount: number; totalChecked: number } => {
+    const tenants = data.tenants || [];
+    if (tenants.length === 0) return { consistent: true, mismatchCount: 0, totalChecked: 0 };
+    const checkCount = Math.min(sampleSize, tenants.length);
+    let mismatchCount = 0;
+    for (let i = 0; i < checkCount; i++) {
+        if (tenants[i].projectId && tenants[i].projectId !== expectedProjectId) {
+            mismatchCount++;
+        }
+    }
+    return { consistent: mismatchCount === 0, mismatchCount, totalChecked: checkCount };
+};
+
+/** 检测批量操作是否异常（大规模增/删），超阈值需用户确认 */
+const BULK_OPERATION_THRESHOLD = 20;
+const detectAnomalousBatch = (creates: number, deletes: number): string | null => {
+    if (deletes > BULK_OPERATION_THRESHOLD) {
+        return `检测到批量删除 ${deletes} 条记录，超过安全阈值(${BULK_OPERATION_THRESHOLD})`;
+    }
+    if (creates > BULK_OPERATION_THRESHOLD) {
+        return `检测到批量新增 ${creates} 条记录，超过安全阈值(${BULK_OPERATION_THRESHOLD})`;
+    }
+    return null;
+};
+
 
 type AdminParkMetric = {
     projectId: string;
@@ -454,6 +484,11 @@ const App: React.FC = () => {
           localStorage.setItem(getParkStorageKey(projectIdAtEffectStart), JSON.stringify(data));
           setLastSaved(new Date().toLocaleTimeString());
           if (isCloudConnected) {
+              const consistencyCheck = validateDataProjectConsistency(data, projectIdAtEffectStart || '');
+              if (!consistencyCheck.consistent) {
+                  console.error("[auto-save] 数据一致性校验失败:", consistencyCheck, "期望园区:", projectIdAtEffectStart);
+                  return;
+              }
               const nextSnapshot = dashboardDataToPbRecords(data, projectIdAtEffectStart || '');
               const payload = diffPbRecords(baselineSnapshotRef.current, nextSnapshot, recordMeta);
               const summary = payloadCount(payload);
@@ -914,6 +949,44 @@ const App: React.FC = () => {
           // 没有任何改动 —— 不打扰服务器，直接成功
           console.log('[runCloudSave] 无改动，跳过保存');
           return { ok: true, message: '无改动，无需保存' };
+      }
+
+      // 数据一致性校验：防止跨园区数据覆盖
+      const consistencyCheck = validateDataProjectConsistency(currentData, cloudConfig.projectId || '');
+      if (!consistencyCheck.consistent) {
+          console.error("[runCloudSave] 数据一致性校验失败:", consistencyCheck, "期望园区:", cloudConfig.projectId);
+          return { ok: false, message: "数据一致性校验失败：当前页面数据不属于目标园区，已阻止保存。请切换园区后重新操作。" };
+      }
+      // 批量操作检测：大规模增/删需用户确认，展示详细信息
+      const batchWarning = detectAnomalousBatch(summary.creates, summary.deletes);
+      if (batchWarning) {
+          const detailLines = [batchWarning];
+          // 收集将被删除的租户名称
+          const deletes = payload.pb_tenants?.deletes || [];
+          if (deletes.length > 0) {
+              detailLines.push(`\n即将删除 ${deletes.length} 个租户：`);
+              for (const d of deletes.slice(0, 5)) {
+                  const name = currentData.tenants?.find(t => t.id === d.originalId)?.name || d.originalId;
+                  detailLines.push(`  - ${name}`);
+              }
+              if (deletes.length > 5) detailLines.push(`  ... 及其他 ${deletes.length - 5} 个`);
+          }
+          // 收集将被创建的租户名称
+          const creates = payload.pb_tenants?.creates || [];
+          if (creates.length > 0) {
+              detailLines.push(`\n即将新增 ${creates.length} 个租户：`);
+              for (const c of creates.slice(0, 5)) {
+                  const name = c.data?.name || c.originalId;
+                  detailLines.push(`  - ${name}`);
+              }
+              if (creates.length > 5) detailLines.push(`  ... 及其他 ${creates.length - 5} 个`);
+          }
+          detailLines.push(`\n汇总：新增 ${summary.creates} 条、更新 ${summary.updates} 条、删除 ${summary.deletes} 条`);
+          detailLines.push(`目标园区：${cloudConfig.projectId}`);
+          detailLines.push("\n建议先检查数据是否正确。\n\n确定要继续吗？");
+          if (!confirm(detailLines.join("\n"))) {
+              return { ok: false, message: "用户取消了批量操作" };
+          }
       }
 
       console.log(

@@ -944,6 +944,7 @@ export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, build
           const updatedTenants = [...tenants];
 
           const findExistingIndex = (row: Record<string, any>, name: string): number => {
+              // 1. original_id 精确匹配（最高优先级）
               const oid = String(row.original_id || row['original_id'] || '').trim();
               if (oid) {
                   const i = updatedTenants.findIndex((t) => t.id === oid);
@@ -951,6 +952,49 @@ export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, build
               }
               const leaseStart = normalizeDate(row['起租日期'] || row.leaseStart);
               if (!name || !leaseStart) return -1;
+
+              const buildingNameRaw = row['所属资产'] ?? row['楼宇'] ?? row['楼宇名称'] ?? row.buildingName;
+              const buildingName = hasValue(buildingNameRaw) ? String(buildingNameRaw).trim() : '';
+              const resolvedBuildingId = buildingName
+                  ? (matchBuildingByName(buildingNameRaw) || String(row.buildingId || '').trim())
+                  : '';
+
+              // 2. 企业名称 + 楼宇 + 房号(任一) + 起租日期（最严格，四个维度）
+              const unitNamesRaw = String(row['房号'] ?? row['租赁单元'] ?? row.unitNames ?? '').trim();
+              if (buildingName && resolvedBuildingId && unitNamesRaw) {
+                  const unitNames = unitNamesRaw.split(/[,，、;\s]+/).map((s: string) => s.trim()).filter(Boolean);
+                  if (unitNames.length > 0) {
+                      const matchedUnitIds = matchUnitIdsByNames(resolvedBuildingId, unitNames);
+                      if (matchedUnitIds.length > 0) {
+                          const i = updatedTenants.findIndex(
+                              (t) => t.name === name
+                                  && t.buildingId === resolvedBuildingId
+                                  && t.unitIds.some(uid => matchedUnitIds.includes(uid))
+                                  && String(t.leaseStart || '') === leaseStart
+                          );
+                          if (i >= 0) return i;
+                      }
+                  }
+              }
+
+              // 3. 企业名称 + 楼宇 + 起租日期（如果提供了楼宇但未提供房号）
+              if (buildingName && resolvedBuildingId) {
+                  const i = updatedTenants.findIndex(
+                      (t) => t.name === name && t.buildingId === resolvedBuildingId && String(t.leaseStart || '') === leaseStart
+                  );
+                  if (i >= 0) return i;
+              }
+
+              // 4. 企业名称 + 起租日期 + 结束日期（兜底，有结束日期更精确）
+              const leaseEnd = normalizeDate(row['结束日期'] ?? row['到期日期'] ?? row.leaseEnd);
+              if (leaseEnd) {
+                  const i = updatedTenants.findIndex(
+                      (t) => t.name === name && String(t.leaseStart || '') === leaseStart && String(t.leaseEnd || '') === leaseEnd
+                  );
+                  if (i >= 0) return i;
+              }
+
+              // 5. 企业名称 + 起租日期（最简兜底，保持兼容性）
               return updatedTenants.findIndex(
                   (t) => t.name === name && String(t.leaseStart || '') === leaseStart
               );

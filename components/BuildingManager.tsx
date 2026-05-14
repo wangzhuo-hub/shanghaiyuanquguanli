@@ -76,7 +76,6 @@ export const BuildingManager: React.FC<BuildingManagerProps> = ({ buildings, ten
   const globalStats = useMemo(() => {
     let totalArea = 0;
     let selfUseArea = 0;
-    const now = new Date();
 
     buildings.forEach(b => {
       if (b.type === 'Site') return;
@@ -91,19 +90,12 @@ export const BuildingManager: React.FC<BuildingManagerProps> = ({ buildings, ten
 
     let leasedArea = 0;
     tenants.forEach(t => {
-        if (t.status === ContractStatus.Expired) return;
+        if (t.status !== ContractStatus.Active && t.status !== ContractStatus.Expiring) return;
 
         const building = buildings.find(b => b.id === t.buildingId);
         if (building && building.type === 'Site') return;
 
-        const achievedDate = t.signingDate ? new Date(t.signingDate) : new Date(t.leaseStart);
-        const terminated = t.terminationDate ? new Date(t.terminationDate) : null;
-
-        const isAchievedNow = achievedDate <= now && (!terminated || terminated > now);
-
-        if (isAchievedNow) {
-            leasedArea += t.totalArea;
-        }
+        leasedArea += t.totalArea;
     });
 
     const vacantArea = Math.max(0, leasableArea - leasedArea);
@@ -142,15 +134,11 @@ export const BuildingManager: React.FC<BuildingManagerProps> = ({ buildings, ten
       const selfUseArea = activeBuilding.units.filter(u => u.isSelfUse).reduce((s, u) => s + u.area, 0);
       const leasableArea = totalArea - selfUseArea;
 
-      const now = new Date();
       let occupiedArea = 0;
       tenants.forEach(t => {
-          if (t.buildingId !== activeBuilding.id || t.status === ContractStatus.Expired) return;
-          const achievedDate = t.signingDate ? new Date(t.signingDate) : new Date(t.leaseStart);
-          const terminated = t.terminationDate ? new Date(t.terminationDate) : null;
-          if (achievedDate <= now && (!terminated || terminated > now)) {
-              occupiedArea += t.totalArea;
-          }
+          if (t.buildingId !== activeBuilding.id) return;
+          if (t.status !== ContractStatus.Active && t.status !== ContractStatus.Expiring) return;
+          occupiedArea += t.totalArea;
       });
 
       const rate = leasableArea > 0 ? (occupiedArea / leasableArea) * 100 : 0;
