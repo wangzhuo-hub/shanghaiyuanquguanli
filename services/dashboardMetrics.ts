@@ -1422,6 +1422,7 @@ export const resolveAnnualInitialBudget = (
  * `monthlyTrends` 汇总则是预算引擎滚动的应收目标。若未维护年度指标但月度预算存在，
  * 管理员「所有园区经营汇总」会出现财务列为 0、预算分母却含该园区的不一致。
  * 口径：年度指标优先；未填时回退为月度汇总（与 annualBudgetTarget 一致）。
+ * `annualGoalCompletion` 与管理员汇总顶栏一致：优先 **实收 / 实际合同应收**；无合同应收分母时回退为 **实收 / 年度应收目标**。
  */
 export const buildKpiSummaryFromProcessedData = (processedData: DashboardData, statsYear?: number): KpiSnapshotSummary => {
     const trends = processedData.monthlyTrends || [];
@@ -1439,6 +1440,13 @@ export const buildKpiSummaryFromProcessedData = (processedData: DashboardData, s
         processedData.initializationData,
         year
     );
+    /** 与管理员汇总顶栏「完成率（实收/合同应收）」一致；无合同应收分母时回退为实收/年度应收目标 */
+    const annualGoalCompletion =
+        annualContractReceivable > 0.005
+            ? Math.min(100, (annualRevenueCollected / annualContractReceivable) * 100)
+            : annualRevenueTarget > 0
+                ? Math.min(100, (annualRevenueCollected / annualRevenueTarget) * 100)
+                : 0;
 
     return {
         annualRevenueTarget,
@@ -1446,10 +1454,7 @@ export const buildKpiSummaryFromProcessedData = (processedData: DashboardData, s
         annualInitialBudget,
         annualBudgetTarget,
         annualContractReceivable,
-        annualGoalCompletion:
-            annualRevenueTarget > 0
-                ? Math.min(100, (annualRevenueCollected / annualRevenueTarget) * 100)
-                : 0,
+        annualGoalCompletion,
         annualBudgetCompletion:
             annualBudgetTarget > 0
                 ? Math.min(100, (annualRevenueCollected / annualBudgetTarget) * 100)
@@ -1468,8 +1473,9 @@ export const normalizeKpiSummaryWithMonthlyTrends = (
 ): KpiSnapshotSummary => {
     const sumFromTrends = (monthlyTrends || []).reduce((sum, t) => sum + (t.revenueTarget || 0), 0);
     const annualBudgetTarget = sumFromTrends > 0 ? sumFromTrends : summary.annualBudgetTarget || 0;
-    // 实际合同应收 = 月度 contractReceivable 汇总（与预算表「全年合同应收」同口径，不含空置去化）
-    const annualContractReceivable = (monthlyTrends || []).reduce((sum, t) => sum + (t.contractReceivable || 0), 0);
+    const contractSumFromTrends = (monthlyTrends || []).reduce((sum, t) => sum + (t.contractReceivable || 0), 0);
+    const annualContractReceivableResolved =
+        contractSumFromTrends > 0 ? contractSumFromTrends : summary.annualContractReceivable || 0;
     // 年度应收目标：保留快照中原有的值（可能是人工设定的 yearlyTargets），
     // 仅在原有值为 0/空时回退到预算滚动的月度汇总。
     const existingTarget = summary.annualRevenueTarget;
@@ -1477,14 +1483,21 @@ export const normalizeKpiSummaryWithMonthlyTrends = (
         ? existingTarget
         : annualBudgetTarget;
     const collected = summary.annualRevenueCollected || 0;
+    const revenueTargetDenom = annualRevenueTarget;
+
+    const annualGoalCompletion =
+        annualContractReceivableResolved > 0.005
+            ? Math.min(100, (collected / annualContractReceivableResolved) * 100)
+            : revenueTargetDenom > 0
+                ? Math.min(100, (collected / revenueTargetDenom) * 100)
+                : summary.annualGoalCompletion || 0;
 
     return {
         ...summary,
         annualBudgetTarget,
         annualRevenueTarget,
-        annualContractReceivable: annualContractReceivable > 0 ? annualContractReceivable : (summary.annualContractReceivable || 0),
-        annualGoalCompletion:
-            annualRevenueTarget > 0 ? Math.min(100, (collected / annualRevenueTarget) * 100) : 0,
+        annualContractReceivable: annualContractReceivableResolved,
+        annualGoalCompletion,
         annualBudgetCompletion:
             annualBudgetTarget > 0 ? Math.min(100, (collected / annualBudgetTarget) * 100) : 0,
     };

@@ -126,7 +126,8 @@ export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, build
       frClawbackOverride: string;
       depositDeduction: string;
       otherAdjustment: string;
-  }>({ date: '', type: 'Normal', reason: '', frClawbackOverride: '', depositDeduction: '', otherAdjustment: '' });
+      selectedUnitIds: string[];
+  }>({ date: '', type: 'Normal', reason: '', frClawbackOverride: '', depositDeduction: '', otherAdjustment: '', selectedUnitIds: [] });
 
   // 名称变更 & 付款周期变更 对话框
   const [showNameChange, setShowNameChange] = useState(false);
@@ -359,6 +360,46 @@ export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, build
   const handleRollback = (tenantId: string) => {
     const t = tenants.find(x => x.id === tenantId);
     if (!t) return;
+
+    // 部分退租回退：合并回父合同
+    if (t.parentContractId) {
+      const parent = tenants.find(x => x.id === t.parentContractId);
+      if (!parent) {
+        alert('未找到原合同，无法回退');
+        return;
+      }
+      if (!window.confirm(
+        `确定将「${t.name}」的部分退租房源合并回原合同吗？\n\n` +
+        `退租房源：${(t.unitIds || []).join('、')}\n` +
+        `合并后原合同恢复包含全部房源，此退租记录将被删除。`
+      )) return;
+
+      const mergedUnitIds = [...new Set([...(parent.unitIds || []), ...(t.unitIds || [])])];
+      const mergedUnitTerms = [
+        ...(parent.unitTerms || []),
+        ...(t.unitTerms || []).filter(ut => !(parent.unitTerms || []).some(pt => pt.unitId === ut.unitId)),
+      ];
+
+      const updated = tenants.map(x => {
+        if (x.id === parent.id) {
+          return {
+            ...parent,
+            unitIds: mergedUnitIds,
+            totalArea: Number(((parent.totalArea || 0) + (t.totalArea || 0)).toFixed(2)),
+            monthlyRent: (parent.monthlyRent || 0) + (t.monthlyRent || 0),
+            depositAmount: (parent.depositAmount || 0) + (t.depositAmount || 0),
+            unitTerms: mergedUnitTerms,
+            paymentTerms: mergedUnitTerms,
+          };
+        }
+        return x;
+      }).filter(x => x.id !== tenantId);
+
+      onUpdateTenants(updated);
+      return;
+    }
+
+    // 整单退租回退（原有逻辑）
     if (!window.confirm(`确定将「${t.name}」回退为履约中状态吗？\n\n此操作将清除退租日期、退租类型、退租原因及提前退租结算数据。`)) return;
     const updated = tenants.map(x =>
       x.id === tenantId
@@ -518,6 +559,8 @@ export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, build
   };
 
   const initiateTermination = (id: string) => {
+    const tenant = tenants.find(t => t.id === id);
+    const allUnitIds = tenant?.unitIds || [];
     setTerminateId(id);
     setTerminateData({
       date: new Date().toISOString().split('T')[0],
@@ -526,6 +569,7 @@ export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, build
       frClawbackOverride: '',
       depositDeduction: '',
       otherAdjustment: '',
+      selectedUnitIds: [...allUnitIds],
     });
     setShowTerminateModal(true);
   };
@@ -3527,6 +3571,11 @@ export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, build
                                                             当期扣除
                                                         </span>
                                                     )}
+                                                    {t.parentContractId && (
+                                                        <span className="text-[10px] bg-amber-50 text-amber-700 px-2 py-0.5 rounded-md border border-amber-200 font-bold">
+                                                            部分退租
+                                                        </span>
+                                                    )}
                                                 </div>
                                             </td>
                                             <td className="px-6 py-4 text-slate-600">{building?.name} <span className="text-xs bg-slate-100 px-1 rounded font-medium">{unitNames}</span></td>
@@ -3669,6 +3718,9 @@ export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, build
                                                 {t.rentFreePeriods && t.rentFreePeriods.length > 0 && t.freeRentHandling === 'Deduct' && (
                                                     <span className="text-[10px] bg-green-50 text-green-700 px-2 py-0.5 rounded-md border border-green-200 font-bold">当期扣除</span>
                                                 )}
+                                                {t.parentContractId && (
+                                                    <span className="text-[10px] bg-amber-50 text-amber-700 px-2 py-0.5 rounded-md border border-amber-200 font-bold">部分退租</span>
+                                                )}
                                             </div>
                                             <div className="text-xs text-slate-600 mt-1">
                                                 {building?.name}{' '}
@@ -3717,7 +3769,89 @@ export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, build
           </>
       )}
 
-      {showTerminateModal && (
+      {showTerminateModal && terminateId && (() => {
+          const base = tenants.find((x) => x.id === terminateId);
+          const allUnitIds = base?.unitIds || [];
+          const hasMultipleUnits = allUnitIds.length > 1;
+          const building = buildings.find(b => b.id === base?.buildingId);
+          const getUnitInfo = (uid: string) => building?.units.find(u => u.id === uid);
+
+          // 部分退租：拆分合同
+          const executePartialTermination = () => {
+            if (!base) return;
+            const selectedIds = terminateData.selectedUnitIds;
+            const remainingIds = allUnitIds.filter(id => !selectedIds.includes(id));
+
+            // 计算面积比例
+            let terminatedArea = 0;
+            let remainingArea = 0;
+            for (const uid of selectedIds) {
+              const u = getUnitInfo(uid);
+              const term = base.unitTerms?.find(t => t.unitId === uid);
+              terminatedArea += term?.area || u?.area || 0;
+            }
+            for (const uid of remainingIds) {
+              const u = getUnitInfo(uid);
+              const term = base.unitTerms?.find(t => t.unitId === uid);
+              remainingArea += term?.area || u?.area || 0;
+            }
+            const splitRatio = base.totalArea > 0 ? terminatedArea / base.totalArea : selectedIds.length / allUnitIds.length;
+
+            const parseField = (v: string): number | undefined => {
+              if (v === '' || v == null) return undefined;
+              const n = Number(v);
+              return Number.isFinite(n) ? n : undefined;
+            };
+
+            const earlyPatch = terminateData.type === 'Early'
+              ? {
+                  earlyTerminationFreeRentClawbackOverride: parseField(terminateData.frClawbackOverride),
+                  earlyTerminationDepositDeduction: parseField(terminateData.depositDeduction) ?? 0,
+                  earlyTerminationOtherAdjustment: parseField(terminateData.otherAdjustment) ?? 0,
+                }
+              : {
+                  earlyTerminationFreeRentClawbackOverride: undefined,
+                  earlyTerminationDepositDeduction: undefined,
+                  earlyTerminationOtherAdjustment: undefined,
+                };
+
+            // 创建退租子合同
+            const terminatedContract: Tenant = {
+              ...base,
+              id: `t${Date.now()}_partial`,
+              parentContractId: base.id,
+              unitIds: selectedIds,
+              totalArea: Number(terminatedArea.toFixed(2)),
+              monthlyRent: Math.round(base.monthlyRent * splitRatio),
+              depositAmount: Math.round((base.depositAmount || 0) * splitRatio),
+              status: ContractStatus.Terminated,
+              terminationDate: terminateData.date,
+              terminationType: terminateData.type,
+              terminationReason: terminateData.reason,
+              ...earlyPatch,
+              unitTerms: base.unitTerms?.filter(t => selectedIds.includes(t.unitId)) || [],
+              paymentTerms: base.paymentTerms?.filter(t => selectedIds.includes(t.unitId)) || [],
+            };
+
+            // 更新原合同（保留剩余房源）
+            const updatedOriginal: Tenant = {
+              ...base,
+              unitIds: remainingIds,
+              totalArea: Number(remainingArea.toFixed(2)),
+              monthlyRent: base.monthlyRent - terminatedContract.monthlyRent,
+              depositAmount: base.depositAmount - terminatedContract.depositAmount,
+              unitTerms: base.unitTerms?.filter(t => remainingIds.includes(t.unitId)) || [],
+              paymentTerms: base.paymentTerms?.filter(t => remainingIds.includes(t.unitId)) || [],
+            };
+
+            const updated = tenants.map(t => t.id === base.id ? updatedOriginal : t);
+            updated.push(terminatedContract);
+            onUpdateTenants(updated);
+            setShowTerminateModal(false);
+            setTerminateId(null);
+          };
+
+          return (
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm p-4">
              <div className="bg-white p-6 rounded-2xl shadow-xl w-full max-w-lg border border-slate-200 animate-in zoom-in-50 duration-200 max-h-[90vh] overflow-y-auto">
                 <h3 className="font-bold text-lg mb-4 text-slate-800">办理退租</h3>
@@ -3725,8 +3859,50 @@ export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, build
                     <div><label className="block text-sm text-slate-600 mb-1">退租日期</label><input type="date" value={terminateData.date} onChange={e => setTerminateData({...terminateData, date: e.target.value})} className="w-full p-2 border rounded-lg focus:ring-2 focus:ring-amber-100 outline-none" /></div>
                     <div><label className="block text-sm text-slate-600 mb-1">退租类型</label><select value={terminateData.type} onChange={e => setTerminateData({...terminateData, type: e.target.value as 'Normal' | 'Early'})} className="w-full p-2 border rounded-lg focus:ring-2 focus:ring-amber-100 outline-none"><option value="Normal">正常到期退租</option><option value="Early">提前违约退租</option></select></div>
                     <div><label className="block text-sm text-slate-600 mb-1">退租原因</label><select value={terminateData.reason} onChange={e => setTerminateData({...terminateData, reason: e.target.value})} className="w-full p-2 border rounded-lg focus:ring-2 focus:ring-amber-100 outline-none"><option value="">请选择原因...</option><option value="合同到期不续约">合同到期不续约</option><option value="由于规模扩张搬迁">由于规模扩张搬迁</option><option value="业务收缩搬迁">业务收缩搬迁</option><option value="经营困难结业">经营困难结业</option><option value="物业环境/服务问题">物业环境/服务问题</option><option value="其他原因">其他原因</option></select></div>
+
+                    {/* 房源多选（仅多房源合同时显示） */}
+                    {hasMultipleUnits && (
+                      <div className="border border-slate-200 rounded-lg p-3 space-y-2">
+                        <label className="block text-sm font-medium text-slate-700">退租房源（多选）</label>
+                        <div className="max-h-40 overflow-y-auto space-y-1">
+                          {allUnitIds.map((uid) => {
+                            const u = getUnitInfo(uid);
+                            const term = base?.unitTerms?.find(t => t.unitId === uid);
+                            const unitName = term?.unitName || u?.name || uid;
+                            const unitArea = term?.area || u?.area || 0;
+                            const unitRent = term?.monthlyRent || 0;
+                            const checked = terminateData.selectedUnitIds.includes(uid);
+                            return (
+                              <label key={uid} className={`flex items-center gap-2 p-2 rounded-lg cursor-pointer border ${checked ? 'border-amber-300 bg-amber-50' : 'border-slate-100 hover:bg-slate-50'}`}>
+                                <input
+                                  type="checkbox"
+                                  checked={checked}
+                                  onChange={() => {
+                                    const next = checked
+                                      ? terminateData.selectedUnitIds.filter(id => id !== uid)
+                                      : [...terminateData.selectedUnitIds, uid];
+                                    setTerminateData({ ...terminateData, selectedUnitIds: next });
+                                  }}
+                                  className="w-4 h-4 text-amber-600 rounded"
+                                />
+                                <span className="flex-1 text-sm">{unitName}</span>
+                                <span className="text-xs text-slate-400">{unitArea}㎡</span>
+                                <span className="text-xs text-slate-400">¥{unitRent.toLocaleString()}/月</span>
+                              </label>
+                            );
+                          })}
+                        </div>
+                        {terminateData.selectedUnitIds.length === 0 ? (
+                          <p className="text-xs text-rose-500">请至少选择一个房源</p>
+                        ) : terminateData.selectedUnitIds.length < allUnitIds.length ? (
+                          <p className="text-xs text-amber-600">仅退租 {terminateData.selectedUnitIds.length}/{allUnitIds.length} 个房源，剩余 {allUnitIds.length - terminateData.selectedUnitIds.length} 个房源继续履约</p>
+                        ) : (
+                          <p className="text-xs text-slate-400">已选全部房源（整单退租）</p>
+                        )}
+                      </div>
+                    )}
+
                     {terminateData.type === 'Early' && terminateId && terminateData.date && (() => {
-                        const base = tenants.find((x) => x.id === terminateId);
                         if (!base) return null;
                         const formula = computeEarlyTerminationFreeRentClawbackAmount({
                             ...base,
@@ -3781,11 +3957,21 @@ export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, build
                         );
                     })()}
                     <div className="flex justify-end gap-2 mt-6">
-                        <button type="button" onClick={() => setShowTerminateModal(false)} className="px-4 py-2 text-slate-600">取消</button>
+                        <button type="button" onClick={() => { setShowTerminateModal(false); setTerminateId(null); }} className="px-4 py-2 text-slate-600">取消</button>
                         <button
                             type="button"
+                            disabled={terminateData.selectedUnitIds.length === 0}
                             onClick={() => {
-                                if (!terminateId) return;
+                                if (!terminateId || !base) return;
+                                const selectedIds = terminateData.selectedUnitIds;
+                                const isFullTermination = selectedIds.length === allUnitIds.length;
+
+                                if (!isFullTermination) {
+                                  executePartialTermination();
+                                  return;
+                                }
+
+                                // 整单退租（原有逻辑）
                                 const parseField = (v: string): number | undefined => {
                                     if (v === '' || v == null) return undefined;
                                     const n = Number(v);
@@ -3822,7 +4008,7 @@ export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, build
                                 setShowTerminateModal(false);
                                 setTerminateId(null);
                             }}
-                            className="px-6 py-2 bg-amber-600 text-white rounded-lg font-bold"
+                            className={`px-6 py-2 text-white rounded-lg font-bold ${terminateData.selectedUnitIds.length === 0 ? 'bg-slate-300 cursor-not-allowed' : 'bg-amber-600'}`}
                         >
                             确认退租
                         </button>
@@ -3830,7 +4016,8 @@ export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, build
                 </div>
              </div>
           </div>
-      )}
+          );
+      })()}
 
       <AIContractRecognitionModal
           isOpen={showAIContractImport}

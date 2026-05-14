@@ -21,7 +21,11 @@ import {
     type BudgetTableSnapshot,
 } from '../services/budgetTableImport';
 import { receivableBudgetMonthForBill } from '../services/receivableListHelpers';
-import { buildReceivableContextForScenario, buildContractOnlyReceivableForPeriod } from '../services/dashboardMetrics';
+import {
+    buildReceivableContextForScenario,
+    buildContractOnlyReceivableForPeriod,
+    normalizeScenarioForReceivable,
+} from '../services/dashboardMetrics';
 import {
     monthOverlapsRentFree,
     formatYearRentFreeSummary,
@@ -721,8 +725,11 @@ export const BudgetManager: React.FC<BudgetManagerProps> = ({
       buildings.forEach(b => b.units.forEach(u => { if (u.isSelfUse) selfUseUnitIds.add(u.id); }));
 
       // 合同应收单源入口：与工作台 calculateTrends.contractReceivable / 财务报表 contractAmountDue
-      // 三处共用同一函数 buildContractOnlyReceivableForPeriod。effectiveData 在 Live 模式 = 实时数据，
-      // 在方案模式 = 方案快照合并数据；budgetScenarios 传空数组阻止再次解析方案，避免双重叠加。
+      // 共用 buildContractOnlyReceivableForPeriod。Live 下必须传入与工作台相同的规范化方案列表，
+      // 才能命中「应收专用方案」+ 根级假设合并（与 `calculateDashboardMetrics` 一致）；切到具体编制方案时
+      // 仍传空数组，避免误用应收专用快照覆盖当前正在编辑的方案视图。
+      const contractOnlyBudgetScenarios =
+          activeScenarioId === 'current' ? normalizeScenarioForReceivable(scenarios, propTenants, propBuildings) : [];
       const contractOnlyCtx: Parameters<typeof buildContractOnlyReceivableForPeriod>[2] = {
           tenants,
           buildings,
@@ -730,7 +737,7 @@ export const BudgetManager: React.FC<BudgetManagerProps> = ({
           initializationData: [],
           budgetAssumptions: budgetAssumptions,
           budgetAdjustments: budgetAdjustments,
-          budgetScenarios: [],
+          budgetScenarios: contractOnlyBudgetScenarios,
       };
       const contractOnlyByMonth: Array<Map<string, number>> = Array.from({ length: 12 }, (_, m) => {
           return buildContractOnlyReceivableForPeriod(year, m, contractOnlyCtx).byTenantId;
@@ -925,6 +932,59 @@ export const BudgetManager: React.FC<BudgetManagerProps> = ({
               contractDiff,
           });
       });
+
+      // 主循环跳过了已退租/已到期客户，但工作台与核销仍会把其「合同滚动尾款」计入当月 contractReceivable；
+      // 这里按 contractOnlyByMonth 补行，避免表内逐行合计低于引擎全量合计。
+      const rowIds = new Set(rows.map((r) => r.id));
+      for (const t of propTenants) {
+          if (rowIds.has(t.id)) continue;
+          if (t.status !== ContractStatus.Terminated && t.status !== ContractStatus.Expired) continue;
+          const isSelfUseOr = t.unitIds.some((uid) => selfUseUnitIds.has(uid));
+          if (isSelfUseOr || t.isSpecialBusiness) continue;
+          const monthlyValuesOrphan = Array(12).fill(null).map((_, m) => {
+              const amount = contractOnlyByMonth[m].get(t.id) ?? 0;
+              return { amount, actual: 0, isAdjustedIn: false, isAdjustedOut: false, adjustmentDetail: '' };
+          });
+          if (!monthlyValuesOrphan.some((v) => v.amount > 0.005)) continue;
+          const buildingOr = buildings.find((b) => b.id === t.buildingId);
+          const unitNamesOr = t.unitIds
+              .map((uid) => buildingOr?.units.find((u) => u.id === uid)?.name || uid)
+              .join(', ');
+          const tenantFloorsOr = t.unitIds
+              .map((uid) => buildingOr?.units.find((u) => u.id === uid)?.floor)
+              .filter((f): f is number => typeof f === 'number');
+          rows.push({
+              id: t.id,
+              name: t.name,
+              building: buildingOr?.name || '未知楼宇',
+              unitNames: unitNamesOr,
+              floorSummary: formatFloorSummary(tenantFloorsOr),
+              area: t.totalArea,
+              category: '已退租·合同应收',
+              signingDate: t.signingDate,
+              leaseStart: t.leaseStart,
+              isNewSigningInYear: !!t.signingDate && new Date(t.signingDate).getFullYear() === year,
+              leaseStartMonthInYear:
+                  t.leaseStart && new Date(t.leaseStart).getFullYear() === year ? new Date(t.leaseStart).getMonth() : null,
+              terminationDate: t.terminationDate,
+              isTerminatingInYear: !!t.terminationDate && new Date(t.terminationDate).getFullYear() === year,
+              paymentCycle: t.paymentCycle || 'Quarterly',
+              paymentCycleLabel: paymentCycleLabel(t.paymentCycle),
+              paymentCycleOrder: paymentCycleOrder(t.paymentCycle),
+              buildingSort: buildingOr?.name || '未知楼宇',
+              floorSort: tenantFloorsOr.length > 0 ? Math.min(...tenantFloorsOr) : 9999,
+              roomSort: tenantSortRoomKey(t, buildingOr) || unitNamesOr,
+              monthlyValues: monthlyValuesOrphan,
+              monthlyLeasedArea: Array(12).fill(0),
+              unitPrice: t.unitPrice,
+              rentFreeYearSummary: formatYearRentFreeSummary(year, t.rentFreePeriods || []),
+              rentFreeMonthFlags: yearRentFreeMonthFlags(year, t.rentFreePeriods || []),
+              hasBudgetMods: false,
+              isVirtual: false,
+              verificationReasons: ['已退租/到期：本行金额仅含与工作台一致的合同滚动应收'],
+              contractDiff: 0,
+          });
+      }
 
       // 「年初预算 (Live)」要展示空置去化的预测（含 projectedSignDate 等假设），其他新建预算方案默认仅基于
       // 「实际履约合同」推算账单（含免租、收款周期、账期调整），所以跳过空置去化整段，确保
@@ -1441,7 +1501,9 @@ export const BudgetManager: React.FC<BudgetManagerProps> = ({
       const groupOrder = (name: string, rows: any[]) => {
           if (sortMethod === 'PaymentCycle') return rows[0]?.paymentCycleOrder ?? 99;
           if (sortMethod === 'Building') return String(name);
-          const categoryIndex = ['存量客户', '续签客户', '到期退租招商', '高风险退租', '空置去化'].indexOf(name);
+          const categoryIndex = ['存量客户', '续签客户', '到期退租招商', '高风险退租', '空置去化', '已退租·合同应收'].indexOf(
+              name,
+          );
           return categoryIndex >= 0 ? categoryIndex : 99;
       };
       const groups = new Map<string, any[]>();

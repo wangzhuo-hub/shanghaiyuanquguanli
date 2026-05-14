@@ -1037,6 +1037,7 @@ export const saveToPocketBase = async (
             termination_date: t.terminationDate || '',
             termination_type: t.terminationType || null,
             termination_reason: t.terminationReason || '',
+            parent_contract_id: t.parentContractId || '',
             early_termination_fr_clawback_override: t.earlyTerminationFreeRentClawbackOverride ?? null,
             early_termination_deposit_deduction: t.earlyTerminationDepositDeduction ?? null,
             early_termination_other_adjustment: t.earlyTerminationOtherAdjustment ?? null,
@@ -1309,6 +1310,7 @@ export const fetchPocketBaseBackup = async (
                 terminationDate: t.termination_date || undefined,
                 terminationType: t.termination_type || undefined,
                 terminationReason: t.termination_reason || '',
+                parentContractId: t.parent_contract_id || undefined,
                 earlyTerminationFreeRentClawbackOverride:
                     t.early_termination_fr_clawback_override != null
                         ? Number(t.early_termination_fr_clawback_override)

@@ -146,6 +146,9 @@ export interface Tenant {
   terminationDate?: string;
   terminationType?: 'Normal' | 'Early';
   terminationReason?: string;
+  /** 部分退租：指向原合同 ID（合同被拆分退租时，子合同通过此字段关联父合同） */
+  parentContractId?: string;
+
   /** 提前退租：免租扣回金额手工覆盖（元）；不填则按「已享免租 − 比例应享」×月租金公式计算 */
   earlyTerminationFreeRentClawbackOverride?: number;
   /** 提前退租：押金扣款（元，可自定义，计入最后一期应收） */
