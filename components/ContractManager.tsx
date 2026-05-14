@@ -46,7 +46,7 @@ const paymentCycleMonthMap: Record<Tenant['paymentCycle'], number> = {
 
 export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, buildings, onUpdateTenants, dashboardData, payments = [], onUpdatePayments, budgetAdjustments = [], onUpdateAdjustments, mobileEntryMode = false }) => {
   const currentCalendarYear = new Date().getFullYear();
-  const [activeTab, setActiveTab] = useState<'List' | 'Terminated' | 'Analysis'>(() =>
+  const [activeTab, setActiveTab] = useState<'List' | 'Terminated' | 'Analysis' | 'Expiring'>(() =>
     mobileEntryMode ? 'List' : 'Analysis'
   );
   const [analysisPeriod, setAnalysisPeriod] = useState<'Year' | 'Quarter' | 'Month'>('Year');
@@ -55,6 +55,51 @@ export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, build
     if (!mobileEntryMode) return;
     if (activeTab === 'Analysis') setActiveTab('List');
   }, [mobileEntryMode, activeTab]);
+
+  // 本年度到期客户 — 按季度分组
+  const thisYear = new Date().getFullYear();
+  const expiringTenants = useMemo(() => {
+    const now = new Date();
+    const today = new Date(thisYear, now.getMonth(), now.getDate());
+    const sixMonthsLater = new Date(thisYear, now.getMonth() + 6, now.getDate());
+    return tenants
+      .filter(t => {
+        if (!t.leaseEnd) return false;
+        if (t.status === 'Terminated') return false;
+        const endDate = new Date(t.leaseEnd);
+        return endDate.getFullYear() === thisYear || (endDate >= today && endDate <= sixMonthsLater);
+      })
+      .sort((a, b) => new Date(a.leaseEnd).getTime() - new Date(b.leaseEnd).getTime());
+  }, [tenants, thisYear]);
+
+  const expiringByQuarter = useMemo(() => {
+    const quarters: { label: string; range: [Date, Date] }[] = [
+      { label: '第一季度 (1-3月)', range: [new Date(thisYear, 0, 1), new Date(thisYear, 2, 31)] },
+      { label: '第二季度 (4-6月)', range: [new Date(thisYear, 3, 1), new Date(thisYear, 5, 30)] },
+      { label: '第三季度 (7-9月)', range: [new Date(thisYear, 6, 1), new Date(thisYear, 8, 30)] },
+      { label: '第四季度 (10-12月)', range: [new Date(thisYear, 9, 1), new Date(thisYear, 11, 31)] },
+    ];
+    return quarters.map(q => ({
+      ...q,
+      tenants: expiringTenants.filter(t => {
+        const d = new Date(t.leaseEnd);
+        return d >= q.range[0] && d <= q.range[1];
+      }),
+    })).filter(q => q.tenants.length > 0);
+  }, [expiringTenants, thisYear]);
+
+  const getExpiryUrgency = (leaseEnd: string): 'overdue' | 'thisMonth' | 'nextMonth' | 'later' => {
+    const now = new Date();
+    const end = new Date(leaseEnd);
+    const thisMonthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+    const nextMonthStart = new Date(now.getFullYear(), now.getMonth() + 1, 1);
+    const nextMonthEnd = new Date(now.getFullYear(), now.getMonth() + 2, 0);
+    if (end < now) return 'overdue';
+    if (end >= thisMonthStart && end < nextMonthStart) return 'thisMonth';
+    if (end >= nextMonthStart && end <= nextMonthEnd) return 'nextMonth';
+    return 'later';
+  };
+
   
   const [isEditing, setIsEditing] = useState(false);
   const [currentTenant, setCurrentTenant] = useState<Partial<Tenant>>({});
@@ -3812,6 +3857,161 @@ export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, build
             )}
           </>
       )}
+
+
+      {/* 本年到期客户管理 */}
+      {activeTab === 'Expiring' && (
+        <div className="space-y-6 animate-in fade-in duration-500">
+          {/* 顶部统计 */}
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+            <div className="bg-white rounded-xl border border-slate-200 p-4 shadow-sm">
+              <div className="text-xs text-slate-500 font-medium">本年到期客户</div>
+              <div className="text-2xl font-bold text-amber-600 mt-1">{expiringTenants.length}</div>
+              <div className="text-xs text-slate-400 mt-1">
+                已过期 {expiringTenants.filter(t => getExpiryUrgency(t.leaseEnd) === 'overdue').length} 个
+              </div>
+            </div>
+            <div className="bg-white rounded-xl border border-slate-200 p-4 shadow-sm">
+              <div className="text-xs text-slate-500 font-medium">本月到期</div>
+              <div className="text-2xl font-bold text-red-500 mt-1">
+                {expiringTenants.filter(t => getExpiryUrgency(t.leaseEnd) === 'thisMonth').length}
+              </div>
+              <div className="text-xs text-slate-400 mt-1">需立即处理</div>
+            </div>
+            <div className="bg-white rounded-xl border border-slate-200 p-4 shadow-sm">
+              <div className="text-xs text-slate-500 font-medium">下月到期</div>
+              <div className="text-2xl font-bold text-orange-500 mt-1">
+                {expiringTenants.filter(t => getExpiryUrgency(t.leaseEnd) === 'nextMonth').length}
+              </div>
+              <div className="text-xs text-slate-400 mt-1">需提前准备</div>
+            </div>
+            <div className="bg-white rounded-xl border border-slate-200 p-4 shadow-sm">
+              <div className="text-xs text-slate-500 font-medium">涉及月租金</div>
+              <div className="text-2xl font-bold text-blue-600 mt-1">
+                {expiringTenants.length > 0
+                  ? '¥' + (expiringTenants.reduce((sum, t) => sum + (t.monthlyRent || 0), 0) / 10000).toFixed(1) + '万'
+                  : '¥0'}
+              </div>
+              <div className="text-xs text-slate-400 mt-1">月度总额</div>
+            </div>
+          </div>
+
+          {/* 按季度分组 */}
+          {expiringByQuarter.length === 0 ? (
+            <div className="bg-white rounded-2xl border border-slate-200 p-16 text-center">
+              <div className="w-16 h-16 bg-emerald-100 rounded-full flex items-center justify-center mx-auto mb-4">
+                <Calendar size={28} className="text-emerald-600" />
+              </div>
+              <h3 className="text-lg font-bold text-slate-700 mb-2">本年度无到期合同</h3>
+              <p className="text-slate-400 text-sm">所有合同均在有效期内</p>
+            </div>
+          ) : (
+            expiringByQuarter.map(quarter => (
+              <div key={quarter.label} className="space-y-3">
+                <div className="flex items-center gap-3">
+                  <div className="w-1.5 h-5 bg-amber-500 rounded-full"></div>
+                  <h3 className="text-base font-bold text-slate-700">
+                    {quarter.label}
+                    <span className="ml-2 text-sm font-normal text-slate-400">({quarter.tenants.length}个客户)</span>
+                  </h3>
+                </div>
+                <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+                  {quarter.tenants.map(t => {
+                    const urgency = getExpiryUrgency(t.leaseEnd);
+                    const building = buildings.find(b => b.id === t.buildingId);
+                    const unitIds = t.unitIds || [];
+                    const mainUnit = building?.units.find(u => unitIds.includes(u.id));
+                    const daysLeft = Math.ceil((new Date(t.leaseEnd).getTime() - new Date().getTime()) / (1000 * 60 * 60 * 24));
+                    return (
+                      <div key={t.id} className={'bg-white rounded-xl border shadow-sm hover:shadow-md transition-shadow overflow-hidden ' + (
+                        urgency === 'overdue' ? 'border-red-300 bg-red-50/30' :
+                        urgency === 'thisMonth' ? 'border-red-200' :
+                        urgency === 'nextMonth' ? 'border-orange-200' :
+                        'border-slate-200'
+                      )}>
+                        <div className={'px-4 py-2 flex items-center justify-between ' + (
+                          urgency === 'overdue' ? 'bg-red-500 text-white' :
+                          urgency === 'thisMonth' ? 'bg-red-50 border-b border-red-100' :
+                          urgency === 'nextMonth' ? 'bg-orange-50 border-b border-orange-100' :
+                          'bg-slate-50 border-b border-slate-100'
+                        )}>
+                          <span className={'text-xs font-bold ' + (
+                            urgency === 'overdue' ? 'text-white' :
+                            urgency === 'thisMonth' ? 'text-red-600' :
+                            urgency === 'nextMonth' ? 'text-orange-600' :
+                            'text-slate-500'
+                          )}>
+                            {urgency === 'overdue' ? '已过期' :
+                             urgency === 'thisMonth' ? '本月到期' :
+                             urgency === 'nextMonth' ? '下月到期' :
+                             daysLeft + '天后到期'}
+                          </span>
+                          <span className={'text-xs font-medium px-2 py-0.5 rounded-full ' + (
+                            t.status === 'Active' ? 'bg-emerald-100 text-emerald-700' :
+                            t.status === 'Expiring' ? 'bg-amber-100 text-amber-700' :
+                            'bg-slate-100 text-slate-600'
+                          )}>{contractStatusTextMap[t.status]}</span>
+                        </div>
+
+                        <div className="p-4">
+                          <h4 className="font-bold text-slate-800 text-base mb-1 truncate">{t.name}</h4>
+                          <div className="flex items-center gap-2 text-xs text-slate-500 mb-3">
+                            <BuildingIcon size={12} />
+                            <span>{building?.name || t.buildingId}</span>
+                            {mainUnit && <><span>·</span><span>{mainUnit.name}</span></>}
+                            {unitIds.length > 1 && <span className="text-slate-400">+{unitIds.length - 1}</span>}
+                          </div>
+
+                          <div className="grid grid-cols-2 gap-2 mb-3 text-xs">
+                            <div className="bg-slate-50 rounded-lg p-2">
+                              <div className="text-slate-400">到期日期</div>
+                              <div className={'font-bold ' + (
+                                urgency === 'overdue' ? 'text-red-600' :
+                                urgency === 'thisMonth' ? 'text-red-500' :
+                                'text-slate-700'
+                              )}>{t.leaseEnd}</div>
+                            </div>
+                            <div className="bg-slate-50 rounded-lg p-2">
+                              <div className="text-slate-400">月租金</div>
+                              <div className="font-bold text-slate-700">¥{(t.monthlyRent || 0).toLocaleString()}</div>
+                            </div>
+                            <div className="bg-slate-50 rounded-lg p-2">
+                              <div className="text-slate-400">面积</div>
+                              <div className="font-bold text-slate-700">{t.totalArea || 0}㎡</div>
+                            </div>
+                            <div className="bg-slate-50 rounded-lg p-2">
+                              <div className="text-slate-400">付款周期</div>
+                              <div className="font-bold text-slate-700 truncate">{paymentCycleLabelMap[t.paymentCycle] || t.paymentCycle}</div>
+                            </div>
+                          </div>
+
+                          <div className="flex gap-2">
+                            <button
+                              type="button"
+                              onClick={() => handleRenewal(t)}
+                              className="flex-1 py-2 bg-emerald-600 text-white rounded-lg text-sm font-bold hover:bg-emerald-700 transition-colors flex items-center justify-center gap-1"
+                            >
+                              <FileText size={14} /> 续约
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => initiateTermination(t.id)}
+                              className="flex-1 py-2 bg-white border border-red-300 text-red-600 rounded-lg text-sm font-bold hover:bg-red-50 transition-colors flex items-center justify-center gap-1"
+                            >
+                              <XCircle size={14} /> 退租
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            ))
+          )}
+        </div>
+      )}
+
 
       {showTerminateModal && terminateId && (() => {
           const base = tenants.find((x) => x.id === terminateId);
