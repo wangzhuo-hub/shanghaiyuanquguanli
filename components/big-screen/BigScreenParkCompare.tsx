@@ -11,6 +11,15 @@ interface Props {
 const fmtWan = (v: number | null | undefined, d = 2, hide = false) =>
   hide ? '***' : formatWan(v, d);
 
+/** 实收 / 年初预算 */
+const initialBudgetCompletion = (park: BigScreenParkMetric): number =>
+  park.annualInitialBudget > 0
+    ? Math.min(100, (park.annualRevenueCollected / park.annualInitialBudget) * 100)
+    : 0;
+
+const completionColor = (pct: number): string =>
+  pct >= 90 ? 'text-emerald-400' : pct >= 70 ? 'text-amber-400' : 'text-red-400';
+
 const rankColor = (index: number): string => {
   if (index === 0) return 'text-amber-400';
   if (index === 1) return 'text-slate-300';
@@ -21,7 +30,7 @@ const rankColor = (index: number): string => {
 export const BigScreenParkCompare: React.FC<Props> = ({ parks, year, hideAmount }) => {
   const byOccupancy = [...parks].sort((a, b) => b.occupancyRate - a.occupancyRate);
   const byCollection = [...parks].sort(
-    (a, b) => b.annualGoalCompletion - a.annualGoalCompletion,
+    (a, b) => initialBudgetCompletion(b) - initialBudgetCompletion(a),
   );
   const byRevenue = [...parks].sort(
     (a, b) => b.annualRevenueCollected - a.annualRevenueCollected,
@@ -66,9 +75,11 @@ export const BigScreenParkCompare: React.FC<Props> = ({ parks, year, hideAmount 
 
         {/* Collection ranking */}
         <div className="bg-white/5 rounded-2xl p-6 border border-white/10 flex flex-col min-h-0">
-          <h3 className="text-base font-semibold text-slate-300 mb-4">回款完成率排名</h3>
+          <h3 className="text-base font-semibold text-slate-300 mb-4">预算完成率排名</h3>
           <div className="flex-1 overflow-auto space-y-2">
-            {byCollection.map((park, i) => (
+            {byCollection.map((park, i) => {
+              const pct = initialBudgetCompletion(park);
+              return (
               <div
                 key={park.projectId}
                 className="flex items-center justify-between py-2 px-3 rounded-lg bg-white/5"
@@ -79,19 +90,11 @@ export const BigScreenParkCompare: React.FC<Props> = ({ parks, year, hideAmount 
                   </span>
                   <span className="text-base truncate max-w-[140px]">{park.parkName}</span>
                 </div>
-                <span
-                  className={`text-base font-bold tabular-nums ${
-                    park.annualGoalCompletion >= 90
-                      ? 'text-emerald-400'
-                      : park.annualGoalCompletion >= 70
-                        ? 'text-amber-400'
-                        : 'text-red-400'
-                  }`}
-                >
-                  {formatPercent(park.annualGoalCompletion, 0)}
+                <span className={`text-base font-bold tabular-nums ${completionColor(pct)}`}>
+                  {park.annualInitialBudget > 0 ? formatPercent(pct, 0) : '—'}
                 </span>
               </div>
-            ))}
+            );})}
           </div>
         </div>
 
@@ -128,12 +131,15 @@ export const BigScreenParkCompare: React.FC<Props> = ({ parks, year, hideAmount 
               <th className="text-right px-4 py-2">出租率</th>
               <th className="text-right px-4 py-2">实收</th>
               <th className="text-right px-4 py-2">合同应收</th>
-              <th className="text-right px-4 py-2">回款率</th>
+              <th className="text-right px-4 py-2">年初预算</th>
+              <th className="text-right px-4 py-2">预算完成率</th>
               <th className="text-right px-4 py-2">预算偏差</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-white/10">
-            {byRevenue.map((park) => (
+            {byRevenue.map((park) => {
+              const budgetPct = initialBudgetCompletion(park);
+              return (
               <tr key={park.projectId} className="hover:bg-white/5">
                 <td className="px-4 py-2 font-medium">{park.parkName}</td>
                 <td className="px-4 py-2 text-right tabular-nums">
@@ -145,16 +151,13 @@ export const BigScreenParkCompare: React.FC<Props> = ({ parks, year, hideAmount 
                 <td className="px-4 py-2 text-right tabular-nums">
                   {fmtWan(park.annualContractReceivable, 0, hideAmount)}
                 </td>
-                <td
-                  className={`px-4 py-2 text-right tabular-nums ${
-                    park.annualGoalCompletion >= 90
-                      ? 'text-emerald-400'
-                      : park.annualGoalCompletion >= 70
-                        ? 'text-amber-400'
-                        : 'text-red-400'
-                  }`}
-                >
-                  {formatPercent(park.annualGoalCompletion, 0)}
+                <td className="px-4 py-2 text-right tabular-nums">
+                  {park.annualInitialBudget > 0
+                    ? fmtWan(park.annualInitialBudget, 0, hideAmount)
+                    : '—'}
+                </td>
+                <td className={`px-4 py-2 text-right tabular-nums ${completionColor(budgetPct)}`}>
+                  {park.annualInitialBudget > 0 ? formatPercent(budgetPct, 0) : '—'}
                 </td>
                 <td
                   className={`px-4 py-2 text-right tabular-nums ${
@@ -166,7 +169,7 @@ export const BigScreenParkCompare: React.FC<Props> = ({ parks, year, hideAmount 
                     : '—'}
                 </td>
               </tr>
-            ))}
+            );})}
           </tbody>
         </table>
       </div>
