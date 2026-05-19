@@ -142,7 +142,8 @@ export const buildBigScreenParkData = (
       currentMonthUnpaid,
       newContractsArea: processedData.newContractsArea || 0,
       terminatedContractsArea: processedData.terminatedContractsArea || 0,
-      netIncreaseArea: processedData.netIncreaseArea || 0,
+      netIncreaseArea:
+        (processedData.newContractsArea || 0) - (processedData.terminatedContractsArea || 0),
     },
     billingDetails,
   };
@@ -162,7 +163,6 @@ export const computeTotals = (parks: BigScreenParkMetric[]): BigScreenParkMetric
       a.currentMonthUnpaid += p.currentMonthUnpaid || 0;
       a.newContractsArea += p.newContractsArea || 0;
       a.terminatedContractsArea += p.terminatedContractsArea || 0;
-      a.netIncreaseArea += p.netIncreaseArea || 0;
       a.occupancyWeightedArea += p.totalArea * p.occupancyRate;
       a.occupancyTargetWeightedArea += p.totalArea * p.annualOccupancyTarget;
       return a;
@@ -179,7 +179,6 @@ export const computeTotals = (parks: BigScreenParkMetric[]): BigScreenParkMetric
       currentMonthUnpaid: 0,
       newContractsArea: 0,
       terminatedContractsArea: 0,
-      netIncreaseArea: 0,
       occupancyWeightedArea: 0,
       occupancyTargetWeightedArea: 0,
     },
@@ -213,6 +212,6 @@ export const computeTotals = (parks: BigScreenParkMetric[]): BigScreenParkMetric
     currentMonthUnpaid: acc.currentMonthUnpaid,
     newContractsArea: acc.newContractsArea,
     terminatedContractsArea: acc.terminatedContractsArea,
-    netIncreaseArea: acc.netIncreaseArea,
+    netIncreaseArea: acc.newContractsArea - acc.terminatedContractsArea,
   };
 };

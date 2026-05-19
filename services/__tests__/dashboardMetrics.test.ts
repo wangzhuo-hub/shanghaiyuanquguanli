@@ -712,3 +712,54 @@ describe('resolveAnnualInitialBudget（与预算执行表合计 / KPI 同源）'
         expect(summary.annualInitialBudget).toBe(5_000_000);
     });
 });
+
+describe('calculateDashboardMetrics lease area stats', () => {
+    it('uses year scope for new signings, terminations, and net increase', () => {
+        const data = dashboardData(undefined, {
+            tenants: [
+                tenant({
+                    id: 'new-2026',
+                    signingDate: '2026-03-01',
+                    leaseStart: '2026-03-01',
+                    totalArea: 1000,
+                    status: ContractStatus.Active,
+                }),
+                tenant({
+                    id: 'new-2025',
+                    signingDate: '2025-12-01',
+                    leaseStart: '2025-12-01',
+                    totalArea: 500,
+                    status: ContractStatus.Active,
+                }),
+                tenant({
+                    id: 'term-2026',
+                    signingDate: '2025-06-01',
+                    leaseStart: '2025-06-01',
+                    leaseEnd: '2026-04-30',
+                    terminationDate: '2026-04-15',
+                    totalArea: 300,
+                    status: ContractStatus.Terminated,
+                }),
+                tenant({
+                    id: 'term-this-month-only',
+                    signingDate: '2025-01-01',
+                    leaseStart: '2025-01-01',
+                    leaseEnd: '2026-05-31',
+                    terminationDate: '2026-05-10',
+                    totalArea: 22,
+                    status: ContractStatus.Terminated,
+                }),
+            ],
+        });
+
+        const { processedData } = calculateDashboardMetrics(data, {
+            year: 2026,
+            quarter: 'All',
+            billingSelectedMonth: '2026-05',
+        });
+
+        expect(processedData.newContractsArea).toBe(1000);
+        expect(processedData.terminatedContractsArea).toBe(322);
+        expect(processedData.netIncreaseArea).toBe(678);
+    });
+});

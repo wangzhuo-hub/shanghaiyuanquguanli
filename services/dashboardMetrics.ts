@@ -1327,15 +1327,26 @@ export const calculateDashboardMetrics = (
         (tenant) => tenant.status !== 'Expired' && tenant.status !== 'Terminated' && tenant.signingDate && tenant.signingDate.startsWith(billingSelectedMonth)
     );
     const newContractsCount = newSigningsInMonth.length;
-    const newContractsAreaMonth = newSigningsInMonth.reduce((sum, tenant) => sum + (tenant.totalArea || 0), 0);
-    const newSigningsInYear = tenants.filter((tenant) => tenant.signingDate && tenant.signingDate.startsWith(String(year)));
+    const newSigningsInYear = tenants.filter((tenant) => {
+        const signStr = tenant.signingDate || tenant.leaseStart;
+        if (!signStr) return false;
+        const signDate = parseDateLocal(signStr);
+        return !Number.isNaN(signDate.getTime()) && signDate.getFullYear() === year;
+    });
     const newContractsArea = newSigningsInYear.reduce((sum, tenant) => sum + (tenant.totalArea || 0), 0);
     const terminatedInMonth = tenants.filter(
         (tenant) => tenant.status === ContractStatus.Terminated && tenant.terminationDate && tenant.terminationDate.startsWith(billingSelectedMonth)
     );
     const terminatedContractsCount = terminatedInMonth.length;
-    const terminatedContractsArea = terminatedInMonth.reduce((sum, tenant) => sum + (tenant.totalArea || 0), 0);
-    const netIncreaseArea = newContractsAreaMonth - terminatedContractsArea;
+    const terminatedInYear = tenants.filter((tenant) => {
+        if (tenant.status !== ContractStatus.Terminated) return false;
+        const endStr = tenant.terminationDate || tenant.leaseEnd;
+        if (!endStr) return false;
+        const endDate = parseDateLocal(endStr);
+        return !Number.isNaN(endDate.getTime()) && endDate.getFullYear() === year;
+    });
+    const terminatedContractsArea = terminatedInYear.reduce((sum, tenant) => sum + (tenant.totalArea || 0), 0);
+    const netIncreaseArea = newContractsArea - terminatedContractsArea;
 
     let billingYear = new Date().getFullYear();
     let billingMonth = new Date().getMonth();

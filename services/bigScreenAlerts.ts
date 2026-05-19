@@ -26,6 +26,7 @@ export interface BigScreenAlert {
   amount?: number;
   dueDate?: string;
   days?: number;
+  statusLabel?: string;
   createdAt: string;
 }
 
@@ -104,6 +105,7 @@ export const generateOverdueAlerts = (
       tenantId: b.tenantId,
       tenantName: b.tenantName,
       amount: unpaid,
+      statusLabel,
       createdAt: now().toISOString(),
     });
   }

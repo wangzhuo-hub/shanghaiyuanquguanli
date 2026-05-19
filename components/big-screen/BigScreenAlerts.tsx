@@ -1,5 +1,5 @@
 import React, { useMemo } from 'react';
-import { AlertTriangle } from 'lucide-react';
+import { AlertTriangle, Building2 } from 'lucide-react';
 import type { BigScreenAlert } from '../../services/bigScreenAlerts';
 import { formatWan } from '../../services/numberFormat';
 
@@ -11,17 +11,173 @@ const fmtWan = (v: number | null | undefined, d = 2) => formatWan(v, d);
 
 const sectionStyle = 'bg-white/[0.03] rounded-xl border border-white/8 p-3 md:p-4 flex flex-col min-h-0';
 
+const levelLabel: Record<BigScreenAlert['level'], string> = {
+  high: '高风险',
+  medium: '中风险',
+  low: '低风险',
+};
+
+interface ParkRiskGroup {
+  parkName: string;
+  types: { typeLabel: string; items: BigScreenAlert[] }[];
+}
+
+const groupByParkAndRiskType = (
+  items: BigScreenAlert[],
+  getRiskTypeLabel: (a: BigScreenAlert) => string,
+  sortItems: (a: BigScreenAlert, b: BigScreenAlert) => number = (a, b) =>
+    (b.amount ?? 0) - (a.amount ?? 0),
+): ParkRiskGroup[] => {
+  const parkOrder: string[] = [];
+  const parkMap = new Map<string, Map<string, BigScreenAlert[]>>();
+
+  for (const alert of items) {
+    if (!parkMap.has(alert.parkName)) {
+      parkMap.set(alert.parkName, new Map());
+      parkOrder.push(alert.parkName);
+    }
+    const typeMap = parkMap.get(alert.parkName)!;
+    const typeLabel = getRiskTypeLabel(alert);
+    if (!typeMap.has(typeLabel)) typeMap.set(typeLabel, []);
+    typeMap.get(typeLabel)!.push(alert);
+  }
+
+  return parkOrder.map((parkName) => {
+    const typeMap = parkMap.get(parkName)!;
+    const types = [...typeMap.entries()].map(([typeLabel, groupItems]) => ({
+      typeLabel,
+      items: [...groupItems].sort(sortItems),
+    }));
+    types.sort((a, b) => {
+      const amountA = a.items.reduce((sum, i) => sum + (i.amount ?? 0), 0);
+      const amountB = b.items.reduce((sum, i) => sum + (i.amount ?? 0), 0);
+      return amountB - amountA;
+    });
+    return { parkName, types };
+  });
+};
+
+const receivableRiskType = (a: BigScreenAlert) => a.statusLabel || levelLabel[a.level];
+
+const contractRiskType = (a: BigScreenAlert) => `${levelLabel[a.level]} · 合同到期`;
+
+const operationalRiskType = (a: BigScreenAlert) =>
+  a.type === 'low_occupancy' ? '出租率偏低' : '回款进度落后';
+
+interface GroupedAlertListProps {
+  groups: ParkRiskGroup[];
+  emptyText: string;
+  accent: 'red' | 'amber' | 'purple';
+  renderMeta: (a: BigScreenAlert) => React.ReactNode;
+}
+
+const accentStyles = {
+  red: {
+    park: 'text-red-300/90',
+    type: 'text-red-400/70',
+    card: 'bg-red-500/8 border-red-500/10',
+    meta: 'text-red-400',
+    text: 'text-red-300/80',
+  },
+  amber: {
+    park: 'text-amber-300/90',
+    type: 'text-amber-400/70',
+    card: 'bg-amber-500/8 border-amber-500/10',
+    meta: 'text-amber-400',
+    text: 'text-amber-300/80',
+  },
+  purple: {
+    park: 'text-purple-300/90',
+    type: 'text-purple-400/70',
+    card: 'bg-purple-500/8 border-purple-500/10',
+    meta: 'text-purple-400',
+    text: 'text-slate-300',
+  },
+};
+
+const GroupedAlertList: React.FC<GroupedAlertListProps> = ({
+  groups,
+  emptyText,
+  accent,
+  renderMeta,
+}) => {
+  const styles = accentStyles[accent];
+
+  if (groups.length === 0) {
+    return <div className="text-[11px] md:text-sm text-slate-500 py-2 text-center">{emptyText}</div>;
+  }
+
+  return (
+    <div className="space-y-3 md:space-y-4">
+      {groups.map((park) => {
+        const itemCount = park.types.reduce((sum, t) => sum + t.items.length, 0);
+        return (
+          <div key={park.parkName}>
+            <div className={`flex items-center gap-1.5 mb-1.5 md:mb-2 text-xs md:text-sm font-semibold ${styles.park}`}>
+              <Building2 size={12} className="shrink-0 opacity-70" />
+              <span>{park.parkName}</span>
+              <span className="text-slate-500 font-normal">{itemCount} 条</span>
+            </div>
+            <div className="space-y-2 md:space-y-2.5 ml-1 border-l border-white/8 pl-2.5 md:pl-3">
+              {park.types.map((typeGroup) => (
+                <div key={`${park.parkName}_${typeGroup.typeLabel}`}>
+                  <div className={`text-[10px] md:text-xs font-medium mb-1 ${styles.type}`}>
+                    {typeGroup.typeLabel}
+                    <span className="text-slate-600 font-normal ml-1.5">{typeGroup.items.length}</span>
+                  </div>
+                  <div className="space-y-1 md:space-y-1.5">
+                    {typeGroup.items.map((a) => {
+                      const meta = renderMeta(a);
+                      return (
+                      <div
+                        key={a.id}
+                        className={`border rounded-lg px-2.5 md:px-3 py-1.5 md:py-2 ${styles.card}`}
+                      >
+                        <div className="flex items-center justify-between gap-2">
+                          <span className={`text-[11px] md:text-sm truncate ${styles.text}`}>
+                            {a.tenantName || a.title}
+                          </span>
+                          {meta ? (
+                            <span className={`text-[11px] md:text-sm font-bold tabular-nums shrink-0 ${styles.meta}`}>
+                              {meta}
+                            </span>
+                          ) : null}
+                        </div>
+                        {!meta && a.description ? (
+                          <p className="text-[10px] md:text-xs text-slate-500 mt-0.5 truncate">{a.description}</p>
+                        ) : null}
+                      </div>
+                    );})}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+};
+
 export const BigScreenAlerts: React.FC<Props> = ({ alerts }) => {
-  const { highReceivables, contractExpiring, operational } = useMemo(() => {
-    const high = alerts.filter(
-      (a) => a.type === 'receivable_overdue' && a.level === 'high',
-    );
-    const expiring = alerts.filter((a) => a.type === 'contract_expiring');
-    const ops = alerts.filter((a) =>
-      ['low_occupancy', 'low_collection'].includes(a.type),
-    );
-    return { highReceivables: high, contractExpiring: expiring, operational: ops };
-  }, [alerts]);
+  const { receivables, contractExpiring, operational, groupedReceivables, groupedExpiring, groupedOperational } =
+    useMemo(() => {
+      const recv = alerts.filter((a) => a.type === 'receivable_overdue');
+      const expiring = alerts.filter((a) => a.type === 'contract_expiring');
+      const ops = alerts.filter((a) => ['low_occupancy', 'low_collection'].includes(a.type));
+      return {
+        receivables: recv,
+        contractExpiring: expiring,
+        operational: ops,
+        groupedReceivables: groupByParkAndRiskType(recv, receivableRiskType),
+        groupedExpiring: groupByParkAndRiskType(
+          expiring,
+          contractRiskType,
+          (a, b) => (a.days ?? 999) - (b.days ?? 999),
+        ),
+        groupedOperational: groupByParkAndRiskType(ops, operationalRiskType),
+      };
+    }, [alerts]);
 
   const highCount = alerts.filter((a) => a.level === 'high').length;
   const mediumCount = alerts.filter((a) => a.level === 'medium').length;
@@ -33,7 +189,7 @@ export const BigScreenAlerts: React.FC<Props> = ({ alerts }) => {
       <div className="text-center mb-3 md:mb-4 shrink-0">
         <h2 className="text-xl md:text-4xl font-bold">智能预警</h2>
         <p className="text-slate-500 mt-0.5 text-[11px] md:text-sm">
-          共 {alerts.length} 条风险
+          共 {alerts.length} 条风险 · 按园区 / 风险类型分组
         </p>
       </div>
 
@@ -62,34 +218,28 @@ export const BigScreenAlerts: React.FC<Props> = ({ alerts }) => {
         </div>
       ) : (
         <div className="flex-1 grid grid-cols-1 md:grid-cols-[1.4fr_1fr] gap-2 md:gap-3 min-h-0">
-          {/* Left: High-risk receivables */}
-          <div className={`${sectionStyle} ${highReceivables.length > 0 ? 'border-red-500/15' : ''}`}>
+          {/* Left: Receivables by park + risk type */}
+          <div className={`${sectionStyle} ${receivables.length > 0 ? 'border-red-500/15' : ''}`}>
             <div className="flex items-center gap-2 mb-2 md:mb-3 shrink-0">
               <div className="w-5 h-0.5 rounded-full bg-red-400/60" />
               <span className="text-xs md:text-sm text-red-400 font-semibold uppercase tracking-wider">
-                高风险待收款
+                待收款预警
               </span>
-              <span className="text-[11px] md:text-sm text-slate-500">{highReceivables.length} 条</span>
+              <span className="text-[11px] md:text-sm text-slate-500">{receivables.length} 条</span>
             </div>
-            <div className="flex-1 overflow-auto space-y-1.5 min-h-0">
-              {highReceivables.slice(0, 6).map((a) => (
-                <div key={a.id} className="bg-red-500/8 border border-red-500/10 rounded-lg px-3 py-2">
-                  <div className="flex items-center justify-between">
-                    <span className="text-[11px] md:text-sm text-red-300/80 truncate max-w-[55%]">{a.parkName} · {a.tenantName || '—'}</span>
-                    <span className="text-[11px] md:text-sm font-bold text-red-400 tabular-nums">未收 {fmtWan(a.amount, 0)}</span>
-                  </div>
-                </div>
-              ))}
-              {highReceivables.length === 0 && (
-                <div className="text-[11px] md:text-sm text-slate-500 py-2 text-center">无高风险待收款</div>
-              )}
+            <div className="flex-1 overflow-auto min-h-0">
+              <GroupedAlertList
+                groups={groupedReceivables}
+                emptyText="无待收款预警"
+                accent="red"
+                renderMeta={(a) => `未收 ${fmtWan(a.amount, 0)}`}
+              />
             </div>
           </div>
 
           {/* Right: Contract expiry + Operational */}
           <div className="flex flex-col gap-2 md:gap-3 min-h-0">
-            {/* Contract expiry */}
-            <div className={`${sectionStyle} flex-1`}>
+            <div className={`${sectionStyle} flex-1 min-h-0`}>
               <div className="flex items-center gap-2 mb-2 md:mb-3 shrink-0">
                 <div className="w-5 h-0.5 rounded-full bg-amber-400/60" />
                 <span className="text-xs md:text-sm text-amber-400 font-semibold uppercase tracking-wider">
@@ -97,23 +247,17 @@ export const BigScreenAlerts: React.FC<Props> = ({ alerts }) => {
                 </span>
                 <span className="text-[11px] md:text-sm text-slate-500">{contractExpiring.length} 条</span>
               </div>
-              <div className="flex-1 overflow-auto space-y-1.5 min-h-0">
-                {contractExpiring.slice(0, 4).map((a) => (
-                  <div key={a.id} className="bg-amber-500/8 border border-amber-500/10 rounded-lg px-3 py-2">
-                    <div className="flex items-center justify-between">
-                      <span className="text-[11px] md:text-sm text-amber-300/80 truncate max-w-[55%]">{a.parkName} · {a.tenantName || '—'}</span>
-                      <span className="text-[11px] md:text-sm font-bold text-amber-400 tabular-nums">剩余 {a.days || '?'} 天</span>
-                    </div>
-                  </div>
-                ))}
-                {contractExpiring.length === 0 && (
-                  <div className="text-[11px] md:text-sm text-slate-500 py-2 text-center">无即将到期合同</div>
-                )}
+              <div className="flex-1 overflow-auto min-h-0">
+                <GroupedAlertList
+                  groups={groupedExpiring}
+                  emptyText="无即将到期合同"
+                  accent="amber"
+                  renderMeta={(a) => `剩余 ${a.days ?? '?'} 天`}
+                />
               </div>
             </div>
 
-            {/* Operational risks */}
-            <div className={`${sectionStyle} ${operational.length > 0 ? '' : ''}`}>
+            <div className={`${sectionStyle} flex-1 min-h-0`}>
               <div className="flex items-center gap-2 mb-2 md:mb-3 shrink-0">
                 <div className="w-5 h-0.5 rounded-full bg-purple-400/60" />
                 <span className="text-xs md:text-sm text-purple-400 font-semibold uppercase tracking-wider">
@@ -121,15 +265,13 @@ export const BigScreenAlerts: React.FC<Props> = ({ alerts }) => {
                 </span>
                 <span className="text-[11px] md:text-sm text-slate-500">{operational.length} 条</span>
               </div>
-              <div className="overflow-auto space-y-1.5 max-h-[120px] md:max-h-[150px]">
-                {operational.slice(0, 4).map((a) => (
-                  <div key={a.id} className="bg-purple-500/8 border border-purple-500/10 rounded-lg px-3 py-2">
-                    <p className="text-[11px] md:text-sm text-slate-300 truncate">{a.title}</p>
-                  </div>
-                ))}
-                {operational.length === 0 && (
-                  <div className="text-[11px] md:text-sm text-slate-500 py-2 text-center">经营指标正常</div>
-                )}
+              <div className="flex-1 overflow-auto min-h-0">
+                <GroupedAlertList
+                  groups={groupedOperational}
+                  emptyText="经营指标正常"
+                  accent="purple"
+                  renderMeta={() => ''}
+                />
               </div>
             </div>
           </div>
