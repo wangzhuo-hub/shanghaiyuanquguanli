@@ -3,6 +3,7 @@ import {
     buildBillingDetailsForPeriod,
     buildKpiSummaryFromProcessedData,
     calculateDashboardMetrics,
+    normalizeScenarioForReceivable,
     resolveAnnualInitialBudget,
 } from '../dashboardMetrics';
 import { writeImportedBudgetTable, type BudgetTableSnapshot } from '../budgetTableImport';
@@ -339,6 +340,57 @@ describe('buildBillingDetailsForPeriod imported budget alignment', () => {
         const data = dashboardData(writeImportedBudgetTable(undefined, 2026, snapshot), { tenants: [t] });
         const march = buildBillingDetailsForPeriod(2026, 2, data);
         expect(march.some((r) => r.tenantId === 'tenant-junke' && r.amountDue > 0.005)).toBe(true);
+    });
+});
+
+describe('syncInvoiceDedicatedSnapshotsFromLive', () => {
+    it('refreshes invoice_dedicated snapshot from live tenants on normalize', () => {
+        const live = tenant({
+            id: 'tenant-shunjiang',
+            leaseStart: '2025-12-01',
+            leaseEnd: '2028-11-30',
+            monthlyRent: 31672.88,
+            firstPaymentDate: '2025-10-30',
+            freeRentHandling: 'Deduct',
+            rentFreePeriods: [{ start: '2026-06-01', end: '2026-07-31', description: '免租' }],
+            paymentTerms: [{ unitId: 'unit-101', area: 801, monthlyRent: 31672.88, rentFreePeriods: [] }],
+            projectId: 'beijing_park',
+        });
+        const stale = tenant({
+            id: 'tenant-shunjiang',
+            leaseStart: '2025-12-01',
+            leaseEnd: '2028-11-30',
+            monthlyRent: 31672.88,
+            firstPaymentDate: '2025-10-30',
+            freeRentHandling: 'Deduct',
+            rentFreePeriods: [{ start: '2026-03-01', end: '2026-03-31', description: '免租' }],
+            paymentTerms: [{ unitId: 'unit-101', area: 801, monthlyRent: 31672.88, rentFreePeriods: [] }],
+            projectId: 'beijing_park',
+        });
+        const buildings = dashboardData().buildings!;
+        const scenarios: BudgetScenario[] = [
+            {
+                id: 'invoice_dedicated_2026',
+                name: '2026应收款专用方案',
+                budgetYear: 2026,
+                description: '',
+                createdAt: '2026-01-01T00:00:00.000Z',
+                isActive: false,
+                isReceivableActive: true,
+                assumptions: [],
+                adjustments: [],
+                baseDataSnapshot: { tenants: [stale], buildings },
+            },
+        ];
+        const normalized = normalizeScenarioForReceivable(scenarios, [live], buildings);
+        const dedicated = normalized.find((s) => s.id === 'invoice_dedicated_2026');
+        expect(dedicated?.baseDataSnapshot?.tenants?.[0]?.rentFreePeriods).toEqual(live.rentFreePeriods);
+        const mayDue = buildBillingDetailsForPeriod(
+            2026,
+            4,
+            dashboardData(undefined, { budgetScenarios: normalized, tenants: [live] }),
+        ).find((d) => d.tenantId === 'tenant-shunjiang')?.amountDue;
+        expect(mayDue).toBeCloseTo(31672.88, 0);
     });
 });
 

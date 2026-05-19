@@ -1,0 +1,70 @@
+# 生产前端自动部署（与 ./update.sh 同路径：dist → 服务器 pb_public）
+# 需在仓库 Settings → Secrets 配置 DEPLOY_HOST、DEPLOY_USER、DEPLOY_SSH_KEY
+name: Deploy
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, master]
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+
+      - name: Install and build check
+        run: |
+          npm ci
+          npm run check:pb
+
+      - name: Build frontend
+        env:
+          VITE_POCKETBASE_URL: /
+        run: npm run build
+
+      - name: Configure SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          if [ -z "${DEPLOY_SSH_KEY}" ] || [ -z "${DEPLOY_HOST}" ]; then
+            echo "::error::请在 GitHub 仓库 Secrets 中配置 DEPLOY_HOST 与 DEPLOY_SSH_KEY"
+            exit 1
+          fi
+          mkdir -p ~/.ssh
+          printf '%s\n' "${DEPLOY_SSH_KEY}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H "${DEPLOY_HOST}" >> ~/.ssh/known_hosts 2>/dev/null || true
+
+      - name: Upload to server
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+        run: |
+          USER="${DEPLOY_USER:-root}"
+          REMOTE="${DEPLOY_PATH:-/opt/kingdee-park}/pb_public"
+          ssh -i ~/.ssh/deploy_key -o IdentitiesOnly=yes "${USER}@${DEPLOY_HOST}" "rm -rf ${REMOTE}/*"
+          rsync -az --delete -e "ssh -i ~/.ssh/deploy_key -o IdentitiesOnly=yes" dist/ "${USER}@${DEPLOY_HOST}:${REMOTE}/"
+
+      - name: Verify HTTPS
+        env:
+          DEPLOY_URL: ${{ secrets.DEPLOY_URL }}
+        run: |
+          URL="${DEPLOY_URL:-https://kdpark.fun/}"
+          CODE=$(curl -s -o /dev/null -w "%{http_code}" "${URL}" || echo "000")
+          echo "HTTP ${CODE} for ${URL}"
+          if [ "${CODE}" != "200" ]; then
+            echo "::warning::站点返回 ${CODE}，请登录服务器检查 Caddy / PocketBase"
+          fi

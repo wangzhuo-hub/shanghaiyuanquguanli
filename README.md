@@ -83,6 +83,22 @@ npm run dev
 ./update.sh    # 构建 + 上传到服务器 + 验证
 ```
 
+### GitHub Actions 自动部署（可选）
+
+推送 `main` / `master` 或手动触发 **Deploy** 工作流后，会自动：`npm test` → 构建 → rsync 到服务器 `pb_public`（与 `update.sh` 相同）。
+
+在仓库 **Settings → Secrets and variables → Actions** 配置：
+
+| Secret | 说明 | 示例 |
+|--------|------|------|
+| `DEPLOY_HOST` | 服务器 IP 或域名 | `47.92.35.188` |
+| `DEPLOY_SSH_KEY` | 部署用 SSH 私钥（完整 PEM） | 与服务器 `authorized_keys` 配对 |
+| `DEPLOY_USER` | 可选，默认 `root` | `root` |
+| `DEPLOY_PATH` | 可选，默认 `/opt/kingdee-park` | `/opt/kingdee-park` |
+| `DEPLOY_URL` | 可选，部署后健康检查 URL | `https://kdpark.fun/` |
+
+建议在 **Settings → Environments → production** 中勾选 **Required reviewers**，避免误触自动上线。首次使用前在 Actions 页手动运行一次 **Deploy** 验证密钥是否正确。
+
 ### 服务器配置
 
 | 组件 | 端口 | 说明 |

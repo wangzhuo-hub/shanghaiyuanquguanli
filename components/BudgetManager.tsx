@@ -256,7 +256,8 @@ export const BudgetManager: React.FC<BudgetManagerProps> = ({
       const merged = mergeBudgetTotalsIntoInitData(
           initializationData,
           importPreview.year,
-          importPreview.monthlyTotals
+          importPreview.monthlyTotals,
+          tenants[0]?.projectId
       );
       const snapshot: BudgetTableSnapshot = {
           importedAt: new Date().toISOString(),
@@ -288,7 +289,7 @@ export const BudgetManager: React.FC<BudgetManagerProps> = ({
       }
       const nextNotes = clearImportedBudgetTable(billingPeriodNotes, year);
       // 月度目标置零（保留 month/year/其他字段），与导入前对称
-      const merged = mergeBudgetTotalsIntoInitData(initializationData, year, new Array(12).fill(0));
+      const merged = mergeBudgetTotalsIntoInitData(initializationData, year, new Array(12).fill(0), tenants[0]?.projectId);
       onBatchUpdate({
           initializationData: merged,
           billingPeriodNotes: nextNotes,

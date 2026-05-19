@@ -1,6 +1,11 @@
 import React from 'react';
 import ReactDOM from 'react-dom/client';
 import App from './App';
+import BigScreenDashboard from './components/BigScreenDashboard';
+
+const isBigScreen =
+  typeof window !== 'undefined' &&
+  new URLSearchParams(window.location.search).get('screen') === 'tv';
 
 const rootElement = document.getElementById('root');
 if (!rootElement) {
@@ -10,6 +15,6 @@ if (!rootElement) {
 const root = ReactDOM.createRoot(rootElement);
 root.render(
   <React.StrictMode>
-    <App />
+    {isBigScreen ? <BigScreenDashboard /> : <App />}
   </React.StrictMode>
 );

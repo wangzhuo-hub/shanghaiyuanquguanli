@@ -352,8 +352,8 @@ export const AnnualMetricComparisonTable: React.FC<AnnualMetricComparisonTablePr
                     <thead className="bg-slate-50 text-slate-500 font-medium">
                         <tr>
                             <th className="px-6 py-3">年度</th>
-                            <th className="px-6 py-3 text-right">年度营收目标(万元)</th>
-                            <th className="px-6 py-3 text-right">实际营收达成(万元)</th>
+                            <th className="px-6 py-3 text-right">年初预算(万元)</th>
+                            <th className="px-6 py-3 text-right">实际收款(万元)</th>
                             <th className="px-6 py-3 text-right">指标完成率</th>
                             <th className="px-6 py-3 text-right">营收同比</th>
                             <th className="px-6 py-3 text-right">年末出租率</th>

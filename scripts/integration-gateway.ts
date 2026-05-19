@@ -10,11 +10,12 @@
  *
  * 端点：
  *   GET  /health
- *   GET  /api/integration/kpi              只读 KPI（快照）
- *   GET  /api/integration/dashboard         只读全量快照
- *   GET  /api/integration/tenants           只读租户列表
- *   GET  /api/integration/payments          只读收款列表
- *   GET  /api/integration/billing-summary   只读应收摘要
+ *   GET  /api/integration/kpi              只读 KPI（快照优先，miss 自动 compute）
+ *   GET  /api/integration/dashboard         只读全量看板（快照优先，miss 自动 compute）
+ *   GET  /api/integration/tenants           只读租户列表（直读 pb_tenants）
+ *   GET  /api/integration/payments          只读收款列表（直读 pb_payments）
+ *   GET  /api/integration/buildings         只读楼宇列表（直读 pb_buildings）
+ *   GET  /api/integration/units             只读单元列表（直读 pb_units）
  *   POST /api/integration/write             写入
  *   POST /api/integration/compute/kpi       服务端重算 KPI（与前端同口径）
  *   POST /api/integration/compute/billing   服务端重算应收明细
@@ -159,48 +160,61 @@ async function handleKpiQuery(req: express.Request, res: express.Response) {
     const year = Number(req.query.year || (req.body as any)?.year || new Date().getFullYear());
     if (!projectId) { res.status(400).json({ ok: false, message: '缺少 project_id' }); return; }
 
-    // 1) 优先读 pb_kpi_snapshots
-    let snapshot: any = null;
+    // 1) 优先读 pb_kpi_snapshots（缓存快查）
     try {
       const list = await pb.collection('pb_kpi_snapshots').getList(1, 1, {
         filter: `project_id="${escapeFilter(projectId)}" && year=${year}`,
         sort: '-calculated_at',
       });
-      snapshot = list.items[0] || null;
+      const snapshot = list.items[0] as any;
+      if (snapshot) {
+        res.json({
+          ok: true, source: 'pb_kpi_snapshots', project_id: projectId, year,
+          summary: snapshot.summary_json,
+          monthlyTrends: snapshot.monthly_trends_json || null,
+          calculated_at: snapshot.calculated_at,
+          data_version: snapshot.data_version,
+        });
+        return;
+      }
     } catch (_) { /* 集合可能不存在 */ }
 
-    if (snapshot) {
-      res.json({
-        ok: true, source: 'pb_kpi_snapshots', project_id: projectId, year,
-        summary: snapshot.summary_json,
-        monthlyTrends: snapshot.monthly_trends_json || null,
-        calculated_at: snapshot.calculated_at,
-        data_version: snapshot.data_version,
-      });
+    // 2) 快照缺失 → 自动实时计算
+    console.log(`[kpi] snapshot miss for project=${projectId} year=${year}, auto-computing...`);
+    const result = await computeKpi(projectId, year);
+    if (!result.ok) {
+      res.status(500).json(result);
       return;
     }
 
-    // 2) 回落：pb_integration_snapshots
-    try {
-      const list = await pb.collection('pb_integration_snapshots').getList(1, 1, {
-        filter: `project_id="${escapeFilter(projectId)}" && snapshot_kind="full_dashboard_v1"`,
-      });
-      const full = list.items[0] as any;
-      if (full?.payload?.kpi) {
-        const kpi = full.payload.kpi;
-        if (kpi.stats_year === year || !year) {
-          res.json({
-            ok: true, source: 'pb_integration_snapshots', project_id: projectId,
-            year: kpi.stats_year, kpi,
-            generated_at: full.payload.generated_at, updated: full.updated,
-            hint: '快照可能偏旧；调用 POST /api/integration/compute/refresh 可服务端重算',
-          });
-          return;
+    // 3) 异步回写快照（下次命中缓存）
+    setImmediate(async () => {
+      try {
+        const existing = await pb.collection('pb_kpi_snapshots').getList(1, 1, {
+          filter: `project_id="${escapeFilter(projectId)}" && year=${year}`,
+        });
+        const record = {
+          project_id: projectId, year,
+          summary_json: result.summary,
+          monthly_trends_json: result.fullYearTrends,
+          data_version: result.dataVersion,
+          calculated_at: result.computedAt,
+        };
+        if (existing.items.length > 0) {
+          await pb.collection('pb_kpi_snapshots').update((existing.items[0] as any).id, record);
+        } else {
+          await pb.collection('pb_kpi_snapshots').create(record);
         }
-      }
-    } catch (_) { /* 无快照 */ }
+      } catch (_) { /* 回写失败不影响返回 */ }
+    });
 
-    res.json({ ok: false, message: `未找到 project_id=${projectId} year=${year} 的 KPI 数据。调用 POST /api/integration/compute/kpi 重算。` });
+    res.json({
+      ok: true, source: 'compute-engine', project_id: projectId, year,
+      summary: result.summary,
+      monthlyTrends: result.fullYearTrends,
+      calculated_at: result.computedAt,
+      data_version: result.dataVersion,
+    });
   } catch (e: any) {
     console.error('[kpi] error:', e?.message || e);
     res.status(500).json({ ok: false, message: e?.message || '内部错误' });
@@ -211,18 +225,56 @@ async function handleDashboardQuery(req: express.Request, res: express.Response)
   try {
     const projectId = String((req.query.project_id as string) || '').trim();
     if (!projectId) { res.status(400).json({ ok: false, message: '缺少 project_id' }); return; }
-    const list = await pb.collection('pb_integration_snapshots').getList(1, 1, {
-      filter: `project_id="${escapeFilter(projectId)}" && snapshot_kind="full_dashboard_v1"`,
-    });
-    const full = list.items[0] as any;
-    if (!full?.payload) { res.json({ ok: false, message: '未找到全量快照' }); return; }
+
+    // 1) 优先读 pb_integration_snapshots（缓存快查）
+    try {
+      const list = await pb.collection('pb_integration_snapshots').getList(1, 1, {
+        filter: `project_id="${escapeFilter(projectId)}" && snapshot_kind="full_dashboard_v1"`,
+      });
+      const full = list.items[0] as any;
+      if (full?.payload) {
+        res.json({
+          ok: true, source: 'pb_integration_snapshots', project_id: projectId,
+          generated_at: full.payload.generated_at,
+          source_cloud_save_version: full.payload.source_cloud_save_version,
+          kpi: full.payload.kpi,
+          dashboard: full.payload.dashboard,
+          full_year_monthly_trends: full.payload.full_year_monthly_trends,
+        });
+        return;
+      }
+    } catch (_) { /* 无快照 */ }
+
+    // 2) 快照缺失 → 自动实时计算 KPI + 拼装看板数据
+    console.log(`[dashboard] snapshot miss for project=${projectId}, auto-computing...`);
+    const year = Number(req.query.year || new Date().getFullYear());
+    const kpiResult = await computeKpi(projectId, year);
+    if (!kpiResult.ok) {
+      res.status(500).json(kpiResult);
+      return;
+    }
+
+    // 从 PB 拉取核心业务数据拼装 dashboard
+    const [tenants, buildings, units, payments] = await Promise.all([
+      pb.collection('pb_tenants').getFullList({ filter: `project_id="${escapeFilter(projectId)}"`, sort: 'name' }),
+      pb.collection('pb_buildings').getFullList({ filter: `project_id="${escapeFilter(projectId)}"`, sort: 'name' }),
+      pb.collection('pb_units').getFullList({ filter: `project_id="${escapeFilter(projectId)}"`, sort: 'name' }),
+      pb.collection('pb_payments').getFullList({ filter: `project_id="${escapeFilter(projectId)}"`, sort: '-date' }),
+    ]);
+
     res.json({
-      ok: true, project_id: projectId,
-      generated_at: full.payload.generated_at,
-      source_cloud_save_version: full.payload.source_cloud_save_version,
-      kpi: full.payload.kpi,
-      dashboard: full.payload.dashboard,
-      full_year_monthly_trends: full.payload.full_year_monthly_trends,
+      ok: true, source: 'compute-engine', project_id: projectId,
+      kpi: {
+        schema_version: 1,
+        generated_at: kpiResult.computedAt,
+        project_id: projectId,
+        stats_year: year,
+        calendar_year: new Date().getFullYear(),
+        calendar_month: new Date().getMonth() + 1,
+        ...kpiResult.summary,
+      },
+      dashboard: { tenants, buildings, units, payments },
+      full_year_monthly_trends: kpiResult.fullYearTrends,
     });
   } catch (e: any) {
     console.error('[dashboard] error:', e?.message || e);
@@ -258,6 +310,35 @@ async function handlePaymentsQuery(req: express.Request, res: express.Response) 
     res.json({ ok: true, project_id: projectId, count: list.length, payments: list });
   } catch (e: any) {
     console.error('[payments] error:', e?.message || e);
+    res.status(500).json({ ok: false, message: e?.message || '内部错误' });
+  }
+}
+
+async function handleBuildingsQuery(req: express.Request, res: express.Response) {
+  try {
+    const projectId = String((req.query.project_id as string) || '').trim();
+    if (!projectId) { res.status(400).json({ ok: false, message: '缺少 project_id' }); return; }
+    const list = await pb.collection('pb_buildings').getFullList({
+      filter: `project_id="${escapeFilter(projectId)}"`, sort: 'name',
+    });
+    res.json({ ok: true, project_id: projectId, count: list.length, buildings: list });
+  } catch (e: any) {
+    console.error('[buildings] error:', e?.message || e);
+    res.status(500).json({ ok: false, message: e?.message || '内部错误' });
+  }
+}
+
+async function handleUnitsQuery(req: express.Request, res: express.Response) {
+  try {
+    const projectId = String((req.query.project_id as string) || '').trim();
+    const buildingId = String((req.query.building_id as string) || '').trim();
+    if (!projectId) { res.status(400).json({ ok: false, message: '缺少 project_id' }); return; }
+    let filter = `project_id="${escapeFilter(projectId)}"`;
+    if (buildingId) filter += ` && building_id="${escapeFilter(buildingId)}"`;
+    const list = await pb.collection('pb_units').getFullList({ filter, sort: 'name' });
+    res.json({ ok: true, project_id: projectId, count: list.length, units: list });
+  } catch (e: any) {
+    console.error('[units] error:', e?.message || e);
     res.status(500).json({ ok: false, message: e?.message || '内部错误' });
   }
 }
@@ -356,6 +437,8 @@ async function main() {
   app.get('/api/integration/dashboard', handleDashboardQuery);
   app.get('/api/integration/tenants', handleTenantsQuery);
   app.get('/api/integration/payments', handlePaymentsQuery);
+  app.get('/api/integration/buildings', handleBuildingsQuery);
+  app.get('/api/integration/units', handleUnitsQuery);
 
   // 服务端计算（核心：与前端同一套 billingService / dashboardMetrics 代码）
   app.post('/api/integration/compute/kpi', handleComputeKpi);

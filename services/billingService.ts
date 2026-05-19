@@ -312,6 +312,51 @@ export const calculateRentFreeDeduction = (start: Date, end: Date, monthlyRent: 
 };
 
 /**
+ * 当期扣除模式：按覆盖期计算应收（含免租扣减）；分房源时按房源汇总。
+ * 首期自定义覆盖期重锚账期后须用本函数重算，不能沿用起租日周期合并前的金额。
+ */
+export const computeDeductModeAmountForCoverage = (
+    tenant: Tenant,
+    coverageStart: Date,
+    coverageEnd: Date,
+    monthlyRent: number,
+    unitTerms?: LeaseUnitTerm[],
+): number => {
+    const terms = (unitTerms || []).filter((term) => (term.monthlyRent || term.unitPrice) && term.area > 0);
+    const rentFreeDeductionFor = (rentFreeList: RentFreePeriod[], rent: number) => {
+        let deduction = 0;
+        for (const rf of rentFreeList) {
+            const rfStart = parseDateLocal(rf.start);
+            const rfEnd = parseDateLocal(rf.end);
+            const overlapStart = rfStart > coverageStart ? rfStart : coverageStart;
+            const overlapEnd = rfEnd < coverageEnd ? rfEnd : coverageEnd;
+            if (overlapStart <= overlapEnd) {
+                deduction += calculateRentFreeDeduction(overlapStart, overlapEnd, rent);
+            }
+        }
+        return deduction;
+    };
+
+    if (terms.length === 0) {
+        const gross = calculateRentForDuration(coverageStart, coverageEnd, monthlyRent);
+        const deduction = rentFreeDeductionFor(tenant.rentFreePeriods || [], monthlyRent);
+        return Math.max(0, round2(gross - deduction));
+    }
+
+    let total = 0;
+    for (const term of terms) {
+        const termMonthly =
+            term.monthlyRent && term.monthlyRent > 0
+                ? term.monthlyRent
+                : monthlyRentFromUnitPrice(term.unitPrice || 0, term.area, tenant.unitPriceMode);
+        const gross = calculateRentForDuration(coverageStart, coverageEnd, termMonthly);
+        const deduction = rentFreeDeductionFor(mergeRentFreeForUnitTerm(tenant, term), termMonthly);
+        total += Math.max(0, gross - deduction);
+    }
+    return round2(total);
+};
+
+/**
  * 提前退租免租期扣回（月租金口径）：
  * max(0, 已享免租权重 − (实际承租天数/合同期天数)×合同约定免租权重) × 月租金
  * 权重与 calculateRentFreeDeduction(..., 1) 一致，便于与账单内免租扣减口径对齐。
@@ -1037,21 +1082,67 @@ export const generateBudgetedBills = (
             bills[minIdx].coverageEnd = parseDateLocal(tenant.firstReceivableEndDate);
         }
 
-        // 当首期应收自定义覆盖月数与合同默认首期月数不一致时，后续账期按差值整体顺延/提前（仅单体/无分房源合并时安全）。
-        if (!skipFirstReceivableShiftRecalc) {
+        // 当设定了首期覆盖起止日期时，后续账期从首期覆盖止+1天开始（绝对重锚），
+        // 避免相对月份偏移导致的日期精度丢失（如 17 天首期被按 0.57 月偏移后差 1 天）。
+        const hasCustomCoverageRange = !!tenant.firstReceivableStartDate && !!tenant.firstReceivableEndDate;
+        if (hasCustomCoverageRange && bills.length > 1) {
+            const firstEnd = parseDateLocal(tenant.firstReceivableEndDate!);
+            const order = bills
+                .map((bill, idx) => ({ idx, time: bill.date.getTime() }))
+                .sort((a, b) => a.time - b.time);
+            let nextCoverageStart = new Date(firstEnd);
+            nextCoverageStart.setDate(nextCoverageStart.getDate() + 1);
+
+            for (let i = 1; i < order.length; i++) {
+                const idx = order[i].idx;
+
+                // 绝对重锚覆盖期起点
+                bills[idx].coverageStart = new Date(nextCoverageStart);
+                const rawEnd = addCycleMonths(new Date(nextCoverageStart), regularCycleMonths);
+                rawEnd.setDate(rawEnd.getDate() - 1);
+                const adjustedEnd = rawEnd > effectiveLeaseEnd ? new Date(effectiveLeaseEnd) : rawEnd;
+                bills[idx].coverageEnd = adjustedEnd;
+
+                // 从新覆盖期起点推算收款日，计入合同级账期偏移
+                bills[idx].date = addCalendarMonths(
+                    new Date(nextCoverageStart.getFullYear(), nextCoverageStart.getMonth(), nextCoverageStart.getDate()),
+                    receivableMonthOffset,
+                );
+                const existingAsmForShift = assumptions.find((a) => a.targetId === tenant.id && a.targetType === 'Existing');
+                const billingShift = (existingAsmForShift?.billingCycleShiftMonths ?? 0) + (tenant.paymentPeriodShiftMonths || 0);
+                if (billingShift !== 0) {
+                    bills[idx].date = addCalendarMonths(bills[idx].date, billingShift);
+                }
+
+                if (bills[idx].coverageStart > effectiveLeaseEnd) {
+                    bills[idx].amount = 0;
+                    nextCoverageStart = new Date(adjustedEnd);
+                    nextCoverageStart.setDate(nextCoverageStart.getDate() + 1);
+                    continue;
+                }
+
+                // 首期覆盖期重锚后必须按新覆盖期重算（含免租）；仅「无自定义覆盖期 + 分房源」时保留合并金额
+                if (!skipFirstReceivableShiftRecalc || hasCustomCoverageRange) {
+                    bills[idx].amount = computeDeductModeAmountForCoverage(
+                        tenant,
+                        bills[idx].coverageStart!,
+                        adjustedEnd,
+                        monthlyRent,
+                        unitTermRowsForFirstRec.length > 0 ? unitTermRowsForFirstRec : undefined,
+                    );
+                }
+
+                nextCoverageStart = new Date(adjustedEnd);
+                nextCoverageStart.setDate(nextCoverageStart.getDate() + 1);
+            }
+        } else if (!skipFirstReceivableShiftRecalc && !hasCustomCoverageRange) {
+            // 仅有首期应收金额而无自定义覆盖期时，按金额比例推算偏移
             const firstCycleMonthsDefault = tenant.firstPaymentMonths && tenant.firstPaymentMonths > 0
                 ? tenant.firstPaymentMonths
                 : regularCycleMonths;
-            const hasCustomCoverageRange = !!tenant.firstReceivableStartDate && !!tenant.firstReceivableEndDate;
-            let customFirstCycleMonths = firstCycleMonthsDefault;
-            if (hasCustomCoverageRange) {
-                const s = parseDateLocal(tenant.firstReceivableStartDate);
-                const e = parseDateLocal(tenant.firstReceivableEndDate);
-                const days = getDaysDiff(s, e);
-                customFirstCycleMonths = Number((days / 30).toFixed(2));
-            } else if (monthlyRent > 0) {
-                customFirstCycleMonths = Number((fra / monthlyRent).toFixed(2));
-            }
+            const customFirstCycleMonths = monthlyRent > 0
+                ? Number((fra / monthlyRent).toFixed(2))
+                : firstCycleMonthsDefault;
             const shiftMonths = Number((customFirstCycleMonths - firstCycleMonthsDefault).toFixed(2));
             if (Math.abs(shiftMonths) >= 0.01) {
                 const order = bills
@@ -1067,7 +1158,6 @@ export const generateBudgetedBills = (
                         bills[idx].coverageEnd = addCycleMonths(bills[idx].coverageEnd, shiftMonths);
                     }
 
-                    // 顺延后需要继续受合同有效期约束，超期账单裁剪/剔除并重算金额。
                     if (bills[idx].coverageStart && bills[idx].coverageStart > effectiveLeaseEnd) {
                         bills[idx].amount = 0;
                         continue;

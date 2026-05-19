@@ -163,6 +163,49 @@ describe('generateBudgetedBills payment cycles', () => {
     expect(bills.map((bill) => bill.amount)).toEqual([150000, 135000, 135000, 135000]);
   });
 
+  it('re-anchors calendar months and applies rent-free after custom first coverage with unitTerms', () => {
+    const bills = generateBudgetedBills(
+      tenant({
+        projectId: 'shenzhen_park',
+        leaseStart: '2026-03-15',
+        leaseEnd: '2026-12-31',
+        paymentCycle: 'Monthly',
+        paymentCycleMonths: 1,
+        firstPaymentMonths: 1,
+        firstPaymentDate: '2026-03-15',
+        monthlyRent: 42775,
+        firstReceivableAmount: 23457.26,
+        firstReceivableStartDate: '2026-03-15',
+        firstReceivableEndDate: '2026-03-31',
+        freeRentHandling: 'Deduct',
+        rentFreePeriods: [{ start: '2026-05-01', end: '2026-07-31', description: '免租期' }],
+        unitTerms: [
+          { unitId: 'unit-1', area: 295, monthlyRent: 42775, rentFreePeriods: [] },
+        ],
+      }),
+      [],
+      [],
+      new Date(2026, 0, 1),
+      new Date(2026, 11, 31),
+    );
+
+    const amountForCoverageMonth = (year: number, month: number) =>
+      bills.find(
+        (b) =>
+          b.coverageStart &&
+          b.coverageStart.getFullYear() === year &&
+          b.coverageStart.getMonth() + 1 === month,
+      )?.amount;
+
+    expect(bills[0].amount).toBe(23457.26);
+    expect(amountForCoverageMonth(2026, 4)).toBe(42775);
+    // 免租整月为 0 时不生成账单行
+    expect(amountForCoverageMonth(2026, 5)).toBeUndefined();
+    expect(amountForCoverageMonth(2026, 6)).toBeUndefined();
+    expect(amountForCoverageMonth(2026, 7)).toBeUndefined();
+    expect(amountForCoverageMonth(2026, 8)).toBe(42775);
+  });
+
   it('deducts rent-free periods by whole monthly rent for anniversary-month ranges', () => {
     const bills = generateBudgetedBills(
       tenant({

@@ -4,6 +4,7 @@ import { TrendingUp, TrendingDown, Target, Edit3, CalendarRange, UserPlus, UserM
 import { DashboardData, Tenant, ContractStatus } from '../types';
 import { formatArea, formatPercent, formatWan } from '../services/numberFormat';
 import { resolveAnnualInitialBudget } from '../services/dashboardMetrics';
+import { resolveInitMonthInitialBudget } from '../services/initDataBudget';
 
 interface StatsCardsProps {
   data: DashboardData;
@@ -21,23 +22,32 @@ export const StatsCards: React.FC<StatsCardsProps> = ({ data, onEditTargets, sel
   const dashboardWan = (v: number | null | undefined) => formatWan(v, 0);
   const dashboardPct = (v: number | null | undefined) => formatPercent(v, 0);
 
-  const annualProgress = data.annualRevenueTarget > 0 ? Math.min(100, (data.annualRevenueCollected / data.annualRevenueTarget) * 100) : 0;
+  const projectId = tenants[0]?.projectId;
 
   const initialBudgetMonthMap = useMemo(() => {
       const map = new Map<number, number>();
       for (const d of data.initializationData || []) {
           if (d.year !== selectedYear) continue;
-          if (d.initialBudget == null || !Number.isFinite(Number(d.initialBudget))) continue;
-          map.set(d.month, Number(d.initialBudget));
+          const monthBudget = resolveInitMonthInitialBudget(d, projectId);
+          if (monthBudget <= 0.005) continue;
+          map.set(d.month, monthBudget);
       }
       return map;
-  }, [data.initializationData, selectedYear]);
+  }, [data.initializationData, selectedYear, projectId]);
 
   /** 与 KPI 快照 / 管理员「所有园区经营汇总」中年初预算列同源 */
   const initialBudgetFooterSum = useMemo(
-      () => resolveAnnualInitialBudget(data.yearlyTargets, data.initializationData, selectedYear),
-      [data.yearlyTargets, data.initializationData, selectedYear]
+      () => resolveAnnualInitialBudget(data.yearlyTargets, data.initializationData, selectedYear, projectId),
+      [data.yearlyTargets, data.initializationData, selectedYear, projectId]
   );
+
+  /** 营收达成分母：优先年初预算（园区应收目标），未维护时回退年度营收目标 */
+  const annualRevenueGoal =
+      initialBudgetFooterSum > 0 ? initialBudgetFooterSum : data.annualRevenueTarget;
+  const annualProgress =
+      annualRevenueGoal > 0
+          ? Math.min(100, (data.annualRevenueCollected / annualRevenueGoal) * 100)
+          : 0;
 
   // Occupancy Target Gap
   const occupancyGap = data.annualOccupancyTarget - data.occupancyRate;
@@ -351,7 +361,9 @@ export const StatsCards: React.FC<StatsCardsProps> = ({ data, onEditTargets, sel
                                     </div>
                                     <div className="bg-slate-50 rounded-lg p-2">
                                         <div className="text-slate-500 mb-0.5">剩余目标(万元)</div>
-                                        <div className="font-bold text-slate-700">{formatWanCurrency(data.annualRevenueTarget - data.annualRevenueCollected)}</div>
+                                        <div className="font-bold text-slate-700">{annualRevenueGoal > 0
+                                                ? formatWanCurrency(Math.max(0, annualRevenueGoal - data.annualRevenueCollected))
+                                                : '—'}</div>
                                     </div>
                                 </div>
                             </div>

@@ -21,6 +21,7 @@ import {
     readImportedBudgetTable,
     tenantImportedBudgetRowKey,
 } from './budgetTableImport';
+import { resolveInitMonthInitialBudget, resolveInitMonthRevenueTarget } from './initDataBudget';
 import { toFixedNumber, roundMoney2 } from './numberFormat';
 import {
     applyBillingPeriodDeferNotes,
@@ -348,13 +349,42 @@ const ensureDedicatedReceivableScenarios = (
     return list;
 };
 
+/**
+ * 将系统合成的 `invoice_dedicated_<year>` 应收专用方案快照与当前实时合同/楼宇对齐。
+ * 合同中心保存后会触发 `recalculateMetrics` → `normalizeScenarioForReceivable`，从而避免
+ * 核销仍按旧免租/账期快照计费（如顺江：快照 3 月免租、档案已 6–7 月）。
+ * 不改动用户手动指定的非合成应收专用方案，也不动 assumptions / adjustments。
+ */
+export const syncInvoiceDedicatedSnapshotsFromLive = (
+    scenarios: BudgetScenario[] | undefined,
+    liveTenants: Tenant[],
+    liveBuildings: Building[],
+): BudgetScenario[] => {
+    if (!scenarios?.length || !liveTenants.length) return scenarios || [];
+    return scenarios.map((s) => {
+        if (!isReceivableDedicatedScenarioId(s.id)) return s;
+        return {
+            ...s,
+            baseDataSnapshot: {
+                tenants: structuredClone(liveTenants),
+                buildings: structuredClone(liveBuildings),
+            },
+        };
+    });
+};
+
 export const normalizeScenarioForReceivable = (
     scenarios: BudgetScenario[] | undefined,
     fallbackTenants: Tenant[],
     fallbackBuildings: Building[]
 ): BudgetScenario[] => {
     const withDedicated = ensureDedicatedReceivableScenarios(scenarios, fallbackTenants, fallbackBuildings);
-    return normalizeReceivableScenarioByYear(withDedicated);
+    const syncedDedicated = syncInvoiceDedicatedSnapshotsFromLive(
+        withDedicated,
+        fallbackTenants,
+        fallbackBuildings,
+    );
+    return normalizeReceivableScenarioByYear(syncedDedicated);
 };
 
 const billingStatusFromAmounts = (amountDue: number, amountPaid: number): BillingDetail['status'] => {
@@ -898,7 +928,8 @@ const calculateTrends = (
     cache: BillingCache,
     billingPeriodNotes?: Record<string, string>,
     /** 合同应收单源入口的入参（与财务报表 contractAmountDue / 预算管理「实际合同口径」完全同源） */
-    contractReceivableCtx?: ContractOnlyReceivableCtx
+    contractReceivableCtx?: ContractOnlyReceivableCtx,
+    projectId?: string
 ): MonthlyTrend[] => {
     const trends: MonthlyTrend[] = [];
     const now = new Date();
@@ -1015,9 +1046,9 @@ const calculateTrends = (
             if (Math.abs(Number(revenueCollected || 0)) < 0.005 && Math.abs(Number(initEntry.revenueCollected || 0)) > 0.005) {
                 revenueCollected = initEntry.revenueCollected;
             }
-            const initRt = Number(initEntry.revenueTarget);
-            if (Number.isFinite(initRt) && initRt > 0.005) {
-                revenueTarget = Math.round(initRt);
+            const initRt = resolveInitMonthRevenueTarget(initEntry, projectId);
+            if (initRt > 0.005) {
+                revenueTarget = initRt;
             }
             collectionRate = revenueTarget > 0 ? toFixedNumber((revenueCollected / revenueTarget) * 100) : 0;
         }
@@ -1039,6 +1070,7 @@ export const calculateDashboardMetrics = (
 ): DashboardMetricResult => {
     const { year, quarter, billingSelectedMonth, quickMode = false } = options;
     const tenants = currentData.tenants || [];
+    const projectId = tenants[0]?.projectId || '';
     const buildings = currentData.buildings || [];
     const payments = currentData.payments || [];
     const assumptions = currentData.budgetAssumptions || [];
@@ -1159,6 +1191,7 @@ export const calculateDashboardMetrics = (
         cache,
         currentData.billingPeriodNotes,
         contractReceivableCtxForYear,
+        projectId,
     );
     const monthlyTrends = quickMode ? [] : calculateTrends(
         tenants,
@@ -1176,6 +1209,7 @@ export const calculateDashboardMetrics = (
         cache,
         currentData.billingPeriodNotes,
         contractReceivableCtxForYear,
+        projectId,
     );
     const prevYearMonthlyTrends = quickMode ? [] : calculateTrends(
         tenants,
@@ -1193,6 +1227,7 @@ export const calculateDashboardMetrics = (
         cache,
         currentData.billingPeriodNotes,
         contractReceivableCtxForPrevYear,
+        projectId,
     );
 
     const annualRevenueCollected = monthlyTrends.reduce((sum, t) => sum + (t.revenueCollected || 0), 0);
@@ -1399,7 +1434,8 @@ export const calculateDashboardMetrics = (
 export const resolveAnnualInitialBudget = (
     yearlyTargets: DashboardData['yearlyTargets'],
     initializationData: MonthlyInitData[] | undefined,
-    year: number
+    year: number,
+    projectId?: string
 ): number => {
     const yearTarget = (yearlyTargets || {})[year] || {};
     const annualFromYearly = Number((yearTarget as { initialBudget?: number }).initialBudget) || 0;
@@ -1407,8 +1443,9 @@ export const resolveAnnualInitialBudget = (
     const byMonth = new Map<number, number>();
     for (const d of initializationData || []) {
         if (d.year !== year) continue;
-        if (d.initialBudget == null || !Number.isFinite(Number(d.initialBudget))) continue;
-        byMonth.set(d.month, Number(d.initialBudget));
+        const monthBudget = resolveInitMonthInitialBudget(d, projectId);
+        if (monthBudget <= 0.005) continue;
+        byMonth.set(d.month, monthBudget);
     }
     if (byMonth.size === 0) return annualFromYearly;
 
@@ -1438,7 +1475,8 @@ export const buildKpiSummaryFromProcessedData = (processedData: DashboardData, s
     const annualInitialBudget = resolveAnnualInitialBudget(
         processedData.yearlyTargets,
         processedData.initializationData,
-        year
+        year,
+        processedData.tenants?.[0]?.projectId
     );
     /** 与管理员汇总顶栏「完成率（实收/合同应收）」一致；无合同应收分母时回退为实收/年度应收目标 */
     const annualGoalCompletion =

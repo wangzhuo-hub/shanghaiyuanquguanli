@@ -40,6 +40,7 @@ import {
 } from '../services/receivableListHelpers';
 import { formatCurrency, roundMoney2 } from '../services/numberFormat';
 import { ContractSummaryModal, type ContractSummaryContent, resolveTenantAssetLabels } from './ContractSummaryModal';
+import { SearchableTenantSelect } from './SearchableTenantSelect';
 import * as XLSX from 'xlsx';
 
 /** 核销展示：待核销 → 已缓缴（原账期调出）→ 已核销和收款 */
@@ -1604,7 +1605,14 @@ export const FinanceManager: React.FC<FinanceManagerProps> = ({
       {showForm && (
         <div className="bg-emerald-50 border border-emerald-100 p-4 rounded-xl mb-6 flex flex-col items-start gap-4 animate-in fade-in slide-in-from-top-2">
            <div className="w-full grid grid-cols-1 md:grid-cols-5 gap-4">
-                <div><label className="block text-xs font-medium text-emerald-700 mb-1">付款客户</label><select className="w-full p-2 rounded border border-emerald-200 text-sm" value={currentPayment.tenantId} onChange={e => setCurrentPayment({...currentPayment, tenantId: e.target.value})}><option value="">选择客户...</option>{tenants.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}</select></div>
+                <div><label className="block text-xs font-medium text-emerald-700 mb-1">付款客户</label>
+                    <SearchableTenantSelect
+                        tenants={tenants}
+                        buildings={buildings}
+                        value={currentPayment.tenantId || ''}
+                        onChange={(tenantId) => setCurrentPayment({ ...currentPayment, tenantId })}
+                        theme="emerald"
+                    /></div>
                 <div><label className="block text-xs font-medium text-emerald-700 mb-1">款项类型</label><select className="w-full p-2 rounded border border-emerald-200 text-sm" value={currentPayment.type} onChange={e => setCurrentPayment({...currentPayment, type: e.target.value as any})}><option value="Rent">租金收入</option><option value="Deposit">押金收取</option><option value="DepositRefund">押金退还 (支出)</option><option value="ManagementFee">物业费</option><option value="Other">其他</option><option value="DepositToRent">押金转租金</option></select></div>
                 <div><label className="block text-xs font-medium text-emerald-700 mb-1">金额 (元)</label><input type="number" className="w-full p-2 rounded border border-emerald-200 text-sm" placeholder="0.00" value={currentPayment.amount || ''} onChange={e => setCurrentPayment({...currentPayment, amount: Number(e.target.value)})}/></div>
                 <div><label className="block text-xs font-medium text-emerald-700 mb-1">入账日期</label><input type="date" className="w-full p-2 rounded border border-emerald-200 text-sm" value={currentPayment.date} onChange={e => setCurrentPayment({...currentPayment, date: e.target.value})}/></div>
@@ -1676,7 +1684,16 @@ export const FinanceManager: React.FC<FinanceManagerProps> = ({
       {showDepositTransfer && (
         <div className="bg-indigo-50 border border-indigo-100 p-4 rounded-xl mb-6 flex flex-col items-start gap-4 animate-in fade-in slide-in-from-top-2">
            <div className="w-full grid grid-cols-1 md:grid-cols-3 gap-4">
-               <div><label className="block text-xs font-medium text-indigo-700 mb-1">选择客户</label><select className="w-full p-2 rounded border border-indigo-200 text-sm" onChange={e => setTransferData({...transferData, tenantId: e.target.value})}><option value="">选择客户...</option>{tenants.filter(t => t.depositStatus !== 'Refunded').map(t => <option key={t.id} value={t.id}>{t.name} (押金: {formatCurrency(t.depositAmount)})</option>)}</select></div>
+               <div><label className="block text-xs font-medium text-indigo-700 mb-1">选择客户</label>
+                    <SearchableTenantSelect
+                        tenants={tenants}
+                        buildings={buildings}
+                        value={transferData.tenantId}
+                        onChange={(tenantId) => setTransferData({ ...transferData, tenantId })}
+                        theme="indigo"
+                        filterTenant={(t) => t.depositStatus !== 'Refunded'}
+                        getOptionSuffix={(t) => `押金 ${formatCurrency(t.depositAmount)}`}
+                    /></div>
                <div><label className="block text-xs font-medium text-indigo-700 mb-1">抵扣金额</label><input type="number" className="w-full p-2 rounded border border-indigo-200 text-sm" placeholder="0.00" onChange={e => setTransferData({...transferData, amount: Number(e.target.value)})}/></div>
                <div><label className="block text-xs font-medium text-indigo-700 mb-1">日期</label><input type="date" className="w-full p-2 rounded border border-indigo-200 text-sm" value={transferData.date} onChange={e => setTransferData({...transferData, date: e.target.value})}/></div>
            </div>

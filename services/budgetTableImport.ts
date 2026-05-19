@@ -475,22 +475,25 @@ export function clearImportedBudgetTable(
 export function mergeBudgetTotalsIntoInitData(
     existing: MonthlyInitData[] | undefined,
     year: number,
-    monthlyTotals: number[]
+    monthlyTotals: number[],
+    projectId?: string
 ): MonthlyInitData[] {
     const others = (existing || []).filter((d) => d.year !== year);
     const oldByMonth = new Map<number, MonthlyInitData>();
     (existing || []).filter((d) => d.year === year).forEach((d) => oldByMonth.set(d.month, d));
     const next: MonthlyInitData[] = [];
+    const isShanghai = projectId === 'shanghai_park';
     for (let m = 1; m <= 12; m++) {
         const prev = oldByMonth.get(m);
+        const rounded = Math.max(0, Math.round(monthlyTotals[m - 1] || 0));
         next.push({
             year,
             month: m,
-            revenueTarget: Math.max(0, Math.round(monthlyTotals[m - 1] || 0)),
+            revenueTarget: isShanghai ? (prev?.revenueTarget ?? 0) : rounded,
             revenueCollected: prev?.revenueCollected ?? 0,
             occupancyRate: prev?.occupancyRate ?? 0,
             accumulatedArrears: prev?.accumulatedArrears ?? 0,
-            initialBudget: prev?.initialBudget,
+            initialBudget: isShanghai ? rounded : prev?.initialBudget,
         });
     }
     return [...others, ...next];

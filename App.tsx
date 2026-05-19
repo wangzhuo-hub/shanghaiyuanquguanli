@@ -65,9 +65,10 @@ import {
     normalizeScenarioForReceivable as normalizeScenarioForReceivableService,
     buildKpiSummaryFromProcessedData,
     normalizeKpiSummaryWithMonthlyTrends,
+    resolveAnnualInitialBudget,
     type DashboardQuarter,
 } from './services/dashboardMetrics';
-import { formatArea, formatCurrency, formatPercent, formatWan } from './services/numberFormat';
+import { formatCurrency } from './services/numberFormat';
 import { DEFAULT_CLOUD_CONFIG, mergeStoredCloudConfig } from './config/deploymentDefaults';
 import { DirtyTrackerProvider } from './services/dirtyTrackerContext';
 import { DirtyTracker } from './services/dirtyTracker';
@@ -90,6 +91,7 @@ import {
     readImportedBudgetTable,
     writeImportedBudgetTable,
 } from './services/budgetTableImport';
+import { migrateShanghaiInitRow, SHANGHAI_PARK_ID } from './services/initDataBudget';
 
 const STORAGE_KEY = 'kingdee_park_data_v1';
 // 标准化交付：升级存储 key，避免历史环境把旧的内网 URL 自动带入新部署
@@ -133,23 +135,6 @@ const detectAnomalousBatch = (creates: number, deletes: number): string | null =
     return null;
 };
 
-
-type AdminParkMetric = {
-    projectId: string;
-    name: string;
-    annualInitialBudget: number;         // 年初预算（Excel导入月度汇总）
-    annualContractReceivable: number;    // 实际合同应收（纯合同滚动，与预算表「全年合同应收」同口径）
-    annualRevenueTarget: number;         // 预算目标（导入Excel或含空置滚动）
-    annualRevenueCollected: number;
-    annualGoalCompletion: number;        // 完成率 = 实收 / 实际合同应收
-    annualBudgetTarget: number;          // 预算收款
-    annualBudgetCompletion: number;      // 预算执行率 = 实收 / 预算收款
-    budgetDeviation: number;             // 预算偏差 = (合同应收 - 年初预算) / 年初预算
-    occupancyRate: number;
-    annualOccupancyTarget: number;
-    tenantCount: number;
-    totalArea: number;
-};
 
 type NewManagedUserForm = {
     email: string;
@@ -272,9 +257,6 @@ const App: React.FC = () => {
   });
   const [isSubmittingSignup, setIsSubmittingSignup] = useState(false);
   const [signupMsg, setSignupMsg] = useState<string | null>(null);
-  const [adminParkMetrics, setAdminParkMetrics] = useState<AdminParkMetric[]>([]);
-  const [isLoadingAdminSummary, setIsLoadingAdminSummary] = useState(false);
-  
   const [cloudHistory, setCloudHistory] = useState<CloudBackupMetadata[]>([]);
   const [isLoadingHistory, setIsLoadingHistory] = useState(false);
   const [restoringId, setRestoringId] = useState<string | null>(null);
@@ -1538,7 +1520,12 @@ const App: React.FC = () => {
                   for (const table of effectiveBudgetTablesRaw) {
                       const restored = normalizeEffectiveBudgetTableFromBackup(table);
                       if (!restored) continue;
-                      nextInitData = mergeBudgetTotalsIntoInitData(nextInitData, restored.year, restored.snapshot.monthlyTotals);
+                      nextInitData = mergeBudgetTotalsIntoInitData(
+                          nextInitData,
+                          restored.year,
+                          restored.snapshot.monthlyTotals,
+                          cloudConfig.projectId
+                      );
                       nextNotes = writeImportedBudgetTable(nextNotes, restored.year, restored.snapshot);
                       restoredBudgetYears.push(restored.year);
                   }
@@ -1589,10 +1576,14 @@ const App: React.FC = () => {
   const loadTempInitData = (year: number) => {
       if (!data) return;
       const existing = data.initializationData || [];
+      const isShanghai = cloudConfig.projectId === SHANGHAI_PARK_ID;
       const rows: MonthlyInitData[] = [];
       for (let m = 1; m <= 12; m++) {
           const found = existing.find(d => d.year === year && d.month === m);
-          rows.push(found ? { ...found } : { year, month: m, revenueTarget: 0, revenueCollected: 0, occupancyRate: 0 });
+          const base = found
+              ? { ...found }
+              : { year, month: m, revenueTarget: 0, revenueCollected: 0, occupancyRate: 0 };
+          rows.push(isShanghai ? migrateShanghaiInitRow(base) : base);
       }
       setTempInitData(rows);
   };
@@ -1618,9 +1609,13 @@ const App: React.FC = () => {
   const saveInitData = () => {
       if (!data) return;
       const otherData = (data.initializationData || []).filter(d => d.year !== initDataYear);
-      const newData = [...otherData, ...tempInitData];
+      const yearRows =
+          cloudConfig.projectId === SHANGHAI_PARK_ID
+              ? tempInitData.map(migrateShanghaiInitRow)
+              : tempInitData;
+      const newData = [...otherData, ...yearRows];
       // 同步月度年初预算合计到 yearlyTargets（看板「年初预算」列与后端 yearly 行一致）
-      const monthInitialTotal = tempInitData.reduce((sum, r) => sum + (r.initialBudget || 0), 0);
+      const monthInitialTotal = yearRows.reduce((sum, r) => sum + (r.initialBudget || 0), 0);
       const newTargets = { ...data.yearlyTargets };
       const existing = newTargets[initDataYear] || { revenue: 0, occupancy: 0 };
       newTargets[initDataYear] = { ...existing, initialBudget: monthInitialTotal };
@@ -1776,8 +1771,6 @@ const App: React.FC = () => {
       alert(res.message || '已清理审批记录');
   };
 
-  const formatPct = formatPercent;
-
   const buildDashboardDataFromKpiSnapshot = (snapshot: { summary: KpiSnapshotSummary; monthlyTrends?: MonthlyTrend[]; dataVersion?: number }): DashboardData => {
       const summary = normalizeKpiSummaryWithMonthlyTrends(snapshot.summary, snapshot.monthlyTrends || []);
       return {
@@ -1794,103 +1787,6 @@ const App: React.FC = () => {
           cloudSaveVersion: snapshot.dataVersion || 0,
       };
   };
-
-  const buildParkMetric = (park: ParkInfo, rawData: DashboardData): AdminParkMetric => {
-      const { processedData } = calculateDashboardMetricsService(rawData, {
-          year: selectedYear,
-          quarter: 'All',
-          billingSelectedMonth,
-      });
-      const summary = buildKpiSummaryFromProcessedData(processedData, selectedYear);
-      const annualInitialBudget = summary.annualInitialBudget || 0;
-      // 合同应收优先取新字段，旧快照回退到 annualRevenueTarget
-      const annualContractReceivable = summary.annualContractReceivable || summary.annualRevenueTarget || 0;
-      return {
-          projectId: park.projectId,
-          name: park.name || park.projectId,
-          ...summary,
-          annualInitialBudget,
-          annualContractReceivable,
-          budgetDeviation: annualInitialBudget > 0
-              ? ((annualContractReceivable - annualInitialBudget) / annualInitialBudget) * 100
-              : 0,
-      };
-  };
-
-  const buildParkMetricFromSnapshot = (park: ParkInfo, summary: KpiSnapshotSummary): AdminParkMetric => {
-      const annualInitialBudget = summary.annualInitialBudget || 0;
-      // 合同应收优先取新字段，旧快照回退到 annualRevenueTarget
-      const annualContractReceivable = summary.annualContractReceivable || summary.annualRevenueTarget || 0;
-      return {
-          projectId: park.projectId,
-          name: park.name || park.projectId,
-          ...summary,
-          annualInitialBudget,
-          annualContractReceivable,
-          budgetDeviation: annualInitialBudget > 0
-              ? ((annualContractReceivable - annualInitialBudget) / annualInitialBudget) * 100
-              : 0,
-      };
-  };
-
-  useEffect(() => {
-      if (!authUser || !isGlobalAdmin(authUser) || authorizedParks.length === 0) {
-          setAdminParkMetrics([]);
-          return;
-      }
-      let cancelled = false;
-      const loadAdminSummary = async () => {
-          setIsLoadingAdminSummary(true);
-          try {
-              const parks = authorizedParks.filter(park => park.enabled);
-              const metrics: AdminParkMetric[] = [];
-              for (const park of parks) {
-                  // 所有园区统一数据源：优先 PocketBase KPI 快照，回落至全量备份，再回落 localStorage。
-                  // 不再对「当前园区」特殊处理——避免汇总口径随当前园区切换而变化。
-                  const config = { ...cloudConfig, projectId: park.projectId };
-                  const snapshotRes = await fetchCloudKpiSnapshot(config, selectedYear);
-                  if (snapshotRes.success && snapshotRes.snapshot) {
-                      const snap = snapshotRes.snapshot;
-                      metrics.push(
-                          buildParkMetricFromSnapshot(
-                              park,
-                              normalizeKpiSummaryWithMonthlyTrends(snap.summary, snap.monthlyTrends || [])
-                          )
-                      );
-                      continue;
-                  }
-
-                  const res = await fetchCloudBackup(config, park.projectId);
-                  const cloudData = res.success && res.data
-                      ? { ...generateInitialData(), ...res.data }
-                      : null;
-                  if (cloudData && hasMeaningfulDashboardPayload(cloudData)) {
-                      metrics.push(buildParkMetric(park, cloudData));
-                      continue;
-                  }
-
-                  const cached = localStorage.getItem(getParkStorageKey(park.projectId));
-                  const cachedData = cached
-                      ? { ...generateInitialData(), ...JSON.parse(cached) }
-                      : null;
-                  if (cachedData && hasMeaningfulDashboardPayload(cachedData)) {
-                      metrics.push(buildParkMetric(park, cachedData));
-                  }
-              }
-              if (!cancelled) setAdminParkMetrics(metrics);
-          } catch (e) {
-              console.warn('[adminSummary] 加载管理员园区汇总失败', e);
-              if (!cancelled) setAdminParkMetrics([]);
-          } finally {
-              if (!cancelled) setIsLoadingAdminSummary(false);
-          }
-      };
-      const timer = window.setTimeout(loadAdminSummary, 120);
-      return () => {
-          cancelled = true;
-          window.clearTimeout(timer);
-      };
-  }, [authUser, authorizedParks, cloudConfig.pocketbaseUrl, selectedYear, cloudConfig.projectId]);
 
   useEffect(() => {
       if (!canAccessSystemSettings && activeTab === 'settings') {
@@ -1923,90 +1819,41 @@ const App: React.FC = () => {
       }
   }, [authUser, cloudConfig.pocketbaseUrl]);
 
-  const adminSummaryTotals = useMemo(() => {
-      const totals = adminParkMetrics.reduce((acc, item) => {
-          acc.annualInitialBudget += item.annualInitialBudget;
-          acc.annualContractReceivable += item.annualContractReceivable;
-          acc.annualRevenueTarget += item.annualRevenueTarget;
-          acc.annualRevenueCollected += item.annualRevenueCollected;
-          acc.annualBudgetTarget += item.annualBudgetTarget;
-          acc.tenantCount += item.tenantCount;
-          acc.totalArea += item.totalArea;
-          acc.occupancyWeightedArea += item.totalArea * item.occupancyRate;
-          acc.occupancyTargetWeightedArea += item.totalArea * item.annualOccupancyTarget;
-          return acc;
-      }, {
-          annualInitialBudget: 0,
-          annualContractReceivable: 0,
-          annualRevenueTarget: 0,
-          annualRevenueCollected: 0,
-          annualBudgetTarget: 0,
-          tenantCount: 0,
-          totalArea: 0,
-          occupancyWeightedArea: 0,
-          occupancyTargetWeightedArea: 0,
-      });
-      return {
-          ...totals,
-          annualGoalCompletion: totals.annualContractReceivable > 0
-              ? Math.min(100, (totals.annualRevenueCollected / totals.annualContractReceivable) * 100)
-              : 0,
-          annualBudgetCompletion: totals.annualBudgetTarget > 0
-              ? Math.min(100, (totals.annualRevenueCollected / totals.annualBudgetTarget) * 100)
-              : 0,
-          budgetDeviation: totals.annualInitialBudget > 0
-              ? ((totals.annualContractReceivable - totals.annualInitialBudget) / totals.annualInitialBudget) * 100
-              : 0,
-          occupancyRate: totals.totalArea > 0 ? totals.occupancyWeightedArea / totals.totalArea : 0,
-          annualOccupancyTarget: totals.totalArea > 0 ? totals.occupancyTargetWeightedArea / totals.totalArea : 0,
-      };
-  }, [adminParkMetrics]);
-
   const annualComparisonData: AnnualComparisonData[] = useMemo(() => {
       if (!data) return [];
-      
-      // Dynamic Year Generation based on Current System Date
+
       const currentSystemYear = new Date().getFullYear();
-      // CHANGED: Display Current and Previous 2 Years (No Future)
       const years = [currentSystemYear - 2, currentSystemYear - 1, currentSystemYear];
-      
+      const BUDGET_EXECUTION_FROM_YEAR = 2026;
+
       const result: AnnualComparisonData[] = [];
 
       years.forEach((year, i) => {
           const initRows = data.initializationData?.filter(d => d.year === year) || [];
-          const useInitAsSource = year >= 2023 && year <= 2025;
-          
-          let yearlyActual = 0;
-          if (useInitAsSource) {
-              yearlyActual = initRows.reduce((sum, r) => sum + (r.revenueCollected || 0), 0);
-          } else {
-              for (let m = 1; m <= 12; m++) {
-                  const initEntry = initRows.find(d => d.month === m);
-                  if (initEntry) {
-                      yearlyActual += initEntry.revenueCollected;
-                  } else {
-                      const monthPrefix = `${year}-${String(m).padStart(2, '0')}`;
-                      const monthlyPayments = data.payments
-                          .filter(p => p.date.startsWith(monthPrefix) && (p.type === 'Rent' || p.type === 'DepositToRent' || p.type === 'ParkingFee'))
-                          .reduce((sum, p) => sum + p.amount, 0);
-                      yearlyActual += monthlyPayments;
-                  }
-              }
-          }
 
-          let yearlyTarget = 0;
-          if (useInitAsSource) {
-              yearlyTarget = initRows.reduce((sum, r) => sum + (r.revenueTarget || 0), 0);
+          // 年初预算：与预算执行表 / StatsCards 同源，来自初始化数据
+          const yearlyInitialBudget = resolveAnnualInitialBudget(
+              data.yearlyTargets,
+              data.initializationData,
+              year,
+              cloudConfig.projectId || data.tenants?.[0]?.projectId
+          );
+
+          // 实际收款：2026 前从初始化数据；2026 起与上方预算执行表合计一致
+          let yearlyActual = 0;
+          if (year < BUDGET_EXECUTION_FROM_YEAR) {
+              yearlyActual = initRows.reduce((sum, r) => sum + (r.revenueCollected || 0), 0);
+          } else if (year === selectedYear) {
+              yearlyActual = (data.monthlyTrends || []).reduce(
+                  (sum, t) => sum + (t.revenueCollected != null ? t.revenueCollected : 0),
+                  0
+              );
           } else {
-              yearlyTarget = data.yearlyTargets?.[year]?.revenue || 0;
-              if (yearlyTarget === 0) {
-                  const initTargetSum = initRows.reduce((sum, r) => sum + (r.revenueTarget || 0), 0);
-                  if (initTargetSum > 0) yearlyTarget = initTargetSum;
-              }
+              yearlyActual = initRows.reduce((sum, r) => sum + (r.revenueCollected || 0), 0);
           }
 
           let occupancy = 0;
-          if (useInitAsSource) {
+          if (year < BUDGET_EXECUTION_FROM_YEAR) {
               const latestInit = [...initRows].sort((a, b) => b.month - a.month)[0];
               occupancy = latestInit?.occupancyRate || 0;
           } else {
@@ -2022,7 +1869,7 @@ const App: React.FC = () => {
 
           let revenueYoY: number | null = null;
           let occupancyYoY: number | null = null;
-          
+
           if (i > 0) {
               const prev = result[i - 1];
               if (prev.revenueActual > 0) {
@@ -2033,15 +1880,15 @@ const App: React.FC = () => {
 
           result.push({
               year,
-              revenueTarget: yearlyTarget,
+              revenueTarget: yearlyInitialBudget,
               revenueActual: yearlyActual,
-              revenueCompletionRate: yearlyTarget > 0 ? (yearlyActual / yearlyTarget) * 100 : 0,
+              revenueCompletionRate: yearlyInitialBudget > 0 ? (yearlyActual / yearlyInitialBudget) * 100 : 0,
               revenueYoY,
               occupancyRate: occupancy,
               occupancyYoY
           });
       });
-      
+
       return result;
   }, [data, selectedYear]);
 
@@ -2264,82 +2111,6 @@ const App: React.FC = () => {
         <div className="p-3 md:p-6 max-w-7xl mx-auto w-full min-w-0">
           {activeTab === 'dashboard' && (
             <div className="space-y-4 md:space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
-               {isGlobalAdmin() && (
-                 <div className="bg-slate-900 text-white rounded-2xl shadow-xl overflow-hidden border border-slate-800">
-                   <div className="px-4 md:px-6 py-4 border-b border-white/10 flex flex-col md:flex-row md:items-center md:justify-between gap-2">
-                     <div>
-                       <div className="text-xs text-sky-200 font-semibold tracking-wide">管理员视图</div>
-                       <h2 className="text-lg md:text-xl font-bold mt-1">所有园区经营汇总</h2>
-                     </div>
-                     <div className="text-xs text-slate-300">
-                       {isLoadingAdminSummary ? '正在汇总各园区数据...' : `统计年度 ${selectedYear} · ${adminParkMetrics.length} 个园区`}
-                     </div>
-                   </div>
-                   <div className="p-4 md:p-6 space-y-4">
-                     <div className="grid grid-cols-2 lg:grid-cols-5 gap-2 sm:gap-3">
-                       <div className="bg-white/10 rounded-xl p-3 border border-white/10 min-w-0">
-                         <div className="text-xs text-slate-300">年初预算</div>
-                         <div className="text-xl font-bold mt-1">{formatWan(adminSummaryTotals.annualInitialBudget, 0)}</div>
-                         <div className="text-xs text-slate-400 mt-1">年度计划值</div>
-                       </div>
-                       <div className="bg-white/10 rounded-xl p-3 border border-white/10 min-w-0">
-                         <div className="text-xs text-slate-300">实际合同应收</div>
-                         <div className="text-xl font-bold mt-1">{formatWan(adminSummaryTotals.annualContractReceivable, 0)}</div>
-                         <div className="text-xs text-slate-400 mt-1">实收 {formatWan(adminSummaryTotals.annualRevenueCollected, 0)}</div>
-                       </div>
-                       <div className="bg-white/10 rounded-xl p-3 border border-white/10 min-w-0">
-                         <div className="text-xs text-slate-300">完成率</div>
-                         <div className="text-xl font-bold mt-1 text-emerald-300">{formatPct(adminSummaryTotals.annualGoalCompletion, 0)}</div>
-                         <div className="text-xs text-slate-400 mt-1">实收/合同应收</div>
-                       </div>
-                       <div className="bg-white/10 rounded-xl p-3 border border-white/10 min-w-0">
-                         <div className="text-xs text-slate-300">预算偏差</div>
-                         <div className={`text-xl font-bold mt-1 ${adminSummaryTotals.budgetDeviation >= 0 ? 'text-sky-300' : 'text-red-300'}`}>
-                           {adminSummaryTotals.annualInitialBudget > 0 ? formatPct(adminSummaryTotals.budgetDeviation, 0) : '—'}
-                         </div>
-                         <div className="text-xs text-slate-400 mt-1">合同应收vs年初预算</div>
-                       </div>
-                       <div className="bg-white/10 rounded-xl p-3 border border-white/10 min-w-0">
-                         <div className="text-xs text-slate-300">综合出租率</div>
-                         <div className="text-xl font-bold mt-1 text-amber-300">{formatPct(adminSummaryTotals.occupancyRate, 0)}</div>
-                         <div className="text-xs text-slate-400 mt-1">目标 {formatPct(adminSummaryTotals.annualOccupancyTarget, 0)}</div>
-                       </div>
-                     </div>
-                     {adminParkMetrics.length > 0 && (
-                       <div className="overflow-x-auto rounded-xl border border-white/10">
-                         <table className="w-full text-xs md:text-sm">
-                           <thead className="bg-white/10 text-slate-200">
-                             <tr>
-                               <th className="text-left px-3 py-2">园区</th>
-                               <th className="text-right px-3 py-2">年初预算</th>
-                               <th className="text-right px-3 py-2">实际合同应收</th>
-                               <th className="text-right px-3 py-2">实收</th>
-                               <th className="text-right px-3 py-2">完成率</th>
-                               <th className="text-right px-3 py-2">预算偏差</th>
-                               <th className="text-right px-3 py-2">出租率</th>
-                             </tr>
-                           </thead>
-                           <tbody className="divide-y divide-white/10">
-                             {adminParkMetrics.map(item => (
-                               <tr key={item.projectId} className={item.projectId === cloudConfig.projectId ? 'bg-sky-500/10' : ''}>
-                                 <td className="px-3 py-2 font-medium">{item.name}</td>
-                                 <td className="px-3 py-2 text-right tabular-nums">{item.annualInitialBudget > 0 ? formatWan(item.annualInitialBudget, 0) : '—'}</td>
-                                 <td className="px-3 py-2 text-right tabular-nums">{formatWan(item.annualContractReceivable, 0)}</td>
-                                 <td className="px-3 py-2 text-right tabular-nums">{formatWan(item.annualRevenueCollected, 0)}</td>
-                                 <td className="px-3 py-2 text-right tabular-nums">{formatPct(item.annualGoalCompletion, 0)}</td>
-                                 <td className={`px-3 py-2 text-right tabular-nums ${item.budgetDeviation >= 0 ? 'text-sky-400' : 'text-red-400'}`}>
-                                   {item.annualInitialBudget > 0 ? formatPct(item.budgetDeviation, 0) : '—'}
-                                 </td>
-                                 <td className="px-3 py-2 text-right tabular-nums">{formatPct(item.occupancyRate, 0)}</td>
-                               </tr>
-                             ))}
-                           </tbody>
-                         </table>
-                       </div>
-                     )}
-                   </div>
-                 </div>
-               )}
                <DashboardAlerts tenants={data.tenants} invoices={data.invoices} />
                <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between bg-white p-3 rounded-xl border border-slate-100 shadow-sm min-w-0">
                    <div className="flex items-center gap-2 min-w-0">
@@ -2400,7 +2171,7 @@ const App: React.FC = () => {
                             <div className="p-2 bg-white rounded-lg text-indigo-600 shadow-sm border border-indigo-100"><TableIcon size={24} /></div>
                             <div>
                                 <h3 className="font-bold text-slate-700">系统初始化数据 (2023-2026)</h3>
-                                <div className="text-sm text-slate-500 mt-1">手动录入历史月度应收、实收及出租率数据，用于看板展示；当某月「月度应收」大于 0 时，首页「预算执行」该月预算收款优先取此值，为 0 时回退到预算表/生效方案。2025年12月支持录入累计欠款。</div>
+                                <div className="text-sm text-slate-500 mt-1">手动录入历史年初预算、实收及出租率数据，用于看板展示；当某月「年初预算」大于 0 时，首页「预算执行」该月预算收款优先取此值，为 0 时回退到预算表/生效方案。2025年12月支持录入累计欠款。</div>
                             </div>
                         </div>
                         <div className="bg-white p-4 rounded-lg border border-slate-200">
@@ -3280,7 +3051,6 @@ const App: React.FC = () => {
                               <tr>
                                   <th className="p-4 border-b border-slate-200 w-20">月份</th>
                                   <th className="p-4 border-b border-slate-200 bg-amber-50/50">年初预算 (￥)</th>
-                                  <th className="p-4 border-b border-slate-200">月度应收 (Target Revenue)</th>
                                   <th className="p-4 border-b border-slate-200">月度实收 (Actual Revenue)</th>
                                   <th className="p-4 border-b border-slate-200">月末出租率 (%)</th>
                                   {initDataYear === 2025 && (
@@ -3300,18 +3070,6 @@ const App: React.FC = () => {
                                                   className="w-full pl-6 pr-3 py-2 border border-amber-200 rounded-lg focus:ring-2 focus:ring-amber-100 outline-none font-mono"
                                                   value={row.initialBudget || ''}
                                                   onChange={(e) => updateTempInitData(row.month, 'initialBudget', Number(e.target.value))}
-                                                  placeholder="0.00"
-                                              />
-                                          </div>
-                                      </td>
-                                      <td className="p-4">
-                                          <div className="relative">
-                                              <span className="absolute left-3 top-2.5 text-slate-400 text-xs">¥</span>
-                                              <input
-                                                  type="number"
-                                                  className="w-full pl-6 pr-3 py-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-blue-100 outline-none font-mono"
-                                                  value={row.revenueTarget || ''}
-                                                  onChange={(e) => updateTempInitData(row.month, 'revenueTarget', Number(e.target.value))}
                                                   placeholder="0.00"
                                               />
                                           </div>
