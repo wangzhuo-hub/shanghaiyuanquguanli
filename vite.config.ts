@@ -14,6 +14,7 @@ export default defineConfig(({ mode }) => {
     const devPort = Number(env.VITE_DEV_PORT || 1001);
     const pbPort = env.VITE_PB_DEV_PORT || '1002';
     const aiProxyPort = env.VITE_AI_PROXY_PORT || '3010';
+    const gatewayPort = env.INTEGRATION_GATEWAY_PORT || env.VITE_INTEGRATION_GATEWAY_PORT || '8787';
 
     return {
         server: {
@@ -30,6 +31,10 @@ export default defineConfig(({ mode }) => {
                 },
                 '/api/chat': {
                     target: `http://127.0.0.1:${aiProxyPort}`,
+                    changeOrigin: true,
+                },
+                '/api/integration': {
+                    target: `http://127.0.0.1:${gatewayPort}`,
                     changeOrigin: true,
                 },
                 '/api/qwen': {

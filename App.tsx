@@ -15,6 +15,7 @@ import { BudgetManager } from './components/BudgetManager';
 import { TenantBudgetNameLinkTool } from './components/TenantMergeTool';
 import { TenantInsights } from './components/TenantInsights';
 import { DashboardAlerts } from './components/DashboardAlerts';
+import { SystemSettingsPanel, type NewManagedUserForm } from './components/SystemSettingsPanel';
 import { ConflictDialog } from './components/ConflictDialog';
 import {
     checkConnection,
@@ -72,6 +73,7 @@ import { formatCurrency } from './services/numberFormat';
 import { isManagementFeeBillingEnabled } from './services/parkBillingConfig';
 import { userRoleLabel } from './services/receivablePermissions';
 import { DEFAULT_CLOUD_CONFIG, mergeStoredCloudConfig, cloudConfigForStorage } from './config/deploymentDefaults';
+import { getIntegrationComputeRefreshUrl, getIntegrationInternalToken } from './config/urls';
 import { DirtyTrackerProvider } from './services/dirtyTrackerContext';
 import { DirtyTracker } from './services/dirtyTracker';
 import {
@@ -140,15 +142,6 @@ const detectAnomalousBatch = (creates: number, deletes: number): string | null =
     return null;
 };
 
-
-type NewManagedUserForm = {
-    email: string;
-    name: string;
-    password: string;
-    projectId: string;
-    role: 'park_user' | 'park_admin' | 'group_admin' | 'property_staff';
-    enabled: boolean;
-};
 
 type SignupForm = {
     applicantName: string;
@@ -516,11 +509,15 @@ const App: React.FC = () => {
       recalculateMetrics(dataRef.current, selectedYear, selectedQuarter);
   }, [billingSelectedMonth, activeTab, selectedYear, selectedQuarter]);
 
+  const persistCloudConfig = (next: CloudConfig) => {
+      localStorage.setItem(CLOUD_CONFIG_KEY, JSON.stringify(cloudConfigForStorage(next)));
+  };
+
   const handleCloudConfigSave = async () => {
       setIsTestingCloud(true);
       setCloudConnectionMsg(null);
       await new Promise(r => setTimeout(r, 600));
-      localStorage.setItem(CLOUD_CONFIG_KEY, JSON.stringify(cloudConfigForStorage(cloudConfig)));
+      persistCloudConfig(cloudConfig);
       
       // 初始化云服务
       await initCloud(cloudConfig);
@@ -895,21 +892,21 @@ const App: React.FC = () => {
 
   /** 通知集成网关重新计算并回写 KPI 快照（fire-and-forget，不阻塞保存流程） */
   const triggerServerComputeRefresh = (config: CloudConfig, year: number) => {
-      const baseUrl = config.pocketbaseUrl || '';
-      if (!baseUrl) return;
-      const gatewayUrl = baseUrl.replace(/\/api\/pb$/, '').replace(/:\d+/, '') + ':8787';
-      const body = JSON.stringify({ project_id: config.projectId, year });
-      const internalToken = String(
-          (import.meta as any).env?.VITE_INTEGRATION_INTERNAL_TOKEN || '',
-      ).trim();
-      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-      if (internalToken) headers['X-Integration-Internal-Token'] = internalToken;
-      fetch(`${gatewayUrl}/api/integration/compute/refresh`, {
+      const projectId = (config.projectId || '').trim();
+      if (!projectId) return;
+      const internalToken = getIntegrationInternalToken();
+      if (!internalToken) {
+          console.warn('[compute/refresh] 未配置 VITE_INTEGRATION_INTERNAL_TOKEN，跳过服务端 KPI 重算');
+          return;
+      }
+      const headers: Record<string, string> = {
+          'Content-Type': 'application/json',
+          'X-Integration-Internal-Token': internalToken,
+      };
+      fetch(getIntegrationComputeRefreshUrl(), {
           method: 'POST',
           headers,
-          body,
-      }).then(() => {
-          // 成功：静默
+          body: JSON.stringify({ project_id: projectId, year }),
       }).catch(() => {
           // 网关不可用时静默失败，不影响前端正常使用
       });
@@ -2276,699 +2273,80 @@ const App: React.FC = () => {
             </div>
           )}
           {activeTab === 'settings' && (
-             <div className="animate-in fade-in zoom-in-50 duration-300 max-w-2xl mx-auto space-y-4">
-                 <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
-                     <div className="p-4 md:p-6 border-b border-slate-200"><h2 className="text-lg md:text-xl font-bold text-slate-800 flex items-center gap-2"><Settings className="text-slate-400" /> 系统设置</h2></div>
-
-                     <div className="p-4 md:p-6 border-b border-slate-200 bg-sky-50/30">
-                       <div className="flex items-center gap-3 mb-4"><div className="p-2 bg-white rounded-lg text-sky-600 shadow-sm border border-sky-100"><CloudCog size={24} /></div><div><h3 className="font-bold text-slate-700">PocketBase 后端</h3><div className="flex items-center gap-2 text-sm mt-1 text-slate-600">当前以登录账号绑定园区访问后端；可通过 Tailscale IP、MagicDNS 或反向代理域名连接中心 PocketBase。</div><div className="flex items-center gap-2 text-sm mt-2">{isCloudConnected ? (<span className="flex items-center gap-1 text-emerald-600 font-medium"><CheckCircle2 size={14} /> 已连接</span>) : (<span className="flex items-center gap-1 text-rose-500 font-medium"><AlertCircle size={14} /> 未连接</span>)}</div></div></div>
-                        <div className="bg-white p-4 rounded-lg border border-slate-200 space-y-4">
-                            <div className="rounded-lg bg-slate-50 border border-slate-100 p-3">
-                                <div className="text-xs font-medium text-slate-500">后端连接</div>
-                                <div className="text-sm text-slate-700 mt-1">{cloudConfig.pocketbaseUrl || DEFAULT_CLOUD_CONFIG.pocketbaseUrl || '/api/pb'}</div>
-                                <p className="text-xs text-slate-400 mt-1">连接地址由部署配置统一维护，用户登录时无需填写。</p>
-                            </div>
-                             <div>
-                                 <label className="block text-xs font-medium text-slate-500 mb-1">当前园区</label>
-                                 <div className="flex gap-2">
-                                     {isGlobalAdmin() ? <select
-                                        className="flex-1 bg-slate-50 border border-slate-200 rounded px-3 py-2 text-sm text-slate-600 outline-none focus:ring-1 focus:ring-sky-200"
-                                        value={cloudConfig.projectId}
-                                        onChange={e => switchProject(e.target.value)}
-                                        disabled={authorizedParks.length <= 1}
-                                     >
-                                        {(authorizedParks.length ? authorizedParks : [{ projectId: cloudConfig.projectId, name: cloudConfig.projectId, enabled: true } as ParkInfo]).map(park => (
-                                            <option key={park.projectId} value={park.projectId}>{park.name} ({park.projectId})</option>
-                                        ))}
-                                     </select> : <div className="flex-1 bg-slate-50 border border-slate-200 rounded px-3 py-2 text-sm text-slate-600">{authorizedParks.find(park => park.projectId === cloudConfig.projectId)?.name || cloudConfig.projectId}</div>}
-                                     <button onClick={handleCloudConfigSave} className="bg-sky-500 text-white px-4 py-2 rounded text-sm hover:bg-sky-600 font-medium transition-colors">保存配置</button>
-                                 </div>
-                                 <p className="text-xs text-slate-400 mt-1">{isGlobalAdmin() ? '管理员可在授权园区间切换。' : '普通用户登录后自动进入已分配园区。'}</p>
-                             </div>
-                             <label className="flex items-center gap-2 text-sm text-slate-700 cursor-pointer select-none">
-                                 <input
-                                     type="checkbox"
-                                     className="rounded border-slate-300 text-sky-600 focus:ring-sky-200"
-                                     checked={!!cloudConfig.autoSync}
-                                     onChange={(e) => setCloudConfig((prev) => ({ ...prev, autoSync: e.target.checked }))}
-                                 />
-                                 <span>编辑后自动同步到 PocketBase（默认关闭，需手动保存时可不勾选）</span>
-                             </label>
-                         </div>
-                     </div>
-
-                    <div className="p-4 md:p-6 border-b border-slate-200 bg-emerald-50/40">
-                        <div className="flex items-center gap-3 mb-4">
-                            <div className="p-2 bg-white rounded-lg text-emerald-600 shadow-sm border border-emerald-100"><Users size={24} /></div>
-                            <div>
-                                <h3 className="font-bold text-slate-700">登录人员管理（管理员）</h3>
-                                <div className="text-sm text-slate-500 mt-1">管理员可新增登录人员，并审批待启用账号。</div>
-                            </div>
-                        </div>
-                        {!isPlatformAdmin() ? (
-                            <div className="bg-white border border-amber-100 text-amber-700 rounded-lg px-4 py-3 text-sm">
-                                当前账号为管理员但非平台管理员，仅可查看系统设置，不可维护登录人员。
-                            </div>
-                        ) : (
-                            <div className="space-y-4">
-                                <form onSubmit={handleCreateManagedUser} className="bg-white p-4 rounded-lg border border-slate-200 grid grid-cols-1 md:grid-cols-2 gap-3">
-                                    <input
-                                        className="bg-slate-50 border border-slate-200 rounded px-3 py-2 text-sm"
-                                        placeholder="登录邮箱"
-                                        value={newUserForm.email}
-                                        onChange={e => setNewUserForm(prev => ({ ...prev, email: e.target.value }))}
-                                    />
-                                    <input
-                                        className="bg-slate-50 border border-slate-200 rounded px-3 py-2 text-sm"
-                                        placeholder="姓名（可选）"
-                                        value={newUserForm.name}
-                                        onChange={e => setNewUserForm(prev => ({ ...prev, name: e.target.value }))}
-                                    />
-                                    <input
-                                        type="password"
-                                        className="bg-slate-50 border border-slate-200 rounded px-3 py-2 text-sm"
-                                        placeholder="初始密码"
-                                        value={newUserForm.password}
-                                        onChange={e => setNewUserForm(prev => ({ ...prev, password: e.target.value }))}
-                                    />
-                                    <select
-                                        className="bg-slate-50 border border-slate-200 rounded px-3 py-2 text-sm"
-                                        value={newUserForm.role}
-                                        onChange={e =>
-                                            setNewUserForm(prev => ({
-                                                ...prev,
-                                                role: e.target.value as NewManagedUserForm['role'],
-                                            }))
-                                        }
-                                    >
-                                        <option value="park_user">普通用户</option>
-                                        <option value="property_staff">物业人员（隐藏租金，仅物业费）</option>
-                                        <option value="park_admin">园区管理员</option>
-                                        <option value="group_admin">集团管理员</option>
-                                    </select>
-                                    <select
-                                        className="bg-slate-50 border border-slate-200 rounded px-3 py-2 text-sm"
-                                        value={newUserForm.projectId}
-                                        onChange={e => setNewUserForm(prev => ({ ...prev, projectId: e.target.value }))}
-                                    >
-                                        <option value="">选择默认园区</option>
-                                        {(authorizedParks.length ? authorizedParks : []).map(park => (
-                                            <option key={park.projectId} value={park.projectId}>
-                                                {park.name} ({park.projectId})
-                                            </option>
-                                        ))}
-                                    </select>
-                                    <label className="flex items-center gap-2 text-sm text-slate-600">
-                                        <input
-                                            type="checkbox"
-                                            checked={newUserForm.enabled}
-                                            onChange={e => setNewUserForm(prev => ({ ...prev, enabled: e.target.checked }))}
-                                        />
-                                        新增后直接启用（不勾选则待审批）
-                                    </label>
-                                    <div className="md:col-span-2 flex justify-end gap-2">
-                                        <button type="button" onClick={loadManagedUsers} className="px-4 py-2 rounded border border-slate-200 text-slate-600 hover:bg-slate-50 text-sm">刷新列表</button>
-                                        <button type="submit" disabled={isCreatingUser} className="px-4 py-2 rounded bg-emerald-600 text-white hover:bg-emerald-700 text-sm disabled:opacity-60">
-                                            {isCreatingUser ? '提交中...' : '新增登录人员'}
-                                        </button>
-                                    </div>
-                                </form>
-
-                                <div className="bg-white rounded-lg border border-slate-200 overflow-hidden">
-                                    <div className="px-4 py-3 border-b border-slate-100 flex items-center justify-between">
-                                        <div className="text-sm font-semibold text-slate-700">待审批账号</div>
-                                        <div className="text-xs text-slate-400">{managedUsers.filter(u => !u.enabled).length} 条</div>
-                                    </div>
-                                    <div className="max-h-64 overflow-y-auto">
-                                        {isLoadingManagedUsers ? (
-                                            <div className="px-4 py-3 text-sm text-slate-500">正在加载登录人员...</div>
-                                        ) : managedUsersError ? (
-                                            <div className="px-4 py-3 text-sm text-rose-600">{managedUsersError}</div>
-                                        ) : managedUsers.filter(u => !u.enabled).length === 0 ? (
-                                            <div className="px-4 py-3 text-sm text-slate-500">暂无待审批账号</div>
-                                        ) : (
-                                            managedUsers.filter(u => !u.enabled).map(u => (
-                                                <div key={u.id} className="px-4 py-3 border-t border-slate-100 flex items-center justify-between gap-3">
-                                                    <div className="min-w-0">
-                                                        <div className="font-medium text-sm text-slate-700 truncate">{u.email}</div>
-                                                        <div className="text-xs text-slate-500 mt-1">{u.name || '未填写姓名'} · {u.projectId || '未绑定园区'} · {userRoleLabel(u.role)}</div>
-                                                    </div>
-                                                    <button onClick={() => handleApproveManagedUser(u, true)} className="px-3 py-1.5 text-xs rounded bg-emerald-600 text-white hover:bg-emerald-700">审批通过</button>
-                                                </div>
-                                            ))
-                                        )}
-                                    </div>
-                                </div>
-
-                                <div className="bg-white rounded-lg border border-slate-200 overflow-hidden">
-                                    <div className="px-4 py-3 border-b border-slate-100 flex items-center justify-between">
-                                        <div className="text-sm font-semibold text-slate-700">已启用登录账号</div>
-                                        <div className="text-xs text-slate-400">
-                                            {managedUsers.filter((u) => u.enabled).length} 个
-                                        </div>
-                                    </div>
-                                    <div className="max-h-72 overflow-y-auto">
-                                        {isLoadingManagedUsers ? (
-                                            <div className="px-4 py-3 text-sm text-slate-500">正在加载...</div>
-                                        ) : managedUsers.filter((u) => u.enabled).length === 0 ? (
-                                            <div className="px-4 py-3 text-sm text-slate-500">暂无已启用账号</div>
-                                        ) : (
-                                            managedUsers
-                                                .filter((u) => u.enabled)
-                                                .map((u) => (
-                                                    <div
-                                                        key={u.id}
-                                                        className="px-4 py-3 border-t border-slate-100 flex flex-wrap items-center justify-between gap-2"
-                                                    >
-                                                        <div className="min-w-0">
-                                                            <div className="font-medium text-sm text-slate-800 truncate">
-                                                                {u.email}
-                                                            </div>
-                                                            <div className="text-xs text-slate-500 mt-0.5">
-                                                                {u.name || '未填姓名'} · {userRoleLabel(u.role)} · 默认{' '}
-                                                                {u.projectId || '—'} · 可访问{' '}
-                                                                {u.allowedProjectIds.length
-                                                                    ? u.allowedProjectIds.join('、')
-                                                                    : '—'}
-                                                            </div>
-                                                        </div>
-                                                        <div className="flex flex-wrap gap-1.5 shrink-0">
-                                                            <button
-                                                                type="button"
-                                                                onClick={() => openUserManageModal(u)}
-                                                                className="inline-flex items-center gap-1 px-2.5 py-1 text-xs rounded border border-slate-200 text-slate-700 hover:bg-slate-50"
-                                                            >
-                                                                <Pencil size={12} /> 编辑
-                                                            </button>
-                                                            <button
-                                                                type="button"
-                                                                onClick={() => openUserManageModal(u)}
-                                                                className="inline-flex items-center gap-1 px-2.5 py-1 text-xs rounded border border-indigo-200 text-indigo-700 hover:bg-indigo-50"
-                                                            >
-                                                                <UserCog size={12} /> 权限
-                                                            </button>
-                                                            <button
-                                                                type="button"
-                                                                onClick={() => {
-                                                                    if (
-                                                                        !window.confirm(
-                                                                            `确定删除登录账号「${u.email}」？\n该账号将无法登录，关联的「已审批通过」申请记录也会一并清理。`
-                                                                        )
-                                                                    ) {
-                                                                        return;
-                                                                    }
-                                                                    void (async () => {
-                                                                        const res = await deleteManagedCloudUser(
-                                                                            u.id,
-                                                                            authUser?.id
-                                                                        );
-                                                                        if (!res.success) {
-                                                                            alert(res.message || '删除失败');
-                                                                            return;
-                                                                        }
-                                                                        await Promise.all([
-                                                                            loadManagedUsers(),
-                                                                            loadSignupRequests(),
-                                                                        ]);
-                                                                        alert(res.message || '已删除账号');
-                                                                    })();
-                                                                }}
-                                                                className="inline-flex items-center gap-1 px-2.5 py-1 text-xs rounded border border-rose-200 text-rose-700 hover:bg-rose-50"
-                                                            >
-                                                                <Trash2 size={12} /> 删除
-                                                            </button>
-                                                        </div>
-                                                    </div>
-                                                ))
-                                        )}
-                                    </div>
-                                </div>
-
-                                <div className="bg-white rounded-lg border border-slate-200 overflow-hidden">
-                                    <div className="px-4 py-3 border-b border-slate-100 flex items-center justify-between">
-                                        <div className="text-sm font-semibold text-slate-700">注册申请审批（姓名/邮箱/园区）</div>
-                                        <div className="text-xs text-slate-400">{signupRequests.filter(r => r.status === 'pending').length} 条待审批</div>
-                                    </div>
-                                    <div className="max-h-72 overflow-y-auto">
-                                        {isLoadingSignupRequests ? (
-                                            <div className="px-4 py-3 text-sm text-slate-500">正在加载注册申请...</div>
-                                        ) : signupRequestsError ? (
-                                            <div className="px-4 py-3 text-sm text-rose-600">{signupRequestsError}</div>
-                                        ) : signupRequests.filter(r => r.status === 'pending').length === 0 ? (
-                                            <div className="px-4 py-3 text-sm text-slate-500">暂无待审批注册申请</div>
-                                        ) : (
-                                            signupRequests.filter(r => r.status === 'pending').map(req => (
-                                                <div key={req.id} className="px-4 py-3 border-t border-slate-100 space-y-2">
-                                                    <div className="text-sm font-semibold text-slate-700">{req.applicantName || '（未填姓名）'}</div>
-                                                    <div className="text-xs text-slate-600">邮箱：{req.email}</div>
-                                                    <div className="text-xs text-slate-600">申请园区：{req.requestedProjectIds.length ? req.requestedProjectIds.join('、') : '无'}</div>
-                                                    <div className="flex justify-end">
-                                                        <button onClick={() => handleApproveSignupRequest(req)} className="px-3 py-1.5 text-xs rounded bg-emerald-600 text-white hover:bg-emerald-700">审批通过并创建账号</button>
-                                                    </div>
-                                                </div>
-                                            ))
-                                        )}
-                                    </div>
-                                </div>
-
-                                <div className="bg-white rounded-lg border border-slate-200 overflow-hidden">
-                                    <div className="px-4 py-3 border-b border-slate-100">
-                                        <div className="text-sm font-semibold text-slate-700">已审批通过的人员清单</div>
-                                        <div className="text-xs text-slate-400 mt-0.5">按申请园区分别列出（同一人在多个园区申请则各园区各显示一条）</div>
-                                    </div>
-                                    <div className="max-h-96 overflow-y-auto">
-                                        {isLoadingSignupRequests ? (
-                                            <div className="px-4 py-3 text-sm text-slate-500">正在加载...</div>
-                                        ) : signupRequestsError ? (
-                                            <div className="px-4 py-3 text-sm text-rose-600">{signupRequestsError}</div>
-                                        ) : approvedSignupByPark.parkOrder.length === 0 ? (
-                                            <div className="px-4 py-3 text-sm text-slate-500">暂无通过线上注册审批的人员</div>
-                                        ) : (
-                                            approvedSignupByPark.parkOrder.map((projectId) => {
-                                                  const parkTitle =
-                                                      authorizedParks.find((p) => p.projectId === projectId)?.name || projectId;
-                                                  const rows = approvedSignupByPark.byPark.get(projectId) || [];
-                                                  return (
-                                                      <div key={projectId} className="border-t border-slate-200 first:border-t-0">
-                                                          <div className="px-4 py-2 bg-slate-50 text-sm font-medium text-slate-800">
-                                                              {parkTitle}
-                                                              <span className="text-slate-400 font-normal ml-1">({projectId})</span>
-                                                          </div>
-                                                          {rows.map((req) => {
-                                                              const linked =
-                                                                  req.approvedUserId
-                                                                      ? managedUsers.find((x) => x.id === req.approvedUserId)
-                                                                      : managedUsers.find(
-                                                                            (x) =>
-                                                                                x.email.trim().toLowerCase() ===
-                                                                                req.email.trim().toLowerCase()
-                                                                        );
-                                                              const orphan = !linked;
-                                                              return (
-                                                                  <div
-                                                                      key={`${req.id}-${projectId}`}
-                                                                      className="px-4 py-2.5 border-t border-slate-100 text-sm"
-                                                                  >
-                                                                      <div className="font-medium text-slate-800">
-                                                                          {req.applicantName || '（未填姓名）'}
-                                                                      </div>
-                                                                      <div className="text-xs text-slate-600 mt-0.5">
-                                                                          邮箱：{req.email}
-                                                                      </div>
-                                                                      <div className="text-xs text-slate-500 mt-0.5">
-                                                                          审批时间：
-                                                                          {req.approvedAt
-                                                                              ? new Date(req.approvedAt).toLocaleString()
-                                                                              : '—'}
-                                                                      </div>
-                                                                      <div className="flex flex-wrap gap-1.5 mt-2 justify-end">
-                                                                          {linked && (
-                                                                              <>
-                                                                                  <button
-                                                                                      type="button"
-                                                                                      onClick={() => openUserManageModal(linked)}
-                                                                                      className="inline-flex items-center gap-1 px-2 py-0.5 text-[11px] rounded border border-slate-200 text-slate-700 hover:bg-slate-50"
-                                                                                  >
-                                                                                      <Pencil size={11} /> 编辑
-                                                                                  </button>
-                                                                                  <button
-                                                                                      type="button"
-                                                                                      onClick={() => openUserManageModal(linked)}
-                                                                                      className="inline-flex items-center gap-1 px-2 py-0.5 text-[11px] rounded border border-indigo-200 text-indigo-700 hover:bg-indigo-50"
-                                                                                  >
-                                                                                      <UserCog size={11} /> 权限
-                                                                                  </button>
-                                                                                  <button
-                                                                                      type="button"
-                                                                                      onClick={() => {
-                                                                                          if (
-                                                                                              !window.confirm(
-                                                                                                  `确定删除登录账号「${linked.email}」？\n关联的审批/申请记录也将一并清理。`
-                                                                                              )
-                                                                                          ) {
-                                                                                              return;
-                                                                                          }
-                                                                                          void (async () => {
-                                                                                              const res =
-                                                                                                  await deleteManagedCloudUser(
-                                                                                                      linked.id,
-                                                                                                      authUser?.id
-                                                                                                  );
-                                                                                              if (!res.success) {
-                                                                                                  alert(res.message || '删除失败');
-                                                                                                  return;
-                                                                                              }
-                                                                                              await Promise.all([
-                                                                                                  loadManagedUsers(),
-                                                                                                  loadSignupRequests(),
-                                                                                              ]);
-                                                                                              alert(res.message || '已删除账号');
-                                                                                          })();
-                                                                                      }}
-                                                                                      className="inline-flex items-center gap-1 px-2 py-0.5 text-[11px] rounded border border-rose-200 text-rose-700 hover:bg-rose-50"
-                                                                                  >
-                                                                                      <Trash2 size={11} /> 删除账号
-                                                                                  </button>
-                                                                              </>
-                                                                          )}
-                                                                          <button
-                                                                              type="button"
-                                                                              onClick={() => void handleDeleteSignupRequest(req)}
-                                                                              className="inline-flex items-center gap-1 px-2 py-0.5 text-[11px] rounded border border-amber-200 text-amber-700 hover:bg-amber-50"
-                                                                              title="仅清理审批/申请记录，不影响已创建账号"
-                                                                          >
-                                                                              <Trash2 size={11} /> 清理审批记录
-                                                                          </button>
-                                                                      </div>
-                                                                      {orphan && (
-                                                                          <div className="text-[11px] text-amber-600 mt-2">
-                                                                              已绑定用户 ID 但 users 表中已无该记录（账号已被删除或未授权可见）。可点击「清理审批记录」移除该条孤立条目。
-                                                                          </div>
-                                                                      )}
-                                                                  </div>
-                                                              );
-                                                          })}
-                                                      </div>
-                                                  );
-                                              })
-                                        )}
-                                    </div>
-                                </div>
-
-                                {userManageTarget && (
-                                    <div className="fixed inset-0 z-[80] flex items-center justify-center p-4 bg-black/40">
-                                        <div className="bg-white rounded-xl shadow-xl border border-slate-200 max-w-md w-full max-h-[90vh] overflow-y-auto p-5 space-y-4">
-                                            <div className="flex items-start justify-between gap-2">
-                                                <div>
-                                                    <h4 className="font-bold text-slate-800 text-sm">管理登录账号</h4>
-                                                    <p className="text-xs text-slate-500 mt-0.5 break-all">{userManageTarget.email}</p>
-                                                </div>
-                                                <button
-                                                    type="button"
-                                                    aria-label="关闭"
-                                                    className="p-1 rounded hover:bg-slate-100 text-slate-500"
-                                                    onClick={() => setUserManageTarget(null)}
-                                                >
-                                                    <X size={18} />
-                                                </button>
-                                            </div>
-                                            <div>
-                                                <label className="block text-xs font-medium text-slate-500 mb-1">姓名</label>
-                                                <input
-                                                    className="w-full bg-slate-50 border border-slate-200 rounded px-3 py-2 text-sm"
-                                                    value={userManageForm.name}
-                                                    onChange={(e) =>
-                                                        setUserManageForm((p) => ({ ...p, name: e.target.value }))
-                                                    }
-                                                />
-                                            </div>
-                                            <div>
-                                                <label className="block text-xs font-medium text-slate-500 mb-1">角色</label>
-                                                <select
-                                                    className="w-full bg-slate-50 border border-slate-200 rounded px-3 py-2 text-sm"
-                                                    value={userManageForm.role}
-                                                    onChange={(e) =>
-                                                        setUserManageForm((p) => ({
-                                                            ...p,
-                                                            role: e.target.value as UserRole,
-                                                        }))
-                                                    }
-                                                >
-                                                    <option value="park_user">普通用户</option>
-                                                    <option value="property_staff">物业人员（隐藏租金，仅物业费）</option>
-                                                    <option value="park_admin">园区管理员</option>
-                                                    <option value="group_admin">集团管理员</option>
-                                                    <option value="platform_admin">平台管理员</option>
-                                                </select>
-                                                {userManageForm.role === 'property_staff' && (
-                                                    <p className="text-xs text-teal-700 mt-2 leading-relaxed">
-                                                        物业人员：不显示租金单价、月租金、押金及租金收款；可维护物业费并在「物业费应收」核销。
-                                                    </p>
-                                                )}
-                                            </div>
-                                            <div>
-                                                <label className="block text-xs font-medium text-slate-500 mb-1">
-                                                    默认园区
-                                                </label>
-                                                <input
-                                                    className="w-full bg-slate-50 border border-slate-200 rounded px-3 py-2 text-sm font-mono"
-                                                    value={userManageForm.projectId}
-                                                    onChange={(e) =>
-                                                        setUserManageForm((p) => ({ ...p, projectId: e.target.value }))
-                                                    }
-                                                />
-                                            </div>
-                                            <div>
-                                                <label className="block text-xs font-medium text-slate-500 mb-1">
-                                                    可访问园区（含默认园区）
-                                                </label>
-                                                <div className="space-y-2 border border-slate-100 rounded-lg p-3 bg-slate-50/80 max-h-40 overflow-y-auto">
-                                                    {(authorizedParks.length ? authorizedParks : []).map((park) => (
-                                                        <label
-                                                            key={park.projectId}
-                                                            className="flex items-center gap-2 text-sm text-slate-700"
-                                                        >
-                                                            <input
-                                                                type="checkbox"
-                                                                checked={userManageForm.allowedParkIds.includes(
-                                                                    park.projectId
-                                                                )}
-                                                                onChange={(e) =>
-                                                                    toggleUserManagePark(park.projectId, e.target.checked)
-                                                                }
-                                                            />
-                                                            <span>
-                                                                {park.name}{' '}
-                                                                <span className="text-slate-400">({park.projectId})</span>
-                                                            </span>
-                                                        </label>
-                                                    ))}
-                                                    {authorizedParks.length === 0 && (
-                                                        <p className="text-xs text-amber-600">
-                                                            当前未加载园区目录，可直接保存默认园区；完整多选需先能拉取 pb_parks。
-                                                        </p>
-                                                    )}
-                                                </div>
-                                            </div>
-                                            <label className="flex items-center gap-2 text-sm text-slate-600">
-                                                <input
-                                                    type="checkbox"
-                                                    checked={userManageForm.enabled}
-                                                    onChange={(e) =>
-                                                        setUserManageForm((p) => ({ ...p, enabled: e.target.checked }))
-                                                    }
-                                                />
-                                                账号已启用（可登录）
-                                            </label>
-                                            <div>
-                                                <label className="block text-xs font-medium text-slate-500 mb-1">
-                                                    新密码（留空表示不修改，至少 8 位）
-                                                </label>
-                                                <input
-                                                    type="password"
-                                                    className="w-full bg-slate-50 border border-slate-200 rounded px-3 py-2 text-sm"
-                                                    value={userManageForm.password}
-                                                    onChange={(e) =>
-                                                        setUserManageForm((p) => ({ ...p, password: e.target.value }))
-                                                    }
-                                                    placeholder="不修改请留空"
-                                                    autoComplete="new-password"
-                                                />
-                                            </div>
-                                            <div className="flex flex-wrap gap-2 justify-end pt-2 border-t border-slate-100">
-                                                <button
-                                                    type="button"
-                                                    className="px-3 py-2 text-sm rounded border border-slate-200 text-slate-600 hover:bg-slate-50"
-                                                    onClick={() => setUserManageTarget(null)}
-                                                >
-                                                    取消
-                                                </button>
-                                                <button
-                                                    type="button"
-                                                    className="px-3 py-2 text-sm rounded border border-rose-200 text-rose-700 hover:bg-rose-50"
-                                                    disabled={userManageSaving}
-                                                    onClick={() => void handleDeleteUserManageModal()}
-                                                >
-                                                    删除账号
-                                                </button>
-                                                <button
-                                                    type="button"
-                                                    className="px-3 py-2 text-sm rounded bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-50"
-                                                    disabled={userManageSaving}
-                                                    onClick={() => void handleSaveUserManageModal()}
-                                                >
-                                                    {userManageSaving ? '保存中…' : '保存'}
-                                                </button>
-                                            </div>
-                                        </div>
-                                    </div>
-                                )}
-                            </div>
-                        )}
-                    </div>
-                     
-                     {/* AI API Configuration */}
-                     <div className="p-4 md:p-6 border-b border-slate-200 bg-purple-50/30">
-                         <div className="flex items-center gap-3 mb-4">
-                             <div className="p-2 bg-white rounded-lg text-purple-600 shadow-sm border border-purple-100">
-                                 <Sparkles size={24} />
-                             </div>
-                             <div>
-                                 <h3 className="font-bold text-slate-700">AI 助手配置</h3>
-                                 <div className="flex items-center gap-2 text-sm mt-1">
-                                     {aiConfig.enabled ? (
-                                         <span className="flex items-center gap-1 text-emerald-600 font-medium">
-                                             <CheckCircle2 size={14} /> 已启用 {aiConfig.provider === 'qwen' ? '千问' : 'OpenAI'}
-                                         </span>
-                                     ) : (
-                                         <span className="flex items-center gap-1 text-slate-400 font-medium">
-                                             <AlertCircle size={14} /> 未启用
-                                         </span>
-                                     )}
-                                 </div>
-                             </div>
-                         </div>
-                         <div className="bg-white p-4 rounded-lg border border-slate-200 space-y-4">
-                             <div>
-                                 <label className="block text-xs font-medium text-slate-500 mb-1">AI 提供商</label>
-                                 <select 
-                                     className="w-full bg-slate-50 border border-slate-200 rounded px-3 py-2 text-sm text-slate-600 outline-none focus:ring-1 focus:ring-purple-200"
-                                     value={aiConfig.provider} 
-                                     onChange={e => setAiConfig({...aiConfig, provider: e.target.value as AIConfig['provider']})}
-                                 >
-                                     <option value="none">不使用 AI</option>
-                                     <option value="qwen">千问 (Qwen) - 阿里云 (推荐)</option>
-                                     <option value="openai">OpenAI / 其他兼容API</option>
-                                 </select>
-                             </div>
-                     
-                             {aiConfig.provider === 'qwen' && (
-                                 <>
-                                     <div>
-                                         <label className="block text-xs font-medium text-slate-500 mb-1">千问 API Key</label>
-                                         <input 
-                                             type="password" 
-                                             className="w-full bg-slate-50 border border-slate-200 rounded px-3 py-2 text-sm text-slate-600 outline-none focus:ring-1 focus:ring-purple-200" 
-                                             placeholder="sk-xxxxx"
-                                             value={aiConfig.qwenApiKey || ''}
-                                             onChange={e => setAiConfig({...aiConfig, qwenApiKey: e.target.value})}
-                                         />
-                                         <p className="text-xs text-slate-400 mt-1">
-                                             获取地址: <a href="https://dashscope.console.aliyun.com/apiKey" target="_blank" rel="noopener noreferrer" className="text-purple-600 hover:underline">阿里云百炼</a>
-                                         </p>
-                                     </div>
-                                     <div>
-                                         <label className="block text-xs font-medium text-slate-500 mb-1">Base URL</label>
-                                         <select 
-                                             className="w-full bg-slate-50 border border-slate-200 rounded px-3 py-2 text-sm text-slate-600 outline-none focus:ring-1 focus:ring-purple-200"
-                                             value={aiConfig.qwenBaseUrl || ''}
-                                             onChange={e => setAiConfig({...aiConfig, qwenBaseUrl: e.target.value})}
-                                         >
-                                             <option value="https://coding.dashscope.aliyuncs.com/v1">OpenAI 兼容协议 (推荐)</option>
-                                             <option value="https://coding.dashscope.aliyuncs.com/apps/anthropic">Anthropic 兼容协议</option>
-                                         </select>
-                                         <p className="text-xs text-slate-400 mt-1">
-                                             选择你的 AI 工具支持的 API 协议
-                                         </p>
-                                     </div>
-                                 </>
-                             )}
- 
-                     
-                             {aiConfig.provider === 'openai' && (
-                                 <>
-                                     <div>
-                                         <label className="block text-xs font-medium text-slate-500 mb-1">OpenAI API Key</label>
-                                         <input 
-                                             type="password" 
-                                             className="w-full bg-slate-50 border border-slate-200 rounded px-3 py-2 text-sm text-slate-600 outline-none focus:ring-1 focus:ring-purple-200" 
-                                             placeholder="sk-xxxxx"
-                                             value={aiConfig.openaiApiKey || ''}
-                                             onChange={e => setAiConfig({...aiConfig, openaiApiKey: e.target.value})}
-                                         />
-                                     </div>
-                                     <div>
-                                         <label className="block text-xs font-medium text-slate-500 mb-1">Base URL (可选)</label>
-                                         <input 
-                                             type="text" 
-                                             className="w-full bg-slate-50 border border-slate-200 rounded px-3 py-2 text-sm text-slate-600 outline-none focus:ring-1 focus:ring-purple-200" 
-                                             placeholder="https://api.openai.com/v1"
-                                             value={aiConfig.openaiBaseUrl || ''}
-                                             onChange={e => setAiConfig({...aiConfig, openaiBaseUrl: e.target.value})}
-                                         />
-                                         <p className="text-xs text-slate-400 mt-1">
-                                             留空使用默认OpenAI，或填写兼容API地址
-                                         </p>
-                                     </div>
-                                 </>
-                             )}
-                     
-                             {aiConfig.provider !== 'none' && (
-                                 <div className="flex items-center justify-between pt-2">
-                                     <label className="flex items-center gap-2 cursor-pointer">
-                                         <input 
-                                             type="checkbox" 
-                                             checked={aiConfig.enabled}
-                                             onChange={e => setAiConfig({...aiConfig, enabled: e.target.checked})}
-                                             className="w-4 h-4 text-purple-600 rounded focus:ring-1 focus:ring-purple-200"
-                                         />
-                                         <span className="text-sm text-slate-700">启用 AI 助手</span>
-                                     </label>
-                                     <button 
-                                         onClick={() => {
-                                             console.log('[App] 保存AI配置:', aiConfig);
-                                             sessionStorage.setItem('ai_config', JSON.stringify(aiConfig));
-                                             // 验证保存
-                                             const saved = sessionStorage.getItem('ai_config');
-                                             console.log('[App] 验证保存成功:', saved === JSON.stringify(aiConfig));
-                                             alert('配置已保存！请刷新页面使配置生效。');
-                                         }}
-                                         className="bg-purple-500 text-white px-4 py-2 rounded text-sm hover:bg-purple-600 font-medium transition-colors"
-                                     >
-                                         保存 AI 配置
-                                     </button>
-                                 </div>
-                             )}
-                         </div>
-                     </div>
-                     {isCloudConnected && (
-                         <div className="p-4 md:p-6 border-b border-slate-200">
-                             <div className="flex justify-between items-center mb-4">
-                                 <h3 className="font-bold text-slate-700 flex items-center gap-2"><History size={18} /> 云端备份历史</h3>
-                                 <div className="flex gap-2">
-                                     <button onClick={() => fetchCloudHistory()} className="p-1.5 text-slate-500 hover:bg-slate-100 rounded" title="刷新"><RefreshCw size={14}/></button>
-                                     <button onClick={openSnapshotModal} className="text-xs bg-sky-50 text-sky-600 px-3 py-1.5 rounded-lg font-medium hover:bg-sky-100 transition-colors">新建备份</button>
-                                 </div>
-                             </div>
-                             <div className="bg-slate-50 rounded-lg border border-slate-200 max-h-48 overflow-y-auto">
-                                 {isLoadingHistory ? (
-                                     <div className="p-4 text-center text-slate-400 text-xs">加载中...</div>
-                                 ) : cloudHistory.length === 0 ? (
-                                     <div className="p-4 text-center text-slate-400 text-xs">暂无云端备份记录</div>
-                                 ) : (
-                                     <div className="divide-y divide-slate-100">
-                                         {cloudHistory.map(backup => (
-                                             <div key={backup.id} className="p-3 flex justify-between items-center hover:bg-white transition-colors">
-                                                 <div>
-                                                     <div className="text-sm font-medium text-slate-700">{backup.note || '无备注'}</div>
-                                                     <div className="text-xs text-slate-400 flex items-center gap-1"><FileClock size={10} /> {new Date(backup.created_at).toLocaleString()}</div>
-                                                 </div>
-                                                 <div className="flex gap-2">
-                                                     <button onClick={() => handleRestoreCloudBackup(backup.id)} disabled={restoringId === backup.id} className="text-xs border border-orange-200 bg-white text-orange-600 px-2 py-1 rounded hover:border-orange-300 hover:bg-orange-50 flex items-center gap-1">{restoringId === backup.id ? <Loader2 size={12} className="animate-spin"/> : <RotateCcw size={12}/>} 恢复</button>
-                                                     <button onClick={() => handleDownloadCloudBackup(backup.id, backup.note)} disabled={restoringId === backup.id} className="text-xs border border-slate-200 bg-white text-slate-600 px-2 py-1 rounded hover:border-blue-300 hover:text-blue-600 flex items-center gap-1">{restoringId === backup.id ? <Loader2 size={12} className="animate-spin"/> : <Download size={12}/>} 下载</button>
-                                                 </div>
-                                             </div>
-                                         ))}
-                                     </div>
-                                 )}
-                             </div>
-                         </div>
-                     )}
-                     <div className="p-4 md:p-6 bg-slate-50/50"><h3 className="font-bold text-slate-700 mb-4 flex items-center gap-2"><Database size={18} /> 本地数据管理</h3><div className="space-y-3"><div className="flex items-center justify-between p-3 bg-white border border-slate-200 rounded-lg"><div><div className="text-sm font-medium text-slate-700">导出当前园区备份 (JSON)</div><div className="text-xs text-slate-400">导出文件会写入 project_id={cloudConfig.projectId}，用于后续隔离恢复</div></div><button onClick={handleExport} className="px-3 py-1.5 text-slate-600 bg-slate-100 hover:bg-slate-200 rounded text-xs font-medium transition-colors">导出</button></div><div className="flex items-center justify-between p-3 bg-white border border-slate-200 rounded-lg"><div><div className="text-sm font-medium text-slate-700">导入到当前园区</div><div className="text-xs text-slate-400">上传前校验备份 project_id；旧格式文件需要确认目标园区，只恢复到 {cloudConfig.projectId}</div></div><label className="px-3 py-1.5 text-slate-600 bg-slate-100 hover:bg-slate-200 rounded text-xs font-medium transition-colors cursor-pointer">选择文件<input type="file" className="hidden" accept=".json" onChange={handleImport} /></label></div><div className="flex items-center justify-between p-3 bg-rose-50 border border-rose-100 rounded-lg"><div><div className="text-sm font-medium text-rose-700">重置当前园区本地缓存</div><div className="text-xs text-rose-400">只清除当前园区浏览器缓存，不影响其他园区与后端</div></div><button onClick={handleResetData} className="px-3 py-1.5 text-rose-600 bg-white border border-rose-200 hover:bg-rose-100 rounded text-xs font-medium transition-colors">重置</button></div></div></div>
-                 </div>
-                 <div className="text-center text-xs text-slate-400"><p>Kingdee Park Management System v4.0</p><p>© 2024 Kingdee. All rights reserved.</p></div>
-             </div>
+              <SystemSettingsPanel
+                  isCloudConnected={isCloudConnected}
+                  cloudConfig={cloudConfig}
+                  onCloudConfigChange={setCloudConfig}
+                  onPersistCloudConfig={persistCloudConfig}
+                  pocketbaseUrl={cloudConfig.pocketbaseUrl || DEFAULT_CLOUD_CONFIG.pocketbaseUrl || '/api/pb'}
+                  currentParkName={
+                      authorizedParks.find((park) => park.projectId === cloudConfig.projectId)?.name ||
+                      cloudConfig.projectId
+                  }
+                  authorizedParks={authorizedParks}
+                  isPlatformAdmin={isPlatformAdmin()}
+                  canManageUsers={canAccessSystemSettings}
+                  cloudConnectionMsg={cloudConnectionMsg}
+                  newUserForm={newUserForm}
+                  onNewUserFormChange={(patch) => setNewUserForm((prev) => ({ ...prev, ...patch }))}
+                  onCreateManagedUser={handleCreateManagedUser}
+                  isCreatingUser={isCreatingUser}
+                  onRefreshUsers={() => void Promise.all([loadManagedUsers(), loadSignupRequests()])}
+                  managedUsers={managedUsers}
+                  managedUsersError={managedUsersError}
+                  isLoadingManagedUsers={isLoadingManagedUsers}
+                  onApproveManagedUser={(u, enabled) => void handleApproveManagedUser(u, enabled)}
+                  onOpenUserManage={openUserManageModal}
+                  onDeleteManagedUser={(u) => {
+                      if (
+                          !window.confirm(
+                              `确定删除登录账号「${u.email}」？\n该账号将无法登录，关联申请记录也会一并清理。`
+                          )
+                      ) {
+                          return;
+                      }
+                      void (async () => {
+                          const res = await deleteManagedCloudUser(u.id, authUser?.id);
+                          if (!res.success) {
+                              alert(res.message || '删除失败');
+                              return;
+                          }
+                          await Promise.all([loadManagedUsers(), loadSignupRequests()]);
+                          alert(res.message || '已删除账号');
+                      })();
+                  }}
+                  signupRequests={signupRequests}
+                  signupRequestsError={signupRequestsError}
+                  isLoadingSignupRequests={isLoadingSignupRequests}
+                  onApproveSignupRequest={(req) => void handleApproveSignupRequest(req)}
+                  onDeleteSignupRequest={(req) => void handleDeleteSignupRequest(req)}
+                  approvedSignupByPark={approvedSignupByPark}
+                  userManageTarget={userManageTarget}
+                  userManageForm={userManageForm}
+                  onUserManageFormChange={(patch) => setUserManageForm((prev) => ({ ...prev, ...patch }))}
+                  onCloseUserManage={() => setUserManageTarget(null)}
+                  onSaveUserManage={() => void handleSaveUserManageModal()}
+                  onDeleteUserManage={() => void handleDeleteUserManageModal()}
+                  userManageSaving={userManageSaving}
+                  aiConfig={aiConfig}
+                  onAiConfigChange={setAiConfig}
+                  onSaveAiConfig={() => {
+                      sessionStorage.setItem('ai_config', JSON.stringify(aiConfig));
+                      alert('配置已保存！请刷新页面使配置生效。');
+                  }}
+                  cloudHistory={cloudHistory}
+                  isLoadingHistory={isLoadingHistory}
+                  onRefreshHistory={() => fetchCloudHistory()}
+                  onOpenSnapshot={openSnapshotModal}
+                  onRestoreBackup={(id) => handleRestoreCloudBackup(id)}
+                  onDownloadBackup={(id, note) => handleDownloadCloudBackup(id, note)}
+                  restoringId={restoringId}
+                  onExport={handleExport}
+                  onImport={handleImport}
+                  onResetData={handleResetData}
+              />
           )}
+
         </div>
       </main>
 

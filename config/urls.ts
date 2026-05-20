@@ -38,6 +38,28 @@ export function getAiProxyChatUrl(): string {
     return '/api/chat';
 }
 
+/**
+ * 集成网关 compute/refresh 地址。
+ * 生产：同源 `/api/integration/compute/refresh`（Caddy → :8787）
+ * 开发：Vite 代理 `/api/integration` → integration-gateway
+ */
+export function getIntegrationComputeRefreshUrl(): string {
+    if (typeof window !== 'undefined') {
+        return new URL('/api/integration/compute/refresh', window.location.origin).pathname;
+    }
+    const base = (import.meta.env.VITE_INTEGRATION_GATEWAY_URL as string | undefined)?.trim();
+    if (base) {
+        const b = base.replace(/\/+$/, '');
+        return `${b}/api/integration/compute/refresh`;
+    }
+    return 'http://127.0.0.1:8787/api/integration/compute/refresh';
+}
+
+/** 前端保存后通知网关重算 KPI 的内部 Token（与服务器 INTEGRATION_INTERNAL_TOKEN 一致） */
+export function getIntegrationInternalToken(): string {
+    return String(import.meta.env.VITE_INTEGRATION_INTERNAL_TOKEN || '').trim();
+}
+
 /** 用于错误提示中的代理根地址（不含路径） */
 export function getAiProxyBaseForMessage(): string {
     const base = (import.meta.env.VITE_QWEN_PROXY_URL as string | undefined)?.trim();
