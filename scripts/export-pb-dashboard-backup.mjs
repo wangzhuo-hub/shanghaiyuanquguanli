@@ -95,6 +95,7 @@ function rebuildDashboard(projectId, rows) {
       projectId: t.project_id || projectId,
       monthlyRent: t.monthly_rent || 0,
       rentFreePeriods: Array.isArray(t.rent_free_periods) ? t.rent_free_periods : [],
+      rentReductions: Array.isArray(t.rent_reductions) ? t.rent_reductions : [],
       managementFeeEnabled: t.management_fee_enabled != null ? !!t.management_fee_enabled : undefined,
       managementFeeExempt: !!t.management_fee_exempt,
       managementFeeFreePeriods: Array.isArray(t.management_fee_free_periods)

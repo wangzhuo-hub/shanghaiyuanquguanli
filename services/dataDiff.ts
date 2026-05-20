@@ -131,6 +131,7 @@ export function dashboardDataToPbRecords(
             unit_price_mode: t.unitPriceMode || 'daily',
             monthly_rent: t.monthlyRent || 0,
             rent_free_periods: t.rentFreePeriods || [],
+            rent_reductions: t.rentReductions || [],
             payment_cycle: t.paymentCycle || 'Monthly',
             payment_terms: Array.isArray(t.unitTerms) ? t.unitTerms : (Array.isArray(t.paymentTerms) ? t.paymentTerms : []),
             payment_cycle_months: t.paymentCycleMonths ?? null,

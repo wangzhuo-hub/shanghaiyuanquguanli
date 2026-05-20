@@ -166,6 +166,12 @@ export function getReceivableMonthOffsetForTenant(
 export interface BudgetedBill {
     date: Date;
     amount: number;
+    /** 应用固定金额减免前的应收（用于预览对账） */
+    grossAmount?: number;
+    /** 免租扣减合计（元） */
+    rentFreeDeduction?: number;
+    /** 合同固定金额减免分摊（元） */
+    fixedReductionDeduction?: number;
     originalDate?: Date;
     coverageStart?: Date;
     coverageEnd?: Date;
@@ -360,6 +366,24 @@ export const calculateRentForDuration = (start: Date, end: Date, monthlyRent: nu
     return total;
 };
 
+/** 单条免租段在覆盖期内的扣减额 */
+export const calculateRentFreeDeductionForPeriod = (
+    rf: RentFreePeriod,
+    overlapStart: Date,
+    overlapEnd: Date,
+    monthlyRent: number,
+): number => {
+    if (
+        rf.deductionMode === 'fixed' &&
+        rf.deductionAmount != null &&
+        rf.deductionAmount > 0 &&
+        overlapStart <= overlapEnd
+    ) {
+        return rf.deductionAmount;
+    }
+    return calculateRentFreeDeduction(overlapStart, overlapEnd, monthlyRent);
+};
+
 export const calculateRentFreeDeduction = (start: Date, end: Date, monthlyRent: number): number => {
     const normalizedStart = new Date(start.getFullYear(), start.getMonth(), start.getDate());
     const endExclusive = new Date(end.getFullYear(), end.getMonth(), end.getDate());
@@ -397,7 +421,7 @@ export const computeDeductModeAmountForCoverage = (
             const overlapStart = rfStart > coverageStart ? rfStart : coverageStart;
             const overlapEnd = rfEnd < coverageEnd ? rfEnd : coverageEnd;
             if (overlapStart <= overlapEnd) {
-                deduction += calculateRentFreeDeduction(overlapStart, overlapEnd, rent);
+                deduction += calculateRentFreeDeductionForPeriod(rf, overlapStart, overlapEnd, rent);
             }
         }
         return deduction;
@@ -463,6 +487,59 @@ export const computeEarlyTerminationFreeRentClawbackAmount = (tenant: Tenant): n
     const proportionalAllowed = (actualDays / contractDays) * contractualFreeWeight;
     const clawbackWeight = Math.max(0, enjoyedFreeWeight - proportionalAllowed);
     return Math.round(clawbackWeight * monthlyRent);
+};
+
+/** 合同级固定金额减免：按覆盖期重叠的账单行比例分摊 reductionAmount */
+export const applyContractFixedRentReductions = (tenant: Tenant, bills: BudgetedBill[]): void => {
+    const reductions = tenant.rentReductions || [];
+    if (!reductions.length) return;
+
+    for (const r of reductions) {
+        const reductionAmount = Number(r.reductionAmount);
+        if (!(reductionAmount > 0)) continue;
+
+        const rStart = parseDateLocal(r.start);
+        const rEnd = parseDateLocal(r.end);
+
+        const affected = bills.filter((b) => {
+            if (b.earlyTerminationExtraDetail) return false;
+            const cs = b.coverageStart ?? b.date;
+            const ce = b.coverageEnd ?? b.date;
+            const csDay = new Date(cs.getFullYear(), cs.getMonth(), cs.getDate());
+            const ceDay = new Date(ce.getFullYear(), ce.getMonth(), ce.getDate());
+            return csDay <= rEnd && ceDay >= rStart && b.amount > MIN_AMOUNT_THRESHOLD;
+        });
+        if (!affected.length) continue;
+
+        const total = affected.reduce((s, b) => s + b.amount, 0);
+        if (total <= 0) continue;
+
+        let remaining = round2(reductionAmount);
+        const sorted = [...affected].sort((a, b) => a.date.getTime() - b.date.getTime());
+        for (let i = 0; i < sorted.length; i++) {
+            const bill = sorted[i];
+            if (bill.grossAmount == null) bill.grossAmount = bill.amount;
+            const isLast = i === sorted.length - 1;
+            const deduct = isLast
+                ? remaining
+                : round2(reductionAmount * (bill.amount / total));
+            const applied = round2(Math.min(bill.amount, Math.max(0, deduct)));
+            if (applied <= 0) continue;
+            bill.fixedReductionDeduction = round2((bill.fixedReductionDeduction || 0) + applied);
+            bill.amount = round2(Math.max(0, bill.amount - applied));
+            remaining = round2(Math.max(0, remaining - applied));
+        }
+
+        if (r.grossAmount != null && r.grossAmount > reductionAmount) {
+            const targetNet = round2(r.grossAmount - reductionAmount);
+            const actualNet = round2(affected.reduce((s, b) => s + b.amount, 0));
+            const diff = round2(targetNet - actualNet);
+            if (Math.abs(diff) >= 0.005 && sorted.length > 0) {
+                const last = sorted[sorted.length - 1];
+                last.amount = round2(Math.max(0, last.amount + diff));
+            }
+        }
+    }
 };
 
 const applyEarlyTerminationExtrasToBills = (tenant: Tenant, bills: BudgetedBill[]): void => {
@@ -708,6 +785,12 @@ export const generateBudgetedBills = (
             if (existingAsm?.paymentShift?.isActive) {
                 applyExistingPaymentShiftToMergedBills(bills, existingAsm.paymentShift);
             }
+            bills.forEach((b) => {
+                if (b.grossAmount == null && !b.earlyTerminationExtraDetail) {
+                    b.grossAmount = b.amount;
+                }
+            });
+            applyContractFixedRentReductions(tenant, bills);
             return bills;
         }
     }
@@ -992,7 +1075,12 @@ export const generateBudgetedBills = (
                         const overlapEnd = rfEnd < effectiveCoverageEnd ? rfEnd : effectiveCoverageEnd;
 
                         if (overlapStart <= overlapEnd) {
-                            deduction += calculateRentFreeDeduction(overlapStart, overlapEnd, currentMonthlyRent);
+                            deduction += calculateRentFreeDeductionForPeriod(
+                                rf,
+                                overlapStart,
+                                overlapEnd,
+                                currentMonthlyRent,
+                            );
                         }
                     });
                 }
@@ -1030,6 +1118,8 @@ export const generateBudgetedBills = (
                     bills.push({
                         date: finalBillDate,
                         amount: round2(finalAmount),
+                        grossAmount: round2(grossAmount),
+                        rentFreeDeduction: round2(deduction),
                         coverageStart: new Date(coverageStart),
                         coverageEnd: new Date(effectiveCoverageEnd),
                     });
@@ -1246,7 +1336,12 @@ export const generateBudgetedBills = (
                                 const overlapStart = rfStart > bills[idx].coverageStart! ? rfStart : bills[idx].coverageStart!;
                                 const overlapEnd = rfEnd < adjustedCoverageEnd ? rfEnd : adjustedCoverageEnd;
                                 if (overlapStart <= overlapEnd) {
-                                    adjustedDeduction += calculateRentFreeDeduction(overlapStart, overlapEnd, monthlyRent);
+                                    adjustedDeduction += calculateRentFreeDeductionForPeriod(
+                                        rf,
+                                        overlapStart,
+                                        overlapEnd,
+                                        monthlyRent,
+                                    );
                                 }
                             });
                         }
@@ -1256,6 +1351,13 @@ export const generateBudgetedBills = (
             }
         }
     }
+
+    bills.forEach((b) => {
+        if (b.grossAmount == null && !b.earlyTerminationExtraDetail) {
+            b.grossAmount = b.amount;
+        }
+    });
+    applyContractFixedRentReductions(tenant, bills);
 
     if (applyEarlyTerm) {
         applyEarlyTerminationExtrasToBills(tenant, bills);

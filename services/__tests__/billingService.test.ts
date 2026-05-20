@@ -692,3 +692,62 @@ describe('resolveRentUnitPriceForDisplay', () => {
     expect(display.label).toBe('日单价');
   });
 });
+
+describe('fixed rent reductions (补充协议口径)', () => {
+  function h1RentTotal(bills: ReturnType<typeof generateBudgetedBills>, year: number): number {
+    const start = new Date(year, 0, 1);
+    const end = new Date(year, 5, 30);
+    let sum = 0;
+    for (const b of bills) {
+      if (!b.coverageStart || !b.coverageEnd) continue;
+      if (b.coverageStart >= start && b.coverageEnd <= end) {
+        sum += b.amount;
+      }
+    }
+    return Math.round(sum * 100) / 100;
+  }
+
+  it('瑜源733：上半年固定减免后实缴与补充协议一致', () => {
+    const t = tenant({
+      id: 't733',
+      projectId: 'beijing_park',
+      leaseStart: '2024-01-01',
+      leaseEnd: '2027-08-24',
+      monthlyRent: 21778.33,
+      paymentCycle: 'Quarterly',
+      paymentCycleMonths: 3,
+      firstPaymentDate: '2024-01-01',
+      firstPaymentMonths: 3,
+      freeRentHandling: 'Deduct',
+      rentFreePeriods: [
+        { start: '2024-07-25', end: '2024-08-24', description: '暑期免租' },
+        { start: '2025-07-25', end: '2025-08-24', description: '暑期免租' },
+        { start: '2026-01-01', end: '2026-01-31', description: '2026年1月免租', deductionMode: 'fixed', deductionAmount: 21778.33 },
+        { start: '2026-02-25', end: '2026-03-24', description: '暑期免租' },
+      ],
+      rentReductions: [
+        {
+          id: 'rr2024h1',
+          start: '2024-01-01',
+          end: '2024-06-30',
+          grossAmount: 130670,
+          reductionAmount: 66282.16,
+          reason: '补充协议2024H1',
+        },
+        {
+          id: 'rr2025h1',
+          start: '2025-01-01',
+          end: '2025-06-30',
+          grossAmount: 130670,
+          reductionAmount: 110742.5,
+          reason: '补充协议2025H1',
+        },
+      ],
+    });
+
+    const bills = generateBudgetedBills(t, [], [], new Date('2024-01-01'), new Date('2027-08-24'));
+
+    expect(h1RentTotal(bills, 2024)).toBe(64387.84);
+    expect(h1RentTotal(bills, 2025)).toBe(19927.5);
+  });
+});

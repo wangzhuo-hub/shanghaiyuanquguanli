@@ -22,10 +22,29 @@ export enum DepositStatus {
 
 export type PaymentCycle = 'HalfMonthly' | 'Monthly' | 'BiMonthly' | 'Quarterly' | 'SemiAnnual' | 'Annual' | 'Custom';
 
+/** 免租扣减口径：按月租倍数折算，或覆盖期内固定减免金额 */
+export type RentFreeDeductionMode = 'monthly' | 'fixed';
+
 export interface RentFreePeriod {
   start: string;
   end: string;
   description: string;
+  /** 默认 monthly：整月/半月 × 月租金；fixed：覆盖期内扣减 deductionAmount 元（不按天分摊） */
+  deductionMode?: RentFreeDeductionMode;
+  /** deductionMode=fixed 时必填 */
+  deductionAmount?: number;
+}
+
+/** 合同级固定金额减免（如补充协议：上半年应缴 130670，减免 66282.16，实缴 64387.84） */
+export interface FixedRentReduction {
+  id: string;
+  start: string;
+  end: string;
+  /** 协议载明应缴（元，可选，仅展示/对账） */
+  grossAmount?: number;
+  /** 减免金额（元，正数） */
+  reductionAmount: number;
+  reason?: string;
 }
 
 export interface LeaseUnitTerm {
@@ -119,6 +138,8 @@ export interface Tenant {
   unitTerms?: LeaseUnitTerm[];
   paymentTerms?: LeaseUnitTerm[];
   rentFreePeriods: RentFreePeriod[];
+  /** 按覆盖期一次性扣减固定金额（不按 N×月租），在免租段与预算调整之后应用 */
+  rentReductions?: FixedRentReduction[];
 
   // Payment Terms
   paymentCycle: PaymentCycle;

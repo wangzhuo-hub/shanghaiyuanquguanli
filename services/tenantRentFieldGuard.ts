@@ -9,6 +9,7 @@ export const RENT_TENANT_PB_FIELDS: readonly string[] = [
     'unit_price_mode',
     'monthly_rent',
     'rent_free_periods',
+    'rent_reductions',
     'free_rent_handling',
     'deposit_amount',
     'first_receivable_amount',

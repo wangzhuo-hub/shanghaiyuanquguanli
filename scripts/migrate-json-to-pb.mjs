@@ -78,6 +78,7 @@ function extractTenants(data, projectId) {
     unit_price: t.unitPrice || 0,
     monthly_rent: t.monthlyRent || 0,
     rent_free_periods: t.rentFreePeriods || [],
+    rent_reductions: t.rentReductions || [],
     management_fee_enabled: t.managementFeeEnabled ?? null,
     management_fee_exempt: t.managementFeeExempt ?? null,
     management_fee_free_periods: t.managementFeeFreePeriods || [],

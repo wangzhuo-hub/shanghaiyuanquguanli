@@ -73,6 +73,7 @@ const COLLECTIONS = [
       { name: 'unit_price', type: 'number', required: false, options: { min: null, max: null, noDecimal: false } },
       { name: 'monthly_rent', type: 'number', required: false, options: { min: null, max: null, noDecimal: false } },
       { name: 'rent_free_periods', type: 'json', required: false, options: { maxSize: 500000 } },
+      { name: 'rent_reductions', type: 'json', required: false, options: { maxSize: 500000 } },
       { name: 'payment_cycle', type: 'select', required: false, options: { maxSelect: 1, values: ['HalfMonthly', 'Monthly', 'BiMonthly', 'Quarterly', 'SemiAnnual', 'Annual', 'Custom'] } },
       { name: 'payment_terms', type: 'json', required: false, options: { maxSize: 2000000 } },
       { name: 'payment_cycle_months', type: 'number', required: false, options: { min: null, max: null, noDecimal: false } },
