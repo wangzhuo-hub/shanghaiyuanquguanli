@@ -12,6 +12,11 @@ export const DEFER_BILLING_NOTE_PREFIX = '__defer__';
  * - 或备注含系统写入的「月度账单」「批量核销」
  */
 export function isAutoReceivableWriteOffPayment(p: PaymentRecord): boolean {
+    if (p.type === 'ManagementFee') {
+        if (typeof p.id === 'string' && p.id.includes('_col_')) return true;
+        const r = p.remarks || '';
+        return r.includes('物业费月度账单') || r.includes('物业费批量核销');
+    }
     if (p.type !== 'Rent' && p.type !== 'DepositToRent') return false;
     if (typeof p.id === 'string' && p.id.includes('_col_')) return true;
     const r = p.remarks || '';
@@ -667,11 +672,14 @@ export function classifyReceivableRow(
         return 'unsettled';
     }
     if (d.status === 'Paid' || remaining <= 0) {
+        const isMgmt = d.feeKind === 'management_fee';
         const matched = payments.filter(
             (p) =>
                 paymentMatchesRentBillingPeriod(p, receivableMonth) &&
                 paymentTenantMatchesBillingTenant(p.tenantId, d.tenantId, tenantList, p.tenantName) &&
-                (p.type === 'Rent' || p.type === 'DepositToRent')
+                (isMgmt
+                    ? p.type === 'ManagementFee'
+                    : p.type === 'Rent' || p.type === 'DepositToRent'),
         );
         if (matched.length === 0) return 'settled_this_month';
         const [y, m] = receivableMonth.split('-').map(Number);

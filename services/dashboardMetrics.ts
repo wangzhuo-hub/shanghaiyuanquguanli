@@ -1547,6 +1547,12 @@ export const calculateDashboardMetrics = (
         }
     });
 
+    // quickMode 跳过重算时保留已有衍生指标，避免非 Dashboard 页编辑后 KPI 被清空
+    const resolvedMonthlyTrends = quickMode ? (currentData.monthlyTrends ?? []) : monthlyTrends;
+    const resolvedPrevYearMonthlyTrends = quickMode ? (currentData.prevYearMonthlyTrends ?? []) : prevYearMonthlyTrends;
+    const resolvedAccumulatedArrears = quickMode ? (currentData.accumulatedArrears ?? 0) : accumulatedArrears;
+    const resolvedCurrentMonthBilling = quickMode ? (currentData.currentMonthBilling ?? []) : currentMonthBilling;
+
     const processedData: DashboardData = {
         ...currentData,
         buildings: syncedBuildings,
@@ -1564,7 +1570,7 @@ export const calculateDashboardMetrics = (
         monthlyRevenueTarget,
         monthlyRevenueCollected,
         collectionRate,
-        accumulatedArrears,
+        accumulatedArrears: resolvedAccumulatedArrears,
         newContractsCount,
         newContractsArea,
         terminatedContractsCount,
@@ -1572,9 +1578,9 @@ export const calculateDashboardMetrics = (
         netIncreaseArea,
         recentSignings,
         expiringSoon,
-        monthlyTrends,
-        prevYearMonthlyTrends,
-        currentMonthBilling,
+        monthlyTrends: resolvedMonthlyTrends,
+        prevYearMonthlyTrends: resolvedPrevYearMonthlyTrends,
+        currentMonthBilling: resolvedCurrentMonthBilling,
         parkingStats: {
             totalContractSpaces,
             totalActualSpaces,

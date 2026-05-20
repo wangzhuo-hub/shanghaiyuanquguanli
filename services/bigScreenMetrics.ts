@@ -10,6 +10,7 @@ import {
   type DashboardQuarter,
 } from './dashboardMetrics';
 import { isManagementFeeBillingEnabled } from './parkBillingConfig';
+import { receivableBudgetDisplay } from './receivableListHelpers';
 import type { BigScreenEvent } from './bigScreenEvents';
 import type { BigScreenAlert } from './bigScreenAlerts';
 
@@ -21,9 +22,10 @@ const sumBilling = (rows: BillingDetail[]) => {
   let collected = 0;
   let unpaid = 0;
   for (const b of rows) {
-    receivable += b.amountDue || 0;
+    const due = receivableBudgetDisplay(b);
+    receivable += due;
     collected += b.amountPaid || 0;
-    unpaid += Math.max(0, (b.amountDue || 0) - (b.amountPaid || 0));
+    unpaid += Math.max(0, due - (b.amountPaid || 0));
   }
   return { receivable, collected, unpaid };
 };

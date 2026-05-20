@@ -1923,7 +1923,7 @@ export const BudgetManager: React.FC<BudgetManagerProps> = ({
                                 {Array.from({length:12}).map((_, i) => (
                                     <th
                                         key={i}
-                                        className={`px-2 py-3 text-right bg-slate-50 sticky top-0 z-20 border-b border-slate-200 shadow-sm min-w-[${isExec ? '120px' : '95px'}]`}
+                                        className={`px-2 py-3 text-right bg-slate-50 sticky top-0 z-20 border-b border-slate-200 shadow-sm ${isExec ? 'min-w-[120px]' : 'min-w-[95px]'}`}
                                     >
                                         {i + 1}月
                                     </th>

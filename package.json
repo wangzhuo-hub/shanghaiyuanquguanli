@@ -17,12 +17,11 @@
     "export:pb": "node scripts/export-pb-dashboard-backup.mjs"
   },
   "dependencies": {
-    "@supabase/supabase-js": "^2.39.7",
     "exceljs": "^4.4.0",
     "express": "^5.2.1",
     "html2canvas": "^1.4.1",
     "jspdf": "^4.1.0",
-    "lucide-react": "latest",
+    "lucide-react": "^0.487.0",
     "pocketbase": "^0.21.0",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
@@ -30,6 +29,7 @@
     "xlsx": "^0.18.5"
   },
   "devDependencies": {
+    "@supabase/supabase-js": "^2.39.7",
     "@types/react": "^18.2.64",
     "@types/react-dom": "^18.2.21",
     "@vitejs/plugin-react": "^4.2.1",

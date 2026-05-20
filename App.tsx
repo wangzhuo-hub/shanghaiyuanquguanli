@@ -71,7 +71,7 @@ import {
 import { formatCurrency } from './services/numberFormat';
 import { isManagementFeeBillingEnabled } from './services/parkBillingConfig';
 import { userRoleLabel } from './services/receivablePermissions';
-import { DEFAULT_CLOUD_CONFIG, mergeStoredCloudConfig } from './config/deploymentDefaults';
+import { DEFAULT_CLOUD_CONFIG, mergeStoredCloudConfig, cloudConfigForStorage } from './config/deploymentDefaults';
 import { DirtyTrackerProvider } from './services/dirtyTrackerContext';
 import { DirtyTracker } from './services/dirtyTracker';
 import {
@@ -93,6 +93,11 @@ import {
     readImportedBudgetTable,
     writeImportedBudgetTable,
 } from './services/budgetTableImport';
+import {
+    preserveRentFieldsInTenantPbMap,
+    filterDirtyPayloadForRentMaskedUser,
+} from './services/tenantRentFieldGuard';
+import { scopeCachedDashboardData } from './services/dataScopeFilter';
 import { migrateShanghaiInitRow, SHANGHAI_PARK_ID } from './services/initDataBudget';
 
 const STORAGE_KEY = 'kingdee_park_data_v1';
@@ -111,18 +116,16 @@ const hasMeaningfulDashboardPayload = (d: DashboardData): boolean =>
 const validateDataProjectConsistency = (
     data: DashboardData,
     expectedProjectId: string,
-    sampleSize = 10
 ): { consistent: boolean; mismatchCount: number; totalChecked: number } => {
     const tenants = data.tenants || [];
     if (tenants.length === 0) return { consistent: true, mismatchCount: 0, totalChecked: 0 };
-    const checkCount = Math.min(sampleSize, tenants.length);
     let mismatchCount = 0;
-    for (let i = 0; i < checkCount; i++) {
+    for (let i = 0; i < tenants.length; i++) {
         if (tenants[i].projectId && tenants[i].projectId !== expectedProjectId) {
             mismatchCount++;
         }
     }
-    return { consistent: mismatchCount === 0, mismatchCount, totalChecked: checkCount };
+    return { consistent: mismatchCount === 0, mismatchCount, totalChecked: tenants.length };
 };
 
 /** 检测批量操作是否异常（大规模增/删），超阈值需用户确认 */
@@ -467,21 +470,30 @@ const App: React.FC = () => {
           if (currentProjectIdRef.current !== projectIdAtEffectStart) return;
           localStorage.setItem(getParkStorageKey(projectIdAtEffectStart), JSON.stringify(data));
           setLastSaved(new Date().toLocaleTimeString());
-          if (isCloudConnected) {
+          if (isCloudConnected && cloudConfig.autoSync) {
               const consistencyCheck = validateDataProjectConsistency(data, projectIdAtEffectStart || '');
               if (!consistencyCheck.consistent) {
                   console.error("[auto-save] 数据一致性校验失败:", consistencyCheck, "期望园区:", projectIdAtEffectStart);
                   return;
               }
               const nextSnapshot = dashboardDataToPbRecords(data, projectIdAtEffectStart || '');
-              const payload = diffPbRecords(baselineSnapshotRef.current, nextSnapshot, recordMeta);
+              const scopedSnapshot = preserveRentFieldsInTenantPbMap(
+                  nextSnapshot,
+                  baselineSnapshotRef.current,
+                  authUser,
+              );
+              let payload = diffPbRecords(baselineSnapshotRef.current, scopedSnapshot, recordMeta);
+              payload = filterDirtyPayloadForRentMaskedUser(payload, authUser);
               const summary = payloadCount(payload);
               if (summary.total > 0) {
                   // 二次防御：写云之前再核对一次 projectId，避开 await 期间被切走的极端情况。
                   if (currentProjectIdRef.current !== projectIdAtEffectStart) return;
                   const res = await saveIncrementalToCloud(payload, cloudConfig, recordMeta);
                   if (res.errors.length > 0) console.warn('[auto-save] 部分失败:', res.errors);
-                  if (res.conflicts.length > 0) console.warn('[auto-save] 冲突，将在下次手动保存时处理:', res.conflicts.length);
+                  if (res.conflicts.length > 0) {
+                      console.warn('[auto-save] 冲突，已暂停自动写云:', res.conflicts.length);
+                      setPendingConflicts(res.conflicts);
+                  }
                   if (res.errors.length === 0 && res.conflicts.length === 0) {
                       // 三次防御：刷新基线之前再确认 projectId 没变，防止把当前园区基线刷成上一园区。
                       if (currentProjectIdRef.current === projectIdAtEffectStart) {
@@ -495,19 +507,20 @@ const App: React.FC = () => {
       }
     }, 2000);
     return () => { if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current); };
-  }, [data, cloudConfig.projectId]);
+  }, [data, cloudConfig.projectId, cloudConfig.autoSync, isCloudConnected, authUser]);
 
+  const dataRef = React.useRef(data);
+  dataRef.current = data;
   useEffect(() => {
-      if (data) {
-          recalculateMetrics(data);
-      }
-  }, [billingSelectedMonth]);
+      if (!dataRef.current) return;
+      recalculateMetrics(dataRef.current, selectedYear, selectedQuarter);
+  }, [billingSelectedMonth, activeTab, selectedYear, selectedQuarter]);
 
   const handleCloudConfigSave = async () => {
       setIsTestingCloud(true);
       setCloudConnectionMsg(null);
       await new Promise(r => setTimeout(r, 600));
-      localStorage.setItem(CLOUD_CONFIG_KEY, JSON.stringify(cloudConfig));
+      localStorage.setItem(CLOUD_CONFIG_KEY, JSON.stringify(cloudConfigForStorage(cloudConfig)));
       
       // 初始化云服务
       await initCloud(cloudConfig);
@@ -558,7 +571,7 @@ const App: React.FC = () => {
       const nextConfig = { ...cloudConfig, projectId: targetProjectId };
       setIsSyncing(true);
       setCloudConfig(nextConfig);
-      localStorage.setItem(CLOUD_CONFIG_KEY, JSON.stringify(nextConfig));
+      localStorage.setItem(CLOUD_CONFIG_KEY, JSON.stringify(cloudConfigForStorage(nextConfig)));
       setRecordMeta({});
       baselineSnapshotRef.current = null;
       dirtyTrackerRef.current.reset();
@@ -573,13 +586,22 @@ const App: React.FC = () => {
                   recalculateMetrics(safeData, selectedYear, selectedQuarter);
                   localStorage.setItem(getParkStorageKey(targetProjectId), JSON.stringify(safeData));
               } else if (cached) {
-                  recalculateMetrics({ ...generateInitialData(), ...JSON.parse(cached) }, selectedYear, selectedQuarter);
+                  const cachedData = scopeCachedDashboardData(
+                      { ...generateInitialData(), ...JSON.parse(cached) },
+                      authUser,
+                      targetProjectId,
+                  );
+                  recalculateMetrics(cachedData, selectedYear, selectedQuarter);
               } else {
                   recalculateMetrics(safeData, selectedYear, selectedQuarter);
               }
           } else if (cached) {
-              const safeData = { ...generateInitialData(), ...JSON.parse(cached) };
-              recalculateMetrics(safeData, selectedYear, selectedQuarter);
+              const cachedData = scopeCachedDashboardData(
+                  { ...generateInitialData(), ...JSON.parse(cached) },
+                  authUser,
+                  targetProjectId,
+              );
+              recalculateMetrics(cachedData, selectedYear, selectedQuarter);
           } else {
               recalculateMetrics(generateInitialData(), selectedYear, selectedQuarter);
           }
@@ -653,24 +675,30 @@ const App: React.FC = () => {
       const projectId = resolveInitialProjectId(res.user, parksRes.success ? parksRes.parks : [], cloudConfig.projectId);
       const authedConfig = { ...nextConfig, projectId };
       setAuthUser(res.user);
+      const loginUser = res.user;
       setCloudConfig(authedConfig);
-      localStorage.setItem(CLOUD_CONFIG_KEY, JSON.stringify(authedConfig));
+      localStorage.setItem(CLOUD_CONFIG_KEY, JSON.stringify(cloudConfigForStorage(authedConfig)));
       const connected = await checkConnection(authedConfig);
       setIsCloudConnected(connected);
       setIsLoggingIn(false);
       setIsSyncing(true);
       try {
-          const res = await fetchCloudBackup(authedConfig, projectId);
-          if (res.success && res.data) {
-              const safeData = { ...generateInitialData(), ...res.data };
-              captureBaselineFromCloud(safeData, res.recordMeta, projectId);
+          const backupRes = await fetchCloudBackup(authedConfig, projectId);
+          if (backupRes.success && backupRes.data) {
+              const safeData = { ...generateInitialData(), ...backupRes.data };
+              captureBaselineFromCloud(safeData, backupRes.recordMeta, projectId);
               if (hasMeaningfulDashboardPayload(safeData)) {
                   recalculateMetrics(safeData, selectedYear, selectedQuarter);
                   localStorage.setItem(getParkStorageKey(projectId), JSON.stringify(safeData));
               } else {
                   const cached = localStorage.getItem(getParkStorageKey(projectId));
                   if (cached) {
-                      recalculateMetrics({ ...generateInitialData(), ...JSON.parse(cached) }, selectedYear, selectedQuarter);
+                      const cachedData = scopeCachedDashboardData(
+                          { ...generateInitialData(), ...JSON.parse(cached) },
+                          loginUser,
+                          projectId,
+                      );
+                      recalculateMetrics(cachedData, selectedYear, selectedQuarter);
                   } else {
                       recalculateMetrics(safeData, selectedYear, selectedQuarter);
                   }
@@ -679,7 +707,12 @@ const App: React.FC = () => {
           } else {
               const cached = localStorage.getItem(getParkStorageKey(projectId));
               if (cached) {
-                  recalculateMetrics({ ...generateInitialData(), ...JSON.parse(cached) }, selectedYear, selectedQuarter);
+                  const cachedData = scopeCachedDashboardData(
+                      { ...generateInitialData(), ...JSON.parse(cached) },
+                      loginUser,
+                      projectId,
+                  );
+                  recalculateMetrics(cachedData, selectedYear, selectedQuarter);
               } else {
                   recalculateMetrics(generateInitialData(), selectedYear, selectedQuarter);
               }
@@ -864,12 +897,16 @@ const App: React.FC = () => {
   const triggerServerComputeRefresh = (config: CloudConfig, year: number) => {
       const baseUrl = config.pocketbaseUrl || '';
       if (!baseUrl) return;
-      // 集成网关默认与 PocketBase 同主部署，端口 8787
       const gatewayUrl = baseUrl.replace(/\/api\/pb$/, '').replace(/:\d+/, '') + ':8787';
       const body = JSON.stringify({ project_id: config.projectId, year });
+      const internalToken = String(
+          (import.meta as any).env?.VITE_INTEGRATION_INTERNAL_TOKEN || '',
+      ).trim();
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (internalToken) headers['X-Integration-Internal-Token'] = internalToken;
       fetch(`${gatewayUrl}/api/integration/compute/refresh`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers,
           body,
       }).then(() => {
           // 成功：静默
@@ -924,9 +961,13 @@ const App: React.FC = () => {
 
       // ---- 增量保存（自动 diff baseline ↔ current）----
       const nextSnapshot = dashboardDataToPbRecords(currentData, cloudConfig.projectId || '');
-      // 如果业务组件以后接入了 dirtyTracker，可以把它的 payload 与 diff 结果合并；
-      // 当前阶段以 diff 为唯一来源，避免双重登记导致重复请求。
-      const payload = diffPbRecords(baseline, nextSnapshot, baseRecordMeta);
+      const scopedSnapshot = preserveRentFieldsInTenantPbMap(
+          nextSnapshot,
+          baseline,
+          authUser,
+      );
+      let payload = diffPbRecords(baseline, scopedSnapshot, baseRecordMeta);
+      payload = filterDirtyPayloadForRentMaskedUser(payload, authUser);
       const summary = payloadCount(payload);
 
       if (summary.total === 0) {
@@ -2264,6 +2305,15 @@ const App: React.FC = () => {
                                  </div>
                                  <p className="text-xs text-slate-400 mt-1">{isGlobalAdmin() ? '管理员可在授权园区间切换。' : '普通用户登录后自动进入已分配园区。'}</p>
                              </div>
+                             <label className="flex items-center gap-2 text-sm text-slate-700 cursor-pointer select-none">
+                                 <input
+                                     type="checkbox"
+                                     className="rounded border-slate-300 text-sky-600 focus:ring-sky-200"
+                                     checked={!!cloudConfig.autoSync}
+                                     onChange={(e) => setCloudConfig((prev) => ({ ...prev, autoSync: e.target.checked }))}
+                                 />
+                                 <span>编辑后自动同步到 PocketBase（默认关闭，需手动保存时可不勾选）</span>
+                             </label>
                          </div>
                      </div>
 
@@ -2456,7 +2506,7 @@ const App: React.FC = () => {
 
                                 <div className="bg-white rounded-lg border border-slate-200 overflow-hidden">
                                     <div className="px-4 py-3 border-b border-slate-100 flex items-center justify-between">
-                                        <div className="text-sm font-semibold text-slate-700">注册申请审批（姓名/邮箱/密码/园区）</div>
+                                        <div className="text-sm font-semibold text-slate-700">注册申请审批（姓名/邮箱/园区）</div>
                                         <div className="text-xs text-slate-400">{signupRequests.filter(r => r.status === 'pending').length} 条待审批</div>
                                     </div>
                                     <div className="max-h-72 overflow-y-auto">
@@ -2471,7 +2521,6 @@ const App: React.FC = () => {
                                                 <div key={req.id} className="px-4 py-3 border-t border-slate-100 space-y-2">
                                                     <div className="text-sm font-semibold text-slate-700">{req.applicantName || '（未填姓名）'}</div>
                                                     <div className="text-xs text-slate-600">邮箱：{req.email}</div>
-                                                    <div className="text-xs text-slate-600">密码：{req.password || '（未填写）'}</div>
                                                     <div className="text-xs text-slate-600">申请园区：{req.requestedProjectIds.length ? req.requestedProjectIds.join('、') : '无'}</div>
                                                     <div className="flex justify-end">
                                                         <button onClick={() => handleApproveSignupRequest(req)} className="px-3 py-1.5 text-xs rounded bg-emerald-600 text-white hover:bg-emerald-700">审批通过并创建账号</button>

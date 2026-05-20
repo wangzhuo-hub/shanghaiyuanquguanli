@@ -47,7 +47,12 @@ export function mergeStoredCloudConfig(raw: string | null): CloudConfig {
                 : d.pocketbaseUrl,
         pocketbaseEmail:
             parsed.pocketbaseEmail !== undefined ? parsed.pocketbaseEmail : d.pocketbaseEmail,
-        pocketbasePassword:
-            parsed.pocketbasePassword !== undefined ? parsed.pocketbasePassword : d.pocketbasePassword,
+        // 密码仅用于当前会话，不从 localStorage 恢复
+        pocketbasePassword: '',
     };
+}
+
+/** 写入 localStorage 时剔除密码，避免明文落盘 */
+export function cloudConfigForStorage(config: CloudConfig): CloudConfig {
+    return { ...config, pocketbasePassword: '' };
 }

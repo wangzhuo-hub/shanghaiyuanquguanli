@@ -281,6 +281,10 @@ export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, build
   };
 
   const handleBatchDeleteContracts = () => {
+      if (!viewRentPricing) {
+          alert('当前账号无合同删除权限。');
+          return;
+      }
       if (batchSelectedContractIds.size === 0) return;
       if (!window.confirm(`确定删除选中的 ${batchSelectedContractIds.size} 份合同？此操作不可恢复。`)) return;
       const rm = batchSelectedContractIds;
@@ -2981,7 +2985,7 @@ export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, build
                 )}
 
                 <div className="flex justify-between items-center px-8 py-6 border-t border-slate-100 bg-white sticky bottom-0 z-20 rounded-b-xl shadow-lg">
-                    <div>{currentTenant.id && <button onClick={() => { if(window.confirm("确定删除?")) { onUpdateTenants(tenants.filter(t => t.id !== currentTenant.id)); setIsEditing(false); } }} className="text-rose-500 font-bold flex items-center gap-2 px-4 py-2 hover:bg-rose-50 rounded-lg"><Trash2 size={18}/> 删除记录</button>}</div>
+                    <div>{currentTenant.id && viewRentPricing && <button onClick={() => { if(window.confirm("确定删除?")) { onUpdateTenants(tenants.filter(t => t.id !== currentTenant.id)); setIsEditing(false); } }} className="text-rose-500 font-bold flex items-center gap-2 px-4 py-2 hover:bg-rose-50 rounded-lg"><Trash2 size={18}/> 删除记录</button>}</div>
                     <div className="flex gap-3"><button onClick={() => { setIsEditing(false); setRenewingFromId(null); setFormErrors({}); }} className="px-6 py-2.5 text-slate-600 font-bold">取消</button><button onClick={handleSave} className="px-10 py-2.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-bold flex items-center gap-2 shadow-lg"><Save size={18}/> 保存并退出</button></div>
                 </div>
              </div>
@@ -3455,7 +3459,7 @@ export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, build
                                 <button
                                     type="button"
                                     onClick={handleBatchDeleteContracts}
-                                    disabled={batchSelectedContractIds.size === 0}
+                                    disabled={!viewRentPricing || batchSelectedContractIds.size === 0}
                                     className="inline-flex items-center gap-1 rounded-lg border border-transparent px-2.5 py-1.5 text-xs font-semibold text-rose-700 hover:bg-rose-50 disabled:pointer-events-none disabled:opacity-40 sm:px-3 sm:text-sm"
                                     title="删除已勾选的可删合同"
                                 >

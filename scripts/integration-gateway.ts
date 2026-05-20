@@ -60,6 +60,57 @@ interface AuthResult {
   sourceType?: string;
   sourceKey?: string;
   projectId?: string;
+  receivableScopes?: string[];
+}
+
+function scopesFromSource(source: any): string[] {
+  const meta = source?.metadata;
+  if (meta && Array.isArray(meta.allowed_receivable_scopes)) {
+    return meta.allowed_receivable_scopes.filter(
+      (x: string) => x === 'rent_receivable' || x === 'mgmt_fee_receivable',
+    );
+  }
+  return ['rent_receivable', 'mgmt_fee_receivable'];
+}
+
+function internalTokenOk(req: express.Request): boolean {
+  const expected = String(process.env.INTEGRATION_INTERNAL_TOKEN || '').trim();
+  if (!expected) return false;
+  return String(req.headers['x-integration-internal-token'] || '').trim() === expected;
+}
+
+async function requireIntegrationAuth(
+  req: express.Request,
+  res: express.Response,
+): Promise<AuthResult | null> {
+  const projectId = String(
+    (req.query.project_id as string) || (req.body as any)?.project_id || '',
+  ).trim();
+
+  if (internalTokenOk(req)) {
+    if (!projectId) {
+      res.status(400).json({ ok: false, message: '缺少 project_id' });
+      return null;
+    }
+    return {
+      ok: true,
+      status: 200,
+      message: '',
+      projectId,
+      receivableScopes: ['rent_receivable', 'mgmt_fee_receivable'],
+    };
+  }
+
+  const source = await resolveSource(req);
+  if (!source.ok) {
+    res.status(source.status).json({ ok: false, message: source.message });
+    return null;
+  }
+  if (projectId && source.projectId && projectId !== source.projectId) {
+    res.status(403).json({ ok: false, message: '禁止跨园区访问' });
+    return null;
+  }
+  return { ...source, projectId: projectId || source.projectId };
 }
 
 async function auth(): Promise<void> {
@@ -107,7 +158,15 @@ async function resolveSource(req: express.Request): Promise<AuthResult> {
     }
   }
 
-  return { ok: true, status: 200, message: '', sourceType, sourceKey, projectId: source.project_id };
+  return {
+    ok: true,
+    status: 200,
+    message: '',
+    sourceType,
+    sourceKey,
+    projectId: source.project_id,
+    receivableScopes: scopesFromSource(source),
+  };
 }
 
 function buildOriginalIdFilter(collection: string, body: any, projectId: string): string {
@@ -120,7 +179,7 @@ function buildOriginalIdFilter(collection: string, body: any, projectId: string)
   return `project_id="${escapeFilter(projectId)}" && original_id="${escapeFilter(originalId)}"`;
 }
 
-async function writeBusinessRecord(body: any, projectId: string) {
+async function writeBusinessRecord(body: any, projectId: string, receivableScopes: string[] = ['rent_receivable', 'mgmt_fee_receivable']) {
   const collection = String(body.collection || '').trim();
   const action = String(body.action || 'upsert').trim();
   if (!WRITABLE_COLLECTIONS.has(collection)) throw new Error(`不允许写入集合 ${collection}`);
@@ -129,6 +188,21 @@ async function writeBusinessRecord(body: any, projectId: string) {
   const requestedProject = String(body.project_id || body.data?.project_id || '').trim();
   if (requestedProject && requestedProject !== projectId) {
     throw new Error(`禁止跨园区写入：来源绑定 ${projectId}，请求目标 ${requestedProject}`);
+  }
+
+  if (collection === 'pb_payments' && action !== 'delete') {
+    const payType = String(body.data?.type || '');
+    const rentTypes = new Set(['Rent', 'DepositToRent', 'Deposit', 'DepositRefund']);
+    if (payType === 'ManagementFee' && !receivableScopes.includes('mgmt_fee_receivable')) {
+      throw new Error('来源无物业费核销权限');
+    }
+    if (rentTypes.has(payType) && !receivableScopes.includes('rent_receivable')) {
+      throw new Error('来源无租金核销权限');
+    }
+  }
+
+  if (collection === 'pb_tenants' && action === 'delete' && !receivableScopes.includes('rent_receivable')) {
+    throw new Error('来源无租金权限，不可删除租户');
   }
 
   const payload = { ...(body.data || {}), project_id: projectId };
@@ -152,15 +226,14 @@ async function writeBusinessRecord(body: any, projectId: string) {
   return { collection, action: 'create', id: created.id };
 }
 
-// ── 只读端点 ──
+// ── 只读端点（均需来源鉴权） ──
 
 async function handleKpiQuery(req: express.Request, res: express.Response) {
+  const authCtx = await requireIntegrationAuth(req, res);
+  if (!authCtx) return;
   try {
-    const projectId = String((req.query.project_id as string) || (req.body as any)?.project_id || '').trim();
+    const projectId = authCtx.projectId!;
     const year = Number(req.query.year || (req.body as any)?.year || new Date().getFullYear());
-    if (!projectId) { res.status(400).json({ ok: false, message: '缺少 project_id' }); return; }
-
-    // 1) 优先读 pb_kpi_snapshots（缓存快查）
     try {
       const list = await pb.collection('pb_kpi_snapshots').getList(1, 1, {
         filter: `project_id="${escapeFilter(projectId)}" && year=${year}`,
@@ -222,9 +295,10 @@ async function handleKpiQuery(req: express.Request, res: express.Response) {
 }
 
 async function handleDashboardQuery(req: express.Request, res: express.Response) {
+  const authCtx = await requireIntegrationAuth(req, res);
+  if (!authCtx) return;
   try {
-    const projectId = String((req.query.project_id as string) || '').trim();
-    if (!projectId) { res.status(400).json({ ok: false, message: '缺少 project_id' }); return; }
+    const projectId = authCtx.projectId!;
 
     // 1) 优先读 pb_integration_snapshots（缓存快查）
     try {
@@ -261,6 +335,17 @@ async function handleDashboardQuery(req: express.Request, res: express.Response)
       pb.collection('pb_units').getFullList({ filter: `project_id="${escapeFilter(projectId)}"`, sort: 'name' }),
       pb.collection('pb_payments').getFullList({ filter: `project_id="${escapeFilter(projectId)}"`, sort: '-date' }),
     ]);
+    const rentOk = (authCtx.receivableScopes || []).includes('rent_receivable');
+    const filteredTenants = rentOk
+      ? tenants
+      : tenants.map((t: any) => {
+          const row = { ...t };
+          for (const f of ['unit_price', 'monthly_rent', 'deposit_amount']) delete row[f];
+          return row;
+        });
+    const filteredPayments = rentOk
+      ? payments
+      : payments.filter((p: any) => p.type === 'ManagementFee');
 
     res.json({
       ok: true, source: 'compute-engine', project_id: projectId,
@@ -273,7 +358,7 @@ async function handleDashboardQuery(req: express.Request, res: express.Response)
         calendar_month: new Date().getMonth() + 1,
         ...kpiResult.summary,
       },
-      dashboard: { tenants, buildings, units, payments },
+      dashboard: { tenants: filteredTenants, buildings, units, payments: filteredPayments },
       full_year_monthly_trends: kpiResult.fullYearTrends,
     });
   } catch (e: any) {
@@ -283,14 +368,23 @@ async function handleDashboardQuery(req: express.Request, res: express.Response)
 }
 
 async function handleTenantsQuery(req: express.Request, res: express.Response) {
+  const authCtx = await requireIntegrationAuth(req, res);
+  if (!authCtx) return;
   try {
-    const projectId = String((req.query.project_id as string) || '').trim();
+    const projectId = authCtx.projectId!;
     const name = String((req.query.name as string) || '').trim();
-    if (!projectId) { res.status(400).json({ ok: false, message: '缺少 project_id' }); return; }
     let filter = `project_id="${escapeFilter(projectId)}"`;
     if (name) filter += ` && name~"${escapeFilter(name)}"`;
     const list = await pb.collection('pb_tenants').getFullList({ filter, sort: 'name' });
-    res.json({ ok: true, project_id: projectId, count: list.length, tenants: list });
+    const rentOk = (authCtx.receivableScopes || []).includes('rent_receivable');
+    const tenants = rentOk
+      ? list
+      : list.map((t: any) => {
+          const row = { ...t };
+          for (const f of ['unit_price', 'monthly_rent', 'deposit_amount', 'rent_free_periods']) delete row[f];
+          return row;
+        });
+    res.json({ ok: true, project_id: projectId, count: tenants.length, tenants });
   } catch (e: any) {
     console.error('[tenants] error:', e?.message || e);
     res.status(500).json({ ok: false, message: e?.message || '内部错误' });
@@ -298,15 +392,18 @@ async function handleTenantsQuery(req: express.Request, res: express.Response) {
 }
 
 async function handlePaymentsQuery(req: express.Request, res: express.Response) {
+  const authCtx = await requireIntegrationAuth(req, res);
+  if (!authCtx) return;
   try {
-    const projectId = String((req.query.project_id as string) || '').trim();
+    const projectId = authCtx.projectId!;
     const tenantId = String((req.query.tenant_id as string) || '').trim();
     const period = String((req.query.period as string) || '').trim();
-    if (!projectId) { res.status(400).json({ ok: false, message: '缺少 project_id' }); return; }
     let filter = `project_id="${escapeFilter(projectId)}"`;
     if (tenantId) filter += ` && tenant_id="${escapeFilter(tenantId)}"`;
     if (period && /^\d{4}-\d{2}$/.test(period)) filter += ` && period="${escapeFilter(period)}"`;
-    const list = await pb.collection('pb_payments').getFullList({ filter, sort: '-date' });
+    let list = await pb.collection('pb_payments').getFullList({ filter, sort: '-date' });
+    const rentOk = (authCtx.receivableScopes || []).includes('rent_receivable');
+    if (!rentOk) list = list.filter((p: any) => p.type === 'ManagementFee');
     res.json({ ok: true, project_id: projectId, count: list.length, payments: list });
   } catch (e: any) {
     console.error('[payments] error:', e?.message || e);
@@ -315,9 +412,10 @@ async function handlePaymentsQuery(req: express.Request, res: express.Response) 
 }
 
 async function handleBuildingsQuery(req: express.Request, res: express.Response) {
+  const authCtx = await requireIntegrationAuth(req, res);
+  if (!authCtx) return;
   try {
-    const projectId = String((req.query.project_id as string) || '').trim();
-    if (!projectId) { res.status(400).json({ ok: false, message: '缺少 project_id' }); return; }
+    const projectId = authCtx.projectId!;
     const list = await pb.collection('pb_buildings').getFullList({
       filter: `project_id="${escapeFilter(projectId)}"`, sort: 'name',
     });
@@ -329,10 +427,11 @@ async function handleBuildingsQuery(req: express.Request, res: express.Response)
 }
 
 async function handleUnitsQuery(req: express.Request, res: express.Response) {
+  const authCtx = await requireIntegrationAuth(req, res);
+  if (!authCtx) return;
   try {
-    const projectId = String((req.query.project_id as string) || '').trim();
+    const projectId = authCtx.projectId!;
     const buildingId = String((req.query.building_id as string) || '').trim();
-    if (!projectId) { res.status(400).json({ ok: false, message: '缺少 project_id' }); return; }
     let filter = `project_id="${escapeFilter(projectId)}"`;
     if (buildingId) filter += ` && building_id="${escapeFilter(buildingId)}"`;
     const list = await pb.collection('pb_units').getFullList({ filter, sort: 'name' });
@@ -346,10 +445,11 @@ async function handleUnitsQuery(req: express.Request, res: express.Response) {
 // ── 服务端计算端点（与前端 billingService / dashboardMetrics 同代码）──
 
 async function handleComputeKpi(req: express.Request, res: express.Response) {
+  const authCtx = await requireIntegrationAuth(req, res);
+  if (!authCtx) return;
   try {
-    const projectId = String((req.body?.project_id || req.query.project_id || '' as string)).trim();
+    const projectId = authCtx.projectId!;
     const year = Number(req.body?.year || req.query.year || new Date().getFullYear());
-    if (!projectId) { res.status(400).json({ ok: false, message: '缺少 project_id' }); return; }
 
     console.log(`[compute] KPI project=${projectId} year=${year}`);
     const result = await computeKpi(projectId, year);
@@ -361,12 +461,14 @@ async function handleComputeKpi(req: express.Request, res: express.Response) {
 }
 
 async function handleComputeBilling(req: express.Request, res: express.Response) {
+  const authCtx = await requireIntegrationAuth(req, res);
+  if (!authCtx) return;
   try {
-    const projectId = String((req.body?.project_id || '' as string)).trim();
+    const projectId = authCtx.projectId!;
     const year = Number(req.body?.year);
     const month = Number(req.body?.month) - 1; // 前端传 1-12，内部用 0-11
-    if (!projectId || !Number.isFinite(year) || !Number.isFinite(month) || month < 0 || month > 11) {
-      res.status(400).json({ ok: false, message: '缺少 project_id / year / month (1-12)' });
+    if (!Number.isFinite(year) || !Number.isFinite(month) || month < 0 || month > 11) {
+      res.status(400).json({ ok: false, message: '缺少 year / month (1-12)' });
       return;
     }
 
@@ -381,10 +483,11 @@ async function handleComputeBilling(req: express.Request, res: express.Response)
 
 /** 重算 KPI 并回写到 pb_kpi_snapshots，使后续 GET /api/integration/kpi 直接命中 */
 async function handleComputeRefresh(req: express.Request, res: express.Response) {
+  const authCtx = await requireIntegrationAuth(req, res);
+  if (!authCtx) return;
   try {
-    const projectId = String((req.body?.project_id || '' as string)).trim();
+    const projectId = authCtx.projectId!;
     const year = Number(req.body?.year || new Date().getFullYear());
-    if (!projectId) { res.status(400).json({ ok: false, message: '缺少 project_id' }); return; }
 
     console.log(`[compute/refresh] project=${projectId} year=${year}`);
     const result = await computeKpi(projectId, year);
@@ -461,7 +564,7 @@ async function main() {
     }
 
     try {
-      const result = await writeBusinessRecord(req.body, source.projectId!);
+      const result = await writeBusinessRecord(req.body, source.projectId!, source.receivableScopes || ['rent_receivable', 'mgmt_fee_receivable']);
       await audit({
         source_type: source.sourceType, source_key: source.sourceKey,
         project_id: source.projectId,

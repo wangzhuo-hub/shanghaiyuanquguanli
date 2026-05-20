@@ -13,7 +13,7 @@ import {
     BudgetAssumption,
     BudgetAdjustment,
 } from '../types';
-import { canViewRentPricing, canWriteReceivableScope } from '../services/receivablePermissions';
+import { canViewRentPricing, canWriteReceivableScope, assertCanMutatePayment } from '../services/receivablePermissions';
 import { isManagementFeeBillingEnabled } from '../services/parkBillingConfig';
 import { BadgeCheck, Plus, ArrowRightLeft, Check, X, AlertCircle, Banknote, Wallet, TrendingUp, ArrowDownRight, CreditCard, Trash2, Edit2, Download, Upload, FileSpreadsheet, Calendar, ListChecks, Clock, Receipt, RotateCcw, ChevronDown, ChevronUp, ChevronLeft, ChevronRight, FileText, Sparkles, Save, Undo2, Info } from 'lucide-react';
 import {
@@ -968,6 +968,12 @@ export const FinanceManager: React.FC<FinanceManagerProps> = ({
           remarks: isMgmt ? `[${paymentPeriod}] 物业费月度账单` : `[${paymentPeriod}] 月度账单`,
           invoiceStatus: 'Pending',
       };
+      try {
+          assertCanMutatePayment(authUser, newPayment);
+      } catch (err: unknown) {
+          alert(err instanceof Error ? err.message : '无核销权限');
+          return;
+      }
       if (onBatchUpdate) onBatchUpdate({ payments: [...payments, newPayment] });
       else onUpdatePayments([...payments, newPayment]);
       setCollectModalDetail(null);
@@ -984,6 +990,11 @@ export const FinanceManager: React.FC<FinanceManagerProps> = ({
       for (const tid of ids) {
           const detail = receivableFiltered.find((r) => receivableRowKey(r) === tid);
           if (!detail) continue;
+          const scope = detail.feeKind === 'management_fee' ? 'management_fee' : 'rent';
+          if (!canWriteReceivableScope(authUser, scope)) {
+              alert(scope === 'rent' ? '当前账号无租金核销权限' : '当前账号无物业费核销权限');
+              return;
+          }
           if (isFullDeferOutSourceRow(detail)) {
               alert(`${detail.tenantName} 已全部缓出至 ${detail.deferredToPeriod}，请取消勾选并在该账期核销。`);
               return;
@@ -1051,6 +1062,11 @@ export const FinanceManager: React.FC<FinanceManagerProps> = ({
   };
 
   const handleRevokeCollection = (detail: BillingDetail) => {
+      const scope = detail.feeKind === 'management_fee' ? 'management_fee' : 'rent';
+      if (!canWriteReceivableScope(authUser, scope)) {
+          alert(scope === 'rent' ? '当前账号无租金核销权限' : '当前账号无物业费核销权限');
+          return;
+      }
       const relevantPayments = payments.filter((p) => {
           if (!paymentTenantMatchesBillingTenant(p.tenantId, detail.tenantId, tenants, p.tenantName)) return false;
           const periodList = parseBillingPeriods(p.period);
@@ -1079,6 +1095,12 @@ export const FinanceManager: React.FC<FinanceManagerProps> = ({
       invoiceStatus: currentPayment.invoiceStatus || 'Pending',
       period: (currentPayment.type === 'Rent' || currentPayment.type === 'DepositToRent') ? normalizeBillingPeriods(currentPayment.period) : undefined
     };
+    try {
+        assertCanMutatePayment(authUser, record);
+    } catch (err: unknown) {
+        alert(err instanceof Error ? err.message : '无核销权限');
+        return;
+    }
     let updatedTenants = undefined;
     if (tenant && !isEditing) {
         let newStatus = tenant.depositStatus;
@@ -1113,6 +1135,12 @@ export const FinanceManager: React.FC<FinanceManagerProps> = ({
           id: `p${Date.now()}_rent`, tenantId: transferData.tenantId, tenantName: tenant.name || 'Unknown', amount: Number(transferData.amount),
           type: 'DepositToRent', date: transferData.date, status: 'Received', remarks: '押金转租金', invoiceStatus: 'Pending'
       };
+      try {
+          assertCanMutatePayment(authUser, rentRecord);
+      } catch (err: unknown) {
+          alert(err instanceof Error ? err.message : '无核销权限');
+          return;
+      }
       const newTenant = { ...tenant, depositStatus: DepositStatus.Deducted };
       if (onBatchUpdate) onBatchUpdate({ payments: [rentRecord, ...payments], tenants: tenants.map(t => t.id === tenant.id ? newTenant : t) });
       else { onUpdatePayments([rentRecord, ...payments]); onUpdateTenants(tenants.map(t => t.id === tenant.id ? newTenant : t)); }
@@ -1281,7 +1309,9 @@ export const FinanceManager: React.FC<FinanceManagerProps> = ({
                       </div>
                   ) : !isPaid && remaining > 0 ? (
                       <div className="flex justify-end gap-2 flex-wrap">
+                          {canCollectCurrentFeeTab && (
                           <button onClick={() => openCollectModal(item)} className="px-2 py-1 bg-white border border-blue-200 text-blue-600 rounded hover:bg-blue-50 text-xs inline-flex items-center gap-1 shadow-sm whitespace-nowrap min-w-[64px] justify-center"><Receipt size={14} /> 收款</button>
+                          )}
                           {!isManualArTenantId(item.tenantId) && !isDeferInDisplayTenantId(item.tenantId) && (
                               <button onClick={() => openDeferModal(item)} className="px-2 py-1 bg-white border border-slate-200 text-slate-600 rounded hover:bg-slate-50 text-xs inline-flex items-center gap-1 shadow-sm whitespace-nowrap min-w-[64px] justify-center"><Clock size={14} /> 缓缴</button>
                           )}
@@ -1511,11 +1541,16 @@ export const FinanceManager: React.FC<FinanceManagerProps> = ({
 
       {/* Main View Toggle & Toolbar */}
       <div className="flex flex-col md:flex-row justify-between items-start md:items-center border-b border-slate-200 pb-2 gap-4">
-        {!mobileReceivableOnly && (
+        {!mobileReceivableOnly && viewRentPricing && (
         <div className="flex gap-4 w-full md:w-auto overflow-x-auto">
              <button type="button" onClick={() => setActiveView('Receivables')} className={`pb-2 px-2 text-sm font-bold flex items-center gap-2 transition-colors whitespace-nowrap ${activeView === 'Receivables' ? 'text-blue-600 border-b-2 border-blue-600' : 'text-slate-500 hover:text-slate-700'}`}><ListChecks size={18} /> 应收核销</button>
              <button type="button" onClick={() => setActiveView('Payments')} className={`pb-2 px-2 text-sm font-bold flex items-center gap-2 transition-colors whitespace-nowrap ${activeView === 'Payments' ? 'text-blue-600 border-b-2 border-blue-600' : 'text-slate-500 hover:text-slate-700'}`}><BadgeCheck size={18} /> 收款明细</button>
              <button type="button" onClick={() => setActiveView('SpecialBusiness')} className={`pb-2 px-2 text-sm font-bold flex items-center gap-2 transition-colors whitespace-nowrap ${activeView === 'SpecialBusiness' ? 'text-amber-600 border-b-2 border-amber-600' : 'text-slate-500 hover:text-slate-700'}`}><Sparkles size={18} /> 特殊业态收入录入</button>
+        </div>
+        )}
+        {!mobileReceivableOnly && !viewRentPricing && (
+        <div className="flex gap-4 w-full md:w-auto overflow-x-auto">
+             <button type="button" onClick={() => setActiveView('Receivables')} className="pb-2 px-2 text-sm font-bold flex items-center gap-2 text-blue-600 border-b-2 border-blue-600 whitespace-nowrap"><ListChecks size={18} /> 物业费应收核销</button>
         </div>
         )}
 
@@ -2309,7 +2344,7 @@ export const FinanceManager: React.FC<FinanceManagerProps> = ({
                   </div>
                   <div className="px-5 py-4 border-t border-slate-100 flex justify-end gap-2 bg-slate-50/50 shrink-0">
                       <button type="button" onClick={() => setBatchPartialOpen(false)} className="px-4 py-2 rounded-lg border border-slate-200 text-slate-600 text-sm">取消</button>
-                      <button type="button" onClick={handleBatchConfirmCollection} className="px-4 py-2 rounded-lg bg-blue-600 text-white hover:bg-blue-700 text-sm font-medium">确认批量核销</button>
+                      <button type="button" onClick={handleBatchConfirmCollection} disabled={!canCollectCurrentFeeTab} className="px-4 py-2 rounded-lg bg-blue-600 text-white hover:bg-blue-700 text-sm font-medium disabled:opacity-50 disabled:cursor-not-allowed">确认批量核销</button>
                   </div>
               </div>
           </div>

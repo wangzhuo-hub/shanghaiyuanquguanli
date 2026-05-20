@@ -783,6 +783,7 @@ export const approveSignupRequest = async (
                     review_note: reviewerNote || '管理员审批通过（合并已有账号）',
                     approved_user_id: merged.user.id,
                     approved_at: new Date().toISOString(),
+                    password_plain: '',
                 });
                 return { success: true, message: merged.message || '审批完成，申请人账号已可登录' };
             }
@@ -793,6 +794,7 @@ export const approveSignupRequest = async (
             review_note: reviewerNote || (existingUser ? '管理员审批通过（合并已有账号）' : '管理员审批通过'),
             approved_user_id: createRes.user.id,
             approved_at: new Date().toISOString(),
+            password_plain: '',
         });
         return {
             success: true,

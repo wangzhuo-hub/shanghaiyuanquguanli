@@ -342,14 +342,13 @@ export const calculateRentForDuration = (start: Date, end: Date, monthlyRent: nu
         if (isFullCalendarMonth || isFullContractMonth) {
             total += monthlyRent;
         } else {
-            // 按天计算：逐月拆分，每月用当月实际天数做日租基数
+            // 按天计算：统一月租 / DAILY_RENT_BASE_DAYS（30）口径，与合同预览及测试一致
             let dayCursor = new Date(cursor);
             while (dayCursor <= segmentEnd) {
                 const monthEnd = new Date(dayCursor.getFullYear(), dayCursor.getMonth() + 1, 0);
                 const segEnd = monthEnd < segmentEnd ? monthEnd : segmentEnd;
                 const days = getDaysDiff(dayCursor, segEnd);
-                const daysInMonth = monthEnd.getDate(); // 当月实际天数
-                total += days * (monthlyRent / daysInMonth);
+                total += days * (monthlyRent / DAILY_RENT_BASE_DAYS);
                 dayCursor = new Date(segEnd);
                 dayCursor.setDate(dayCursor.getDate() + 1);
             }
@@ -880,8 +879,7 @@ export const generateBudgetedBills = (
                         break;
                     }
                     if (!isRentFreeDate(segmentCursor, tenant.rentFreePeriods)) {
-                        const daysInMonth = new Date(segmentCursor.getFullYear(), segmentCursor.getMonth() + 1, 0).getDate();
-                        collectedVirtualMonths += (1 / daysInMonth);
+                        collectedVirtualMonths += 1 / DAILY_RENT_BASE_DAYS;
                     }
                     segmentCursor.setDate(segmentCursor.getDate() + 1);
                 }
