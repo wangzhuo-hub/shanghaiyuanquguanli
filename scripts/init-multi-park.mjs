@@ -15,9 +15,30 @@ const ADMIN_PASSWORD = process.env.PB_ADMIN_PASSWORD || process.argv[4] || '';
 const DEFAULT_PASSWORD = process.env.INIT_DEFAULT_PASSWORD || '';
 
 const parks = [
-  { project_id: 'shanghai_park', name: '上海园区', city: '上海', enabled: true, sort_order: 10 },
-  { project_id: 'shenzhen_park', name: '深圳园区', city: '深圳', enabled: true, sort_order: 20 },
-  { project_id: 'beijing_park', name: '北京园区', city: '北京', enabled: true, sort_order: 30 },
+  {
+    project_id: 'shanghai_park',
+    name: '上海园区',
+    city: '上海',
+    enabled: true,
+    sort_order: 10,
+    metadata: { managementFeeBilling: false, receivableMonthOffset: -1 },
+  },
+  {
+    project_id: 'shenzhen_park',
+    name: '深圳园区',
+    city: '深圳',
+    enabled: true,
+    sort_order: 20,
+    metadata: { managementFeeBilling: true, receivableMonthOffset: 0 },
+  },
+  {
+    project_id: 'beijing_park',
+    name: '北京园区',
+    city: '北京',
+    enabled: true,
+    sort_order: 30,
+    metadata: { managementFeeBilling: false, receivableMonthOffset: -1 },
+  },
 ];
 
 const sourceTemplates = [

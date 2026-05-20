@@ -1,6 +1,7 @@
 
 import React, { useState, useMemo, useRef, useEffect } from 'react';
 import {
+    AuthUser,
     PaymentRecord,
     Tenant,
     ContractStatus,
@@ -12,6 +13,8 @@ import {
     BudgetAssumption,
     BudgetAdjustment,
 } from '../types';
+import { canViewRentPricing, canWriteReceivableScope } from '../services/receivablePermissions';
+import { isManagementFeeBillingEnabled } from '../services/parkBillingConfig';
 import { BadgeCheck, Plus, ArrowRightLeft, Check, X, AlertCircle, Banknote, Wallet, TrendingUp, ArrowDownRight, CreditCard, Trash2, Edit2, Download, Upload, FileSpreadsheet, Calendar, ListChecks, Clock, Receipt, RotateCcw, ChevronDown, ChevronUp, ChevronLeft, ChevronRight, FileText, Sparkles, Save, Undo2, Info } from 'lucide-react';
 import {
     getRentCollectionRemark,
@@ -142,6 +145,8 @@ interface FinanceManagerProps {
   budgetAdjustments?: BudgetAdjustment[];
   /** 手机窄屏：仅保留「应收核销」视图，隐藏收款明细与特殊业态录入入口 */
   mobileReceivableOnly?: boolean;
+  authUser?: AuthUser | null;
+  projectId?: string;
 }
 
 // Mobile Payment Card
@@ -350,7 +355,21 @@ export const FinanceManager: React.FC<FinanceManagerProps> = ({
     budgetAssumptions = [],
     budgetAdjustments = [],
     mobileReceivableOnly = false,
+    authUser = null,
+    projectId: projectIdProp,
 }) => {
+  const projectId = projectIdProp || tenants[0]?.projectId || '';
+  const mgmtFeeParkEnabled = isManagementFeeBillingEnabled(projectId);
+  const viewRentPricing = canViewRentPricing(authUser);
+  const [receivableFeeTab, setReceivableFeeTab] = useState<'rent' | 'management_fee'>(
+    () => (canViewRentPricing(authUser) ? 'rent' : 'management_fee'),
+  );
+
+  useEffect(() => {
+    if (!viewRentPricing && mgmtFeeParkEnabled) {
+      setReceivableFeeTab('management_fee');
+    }
+  }, [viewRentPricing, mgmtFeeParkEnabled]);
   const [showForm, setShowForm] = useState(false);
   const [showDepositTransfer, setShowDepositTransfer] = useState(false);
   const [activeView, setActiveView] = useState<'Payments' | 'Receivables' | 'SpecialBusiness'>('Receivables'); // Default to Receivables
@@ -635,8 +654,20 @@ export const FinanceManager: React.FC<FinanceManagerProps> = ({
 
   const receivableFiltered = useMemo(() => {
       const kw = receivableKeyword.trim().toLowerCase();
-      return currentReceivables.filter((r) => !kw || r.tenantName.toLowerCase().includes(kw));
-  }, [currentReceivables, receivableKeyword]);
+      const feeKind = receivableFeeTab === 'management_fee' ? 'management_fee' : 'rent';
+      return currentReceivables.filter((r) => {
+          const rowKind = r.feeKind || 'rent';
+          if (rowKind !== feeKind) return false;
+          return !kw || r.tenantName.toLowerCase().includes(kw);
+      });
+  }, [currentReceivables, receivableKeyword, receivableFeeTab]);
+
+  const receivableRowKey = (item: BillingDetail) => `${item.feeKind || 'rent'}|${item.tenantId}`;
+
+  const canCollectCurrentFeeTab = canWriteReceivableScope(
+      authUser,
+      receivableFeeTab === 'management_fee' ? 'management_fee' : 'rent',
+  );
 
   const paymentAmountForPeriod = (tenantId: string, periodYYYYMM: string): number => {
       return payments
@@ -882,6 +913,11 @@ export const FinanceManager: React.FC<FinanceManagerProps> = ({
       isFullDeferOutSourceRow(it) ? `请于 ${it.deferredToPeriod} 账期核销缓入金额` : null;
 
   const openCollectModal = (detail: BillingDetail) => {
+      const scope = detail.feeKind === 'management_fee' ? 'management_fee' : 'rent';
+      if (!canWriteReceivableScope(authUser, scope)) {
+          alert(scope === 'rent' ? '当前账号无租金核销权限' : '当前账号无物业费核销权限');
+          return;
+      }
       const remaining = getRemainingReceivable(detail);
       if (remaining <= 0) return;
       if (isFullDeferOutSourceRow(detail)) {
@@ -919,16 +955,17 @@ export const FinanceManager: React.FC<FinanceManagerProps> = ({
           return;
       }
       const payTenantId = realTenantIdFromDeferInDisplayTenantId(collectModalDetail.tenantId) ?? collectModalDetail.tenantId;
+      const isMgmt = collectModalDetail.feeKind === 'management_fee';
       const newPayment: PaymentRecord = {
           id: `p${Date.now()}_col_${payTenantId}`,
           tenantId: payTenantId,
           tenantName: collectModalDetail.tenantName,
           amount: amt,
-          type: 'Rent',
+          type: isMgmt ? 'ManagementFee' : 'Rent',
           date: paymentDate,
           period: paymentPeriod,
           status: 'Received',
-          remarks: `[${paymentPeriod}] 月度账单`,
+          remarks: isMgmt ? `[${paymentPeriod}] 物业费月度账单` : `[${paymentPeriod}] 月度账单`,
           invoiceStatus: 'Pending',
       };
       if (onBatchUpdate) onBatchUpdate({ payments: [...payments, newPayment] });
@@ -945,7 +982,7 @@ export const FinanceManager: React.FC<FinanceManagerProps> = ({
       const paymentDate = new Date().toISOString().split('T')[0];
       const nextPayments = [...payments];
       for (const tid of ids) {
-          const detail = receivableFiltered.find((r) => r.tenantId === tid);
+          const detail = receivableFiltered.find((r) => receivableRowKey(r) === tid);
           if (!detail) continue;
           if (isFullDeferOutSourceRow(detail)) {
               alert(`${detail.tenantName} 已全部缓出至 ${detail.deferredToPeriod}，请取消勾选并在该账期核销。`);
@@ -965,16 +1002,17 @@ export const FinanceManager: React.FC<FinanceManagerProps> = ({
               return;
           }
           const payTid = realTenantIdFromDeferInDisplayTenantId(tid) ?? tid;
+          const isMgmt = detail.feeKind === 'management_fee';
           nextPayments.push({
               id: `p${Date.now()}_col_${payTid}_${Math.random().toString(36).slice(2, 8)}`,
               tenantId: payTid,
               tenantName: detail.tenantName,
               amount: amt,
-              type: 'Rent',
+              type: isMgmt ? 'ManagementFee' : 'Rent',
               date: paymentDate,
               period: payPeriod,
               status: 'Received',
-              remarks: `[${payPeriod}] 批量核销`,
+              remarks: isMgmt ? `[${payPeriod}] 物业费批量核销` : `[${payPeriod}] 批量核销`,
               invoiceStatus: 'Pending',
           });
       }
@@ -1113,14 +1151,14 @@ export const FinanceManager: React.FC<FinanceManagerProps> = ({
               : null;
 
       return (
-          <tr key={item.tenantId} className={`hover:bg-slate-50 transition-colors ${isPaid ? 'opacity-75' : ''} ${deferShell}`}>
+          <tr key={receivableRowKey(item)} className={`hover:bg-slate-50 transition-colors ${isPaid ? 'opacity-75' : ''} ${deferShell}`}>
               <td className="px-2 py-3 text-center w-12 align-middle">
                   {!isPaid && remaining > 0 && !fullDeferOutBlock ? (
                       <input
                           type="checkbox"
                           className="rounded border-slate-300"
-                          checked={batchSelectedIds.has(item.tenantId)}
-                          onChange={() => toggleBatchSelect(item.tenantId)}
+                          checked={batchSelectedIds.has(receivableRowKey(item))}
+                          onChange={() => toggleBatchSelect(receivableRowKey(item))}
                           title="批量核销"
                       />
                   ) : (
@@ -1535,6 +1573,15 @@ export const FinanceManager: React.FC<FinanceManagerProps> = ({
              </div>
         ) : (
              <div className="flex flex-col sm:flex-row flex-wrap gap-2 items-stretch sm:items-center w-full md:w-auto justify-end">
+                 {mgmtFeeParkEnabled && viewRentPricing && (
+                     <div className="flex rounded-lg border border-slate-200 overflow-hidden text-xs font-semibold shrink-0">
+                         <button type="button" onClick={() => { setReceivableFeeTab('rent'); setBatchSelectedIds(new Set()); }} className={`px-3 py-1.5 ${receivableFeeTab === 'rent' ? 'bg-blue-600 text-white' : 'bg-white text-slate-600'}`}>租金应收</button>
+                         <button type="button" onClick={() => { setReceivableFeeTab('management_fee'); setBatchSelectedIds(new Set()); }} className={`px-3 py-1.5 ${receivableFeeTab === 'management_fee' ? 'bg-teal-600 text-white' : 'bg-white text-slate-600'}`}>物业费应收</button>
+                     </div>
+                 )}
+                 {mgmtFeeParkEnabled && !viewRentPricing && (
+                     <span className="text-xs font-semibold text-teal-700 px-2 py-1 bg-teal-50 border border-teal-100 rounded-lg">物业费应收</span>
+                 )}
                  <div className="flex flex-wrap gap-2 items-center">
                      <input
                          type="search"
@@ -2240,7 +2287,7 @@ export const FinanceManager: React.FC<FinanceManagerProps> = ({
                   <div className="p-5 overflow-y-auto flex-1 space-y-3 text-sm">
                       <p className="text-slate-500 text-xs">账期 <span className="font-mono font-semibold text-slate-800">{receivableMonth}</span>，请确认每笔实收金额（默认可改）。</p>
                       {Array.from(batchSelectedIds).map((tid) => {
-                          const row = receivableFiltered.find((r) => r.tenantId === tid);
+                          const row = receivableFiltered.find((r) => receivableRowKey(r) === tid);
                           if (!row) return null;
                           const maxAmt = getRemainingReceivable(row);
                           return (

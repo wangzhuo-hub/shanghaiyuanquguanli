@@ -28,6 +28,11 @@ const rankColor = (index: number): string => {
 };
 
 export const BigScreenParkCompare: React.FC<Props> = ({ parks, year, hideAmount }) => {
+  const showManagementFee = parks.some(
+    (p) =>
+      p.managementFeeBillingEnabled &&
+      (p.annualManagementFeeReceivable > 0 || p.annualManagementFeeCollected > 0),
+  );
   const byOccupancy = [...parks].sort((a, b) => b.occupancyRate - a.occupancyRate);
   const byCollection = [...parks].sort(
     (a, b) => initialBudgetCompletion(b) - initialBudgetCompletion(a),
@@ -134,6 +139,12 @@ export const BigScreenParkCompare: React.FC<Props> = ({ parks, year, hideAmount 
               <th className="text-right px-4 py-2">年初预算</th>
               <th className="text-right px-4 py-2">预算完成率</th>
               <th className="text-right px-4 py-2">预算偏差</th>
+              {showManagementFee ? (
+                <>
+                  <th className="text-right px-4 py-2">物业费实收</th>
+                  <th className="text-right px-4 py-2">物业费收缴率</th>
+                </>
+              ) : null}
             </tr>
           </thead>
           <tbody className="divide-y divide-white/10">
@@ -168,6 +179,20 @@ export const BigScreenParkCompare: React.FC<Props> = ({ parks, year, hideAmount 
                     ? formatPercent(park.budgetDeviation, 0)
                     : '—'}
                 </td>
+                {showManagementFee ? (
+                  <>
+                    <td className="px-4 py-2 text-right tabular-nums text-teal-400">
+                      {park.managementFeeBillingEnabled
+                        ? fmtWan(park.annualManagementFeeCollected, 0, hideAmount)
+                        : '—'}
+                    </td>
+                    <td className="px-4 py-2 text-right tabular-nums text-teal-400">
+                      {park.managementFeeBillingEnabled && park.annualManagementFeeReceivable > 0
+                        ? formatPercent(park.annualManagementFeeCompletion, 0)
+                        : '—'}
+                    </td>
+                  </>
+                ) : null}
               </tr>
             );})}
           </tbody>

@@ -1,6 +1,6 @@
 
-import React, { useMemo } from 'react';
-import { BillingDetail, DashboardData } from '../types';
+import React, { useEffect, useMemo, useState } from 'react';
+import { AuthUser, BillingDetail, DashboardData } from '../types';
 import { CheckCircle2, AlertCircle, Building2, Wallet, Calendar, ChevronLeft, ChevronRight, Info } from 'lucide-react';
 import {
     buildReceivableSections,
@@ -9,7 +9,20 @@ import {
     receivableBudgetDisplay,
     parseManualReceivableLinesFromNotes,
 } from '../services/receivableListHelpers';
-import { formatCurrency } from '../services/numberFormat';
+import { formatCurrency, formatPercent } from '../services/numberFormat';
+import { isManagementFeeBillingEnabled } from '../services/parkBillingConfig';
+import { canViewRentPricing } from '../services/receivablePermissions';
+
+function isMgmtFeeRow(row: BillingDetail): boolean {
+    return (row.feeKind || 'rent') === 'management_fee';
+}
+
+function sumBillingTotals(rows: BillingDetail[]) {
+    const totalDue = rows.reduce((acc, curr) => acc + receivableBudgetDisplay(curr), 0);
+    const totalPaid = rows.reduce((acc, curr) => acc + (curr.amountPaid ?? 0), 0);
+    const collectionRate = totalDue > 0.005 ? (totalPaid / totalDue) * 100 : totalPaid > 0.005 ? 100 : 0;
+    return { totalDue, totalPaid, collectionRate };
+}
 
 const WRITEOFF_LABELS = {
   pending: '待核销',
@@ -30,6 +43,8 @@ interface BillingTableProps {
     onMonthChange: (val: string) => void;
     /** 按租户 + 当前账期保存跟进备注 */
     onUpdateRentRemark?: (tenantId: string, periodYYYYMM: string, remark: string) => void;
+    projectId?: string;
+    authUser?: AuthUser | null;
 }
 
 // Mobile Card Component
@@ -100,16 +115,46 @@ const BillingCard: React.FC<{
     );
 };
 
-export const BillingTable: React.FC<BillingTableProps> = ({ data, selectedMonth, onMonthChange, onUpdateRentRemark }) => {
-  const billingList = data.currentMonthBilling || [];
+export const BillingTable: React.FC<BillingTableProps> = ({
+  data,
+  selectedMonth,
+  onMonthChange,
+  onUpdateRentRemark,
+  projectId: projectIdProp,
+  authUser = null,
+}) => {
+  const projectId =
+      projectIdProp ||
+      data.tenants?.find((t) => (t.projectId || '').trim())?.projectId ||
+      '';
+  const mgmtFeeParkEnabled = isManagementFeeBillingEnabled(projectId);
+  const viewRentPricing = canViewRentPricing(authUser);
+  const [feeTab, setFeeTab] = useState<'rent' | 'management_fee'>(() =>
+      viewRentPricing ? 'rent' : 'management_fee',
+  );
+
+  useEffect(() => {
+      if (!viewRentPricing && mgmtFeeParkEnabled) {
+          setFeeTab('management_fee');
+      }
+  }, [viewRentPricing, mgmtFeeParkEnabled]);
+
+  const fullBillingList = data.currentMonthBilling || [];
+  const rentRows = useMemo(
+      () => fullBillingList.filter((row) => !isMgmtFeeRow(row)),
+      [fullBillingList],
+  );
+  const mgmtRows = useMemo(() => fullBillingList.filter(isMgmtFeeRow), [fullBillingList]);
+  const billingList = feeTab === 'management_fee' ? mgmtRows : rentRows;
 
   const receivableSections = useMemo(
       () => buildReceivableSections(billingList, selectedMonth, data.payments || [], data.tenants || []),
       [billingList, selectedMonth, data.payments, data.tenants]
   );
 
-  const totalDue = billingList.reduce((acc, curr) => acc + receivableBudgetDisplay(curr), 0);
-  const totalPaid = billingList.reduce((acc, curr) => acc + curr.amountPaid, 0);
+  const { totalDue, totalPaid } = useMemo(() => sumBillingTotals(billingList), [billingList]);
+  const rentTotals = useMemo(() => sumBillingTotals(rentRows), [rentRows]);
+  const mgmtTotals = useMemo(() => sumBillingTotals(mgmtRows), [mgmtRows]);
 
   // 与「财务报表 本月应收租金」对账：财务报表的合计含手工应收行，工作台不含。
   // 这里读取本月手工应收行金额，提示用户两边差额来源，避免对账困惑。
@@ -120,6 +165,14 @@ export const BillingTable: React.FC<BillingTableProps> = ({ data, selectedMonth,
           .reduce((sum, l) => sum + (Number(l.amount) || 0), 0);
   }, [data.billingPeriodNotes, selectedMonth]);
   const financeTotalDue = totalDue + manualReceivableThisMonth;
+
+  const isMgmtTab = feeTab === 'management_fee';
+  const dueColumnLabel = isMgmtTab ? '应收物业费' : '应收租金';
+  const paidColumnLabel = isMgmtTab ? '实收物业费' : '实收租金';
+  const panelTitle = isMgmtTab ? '物业费账单明细' : '租金账单明细';
+  const panelSubtitle = isMgmtTab
+      ? '来源: 合同物业费条款 · 与财务报表「物业费应收」一致'
+      : '来源: 预算管理 (含手动调整) · 与财务报表「租金应收」一致';
 
   const renderBillingDetailRow = (item: BillingDetail, writeOffLabel: string, rowKey: string) => {
       const building = data.buildings.find(b => b.units.some(u => item.unitIds.includes(u.id)));
@@ -239,11 +292,35 @@ export const BillingTable: React.FC<BillingTableProps> = ({ data, selectedMonth,
                     <Wallet size={20} />
                  </div>
                  <div>
-                    <h3 className="text-lg font-bold text-slate-800">租金账单明细</h3>
-                    <p className="text-xs text-slate-500 mt-0.5">来源: 预算管理 (含手动调整)</p>
+                    <h3 className="text-lg font-bold text-slate-800">{panelTitle}</h3>
+                    <p className="text-xs text-slate-500 mt-0.5">{panelSubtitle}</p>
                  </div>
              </div>
-             
+
+             {mgmtFeeParkEnabled && viewRentPricing && (
+                 <div className="flex rounded-lg border border-slate-200 overflow-hidden text-xs font-semibold shrink-0">
+                     <button
+                         type="button"
+                         onClick={() => setFeeTab('rent')}
+                         className={`px-3 py-1.5 ${feeTab === 'rent' ? 'bg-blue-600 text-white' : 'bg-white text-slate-600'}`}
+                     >
+                         租金收款
+                     </button>
+                     <button
+                         type="button"
+                         onClick={() => setFeeTab('management_fee')}
+                         className={`px-3 py-1.5 ${feeTab === 'management_fee' ? 'bg-teal-600 text-white' : 'bg-white text-slate-600'}`}
+                     >
+                         物业费收款
+                     </button>
+                 </div>
+             )}
+             {mgmtFeeParkEnabled && !viewRentPricing && (
+                 <span className="text-xs font-semibold text-teal-700 px-2 py-1 bg-teal-50 border border-teal-100 rounded-lg shrink-0">
+                     物业费收款
+                 </span>
+             )}
+
              {/* Arrow Navigation */}
              <div className="flex items-center gap-1 bg-white border border-slate-200 rounded-lg p-1 shadow-sm">
                  <button onClick={handlePrevMonth} className="p-1 hover:bg-slate-100 rounded text-slate-500 transition-colors">
@@ -263,16 +340,18 @@ export const BillingTable: React.FC<BillingTableProps> = ({ data, selectedMonth,
              <div
                  className="text-center md:text-right"
                  title={
-                     manualReceivableThisMonth > 0
-                         ? `工作台：¥${totalDue.toLocaleString()}（仅系统账单口径，与「预算表 月度合计」一致）\n` +
-                           `财务报表「本月应收租金」：¥${financeTotalDue.toLocaleString()}（额外含 ¥${manualReceivableThisMonth.toLocaleString()} 手工应收行）\n\n` +
-                           `差额来源：本月在「财务报表」录入的手工应收行（如外部水电费、外卖代收等）。`
-                         : `本月应收 ¥${totalDue.toLocaleString()}（与「财务报表 本月应收租金」一致，未录入手工应收行）`
+                     isMgmtTab
+                         ? `本月物业费应收 ¥${totalDue.toLocaleString()}（与财务报表「物业费应收」一致）`
+                         : manualReceivableThisMonth > 0
+                           ? `工作台：¥${totalDue.toLocaleString()}（仅系统账单口径，与「预算表 月度合计」一致）\n` +
+                             `财务报表「本月应收租金」：¥${financeTotalDue.toLocaleString()}（额外含 ¥${manualReceivableThisMonth.toLocaleString()} 手工应收行）\n\n` +
+                             `差额来源：本月在「财务报表」录入的手工应收行（如外部水电费、外卖代收等）。`
+                           : `本月应收 ¥${totalDue.toLocaleString()}（与「财务报表 本月应收租金」一致，未录入手工应收行）`
                  }
              >
-                 <p className="text-[10px] text-slate-400 uppercase tracking-wider font-semibold">当月应收总额</p>
+                 <p className="text-[10px] text-slate-400 uppercase tracking-wider font-semibold">{isMgmtTab ? "当月应收物业费" : "当月应收租金"}</p>
                  <p className="text-base md:text-lg font-bold text-slate-800">{formatCurrency(totalDue)}</p>
-                 {manualReceivableThisMonth > 0 && (
+                 {(!isMgmtTab && manualReceivableThisMonth > 0) && (
                      <p className="text-[10px] text-amber-600 mt-0.5 inline-flex items-center gap-1 justify-end">
                          <Info size={10}/>
                          财务报表另含手工 <span className="font-semibold">{formatCurrency(manualReceivableThisMonth)}</span>
@@ -281,18 +360,39 @@ export const BillingTable: React.FC<BillingTableProps> = ({ data, selectedMonth,
              </div>
              <div className="h-8 w-px bg-slate-200 block md:hidden"></div>
              <div className="text-center md:text-right md:border-l md:border-slate-200 md:pl-6">
-                 <p className="text-[10px] text-slate-400 uppercase tracking-wider font-semibold">当月实收总额</p>
+                 <p className="text-[10px] text-slate-400 uppercase tracking-wider font-semibold">{isMgmtTab ? "当月实收物业费" : "当月实收租金"}</p>
                  <p className={`text-base md:text-lg font-bold ${totalPaid >= totalDue ? 'text-emerald-600' : 'text-blue-600'}`}>{formatCurrency(totalPaid)}</p>
              </div>
         </div>
       </div>
-      
+
+      {mgmtFeeParkEnabled && viewRentPricing && feeTab === 'rent' && (
+          <div className="px-4 md:px-6 py-4 border-b border-slate-100 bg-gradient-to-r from-slate-50 via-white to-teal-50/40">
+              <p className="text-xs font-bold text-slate-600 mb-3">租金及物业费收款汇总（{selectedMonth}）</p>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div className="rounded-lg border border-blue-100 bg-blue-50/50 p-3">
+                      <p className="text-[10px] font-semibold text-blue-800 uppercase tracking-wide mb-2">租金</p>
+                      <div className="flex justify-between text-sm"><span className="text-slate-600">应收</span><span className="font-bold text-slate-800">{formatCurrency(rentTotals.totalDue)}</span></div>
+                      <div className="flex justify-between text-sm mt-1"><span className="text-slate-600">实收</span><span className="font-bold text-emerald-700">{formatCurrency(rentTotals.totalPaid)}</span></div>
+                      <div className="flex justify-between text-xs mt-2 text-slate-500"><span>收缴率</span><span className="font-semibold text-blue-700">{formatPercent(rentTotals.collectionRate, 1)}</span></div>
+                  </div>
+                  <div className="rounded-lg border border-teal-100 bg-teal-50/50 p-3">
+                      <p className="text-[10px] font-semibold text-teal-800 uppercase tracking-wide mb-2">物业费</p>
+                      <div className="flex justify-between text-sm"><span className="text-slate-600">应收</span><span className="font-bold text-slate-800">{formatCurrency(mgmtTotals.totalDue)}</span></div>
+                      <div className="flex justify-between text-sm mt-1"><span className="text-slate-600">实收</span><span className="font-bold text-emerald-700">{formatCurrency(mgmtTotals.totalPaid)}</span></div>
+                      <div className="flex justify-between text-xs mt-2 text-slate-500"><span>收缴率</span><span className="font-semibold text-teal-700">{formatPercent(mgmtTotals.collectionRate, 1)}</span></div>
+                  </div>
+              </div>
+          </div>
+      )}
+
+
       {billingList.length === 0 ? (
           <div className="p-12 text-center">
              <div className="inline-flex items-center justify-center w-12 h-12 rounded-full bg-slate-100 text-slate-400 mb-3">
                  <Building2 size={24} />
              </div>
-             <p className="text-slate-500">该月份暂无应收租金账单。</p>
+             <p className="text-slate-500">{isMgmtTab ? "该月份暂无应收物业费账单。" : "该月份暂无应收租金账单。"}</p>
           </div>
       ) : (
         <>
@@ -303,8 +403,8 @@ export const BillingTable: React.FC<BillingTableProps> = ({ data, selectedMonth,
                     <tr>
                     <th className="px-6 py-4">签约客户</th>
                     <th className="px-6 py-4">租赁房号</th>
-                    <th className="px-6 py-4">应收租金</th>
-                    <th className="px-6 py-4">实收租金</th>
+                    <th className="px-6 py-4">{dueColumnLabel}</th>
+                    <th className="px-6 py-4">{paidColumnLabel}</th>
                     <th className="px-6 py-4">应收核销情况</th>
                     <th className="px-6 py-4 min-w-[200px]">备注</th>
                     </tr>
@@ -318,7 +418,7 @@ export const BillingTable: React.FC<BillingTableProps> = ({ data, selectedMonth,
                                 </td>
                             </tr>
                             {receivableSections.unsettled.map(({ item, i }) =>
-                                renderBillingDetailRow(item, WRITEOFF_LABELS.pending, `${item.tenantId}-u-${i}`)
+                                renderBillingDetailRow(item, WRITEOFF_LABELS.pending, `${item.feeKind || 'rent'}|${item.tenantId}-u-${i}`)
                             )}
                         </>
                     )}
@@ -330,7 +430,7 @@ export const BillingTable: React.FC<BillingTableProps> = ({ data, selectedMonth,
                                 </td>
                             </tr>
                             {receivableSections.deferred.map(({ item, i }) =>
-                                renderBillingDetailRow(item, WRITEOFF_LABELS.deferred, `${item.tenantId}-d-${i}`)
+                                renderBillingDetailRow(item, WRITEOFF_LABELS.deferred, `${item.feeKind || 'rent'}|${item.tenantId}-d-${i}`)
                             )}
                         </>
                     )}
@@ -342,10 +442,10 @@ export const BillingTable: React.FC<BillingTableProps> = ({ data, selectedMonth,
                                 </td>
                             </tr>
                             {receivableSections.settledThisMonth.map(({ item, i }) =>
-                                renderBillingDetailRow(item, WRITEOFF_LABELS.settled, `${item.tenantId}-s-${i}`)
+                                renderBillingDetailRow(item, WRITEOFF_LABELS.settled, `${item.feeKind || 'rent'}|${item.tenantId}-s-${i}`)
                             )}
                             {receivableSections.prepaid.map(({ item, i }) =>
-                                renderBillingDetailRow(item, WRITEOFF_LABELS.settled, `${item.tenantId}-p-${i}`)
+                                renderBillingDetailRow(item, WRITEOFF_LABELS.settled, `${item.feeKind || 'rent'}|${item.tenantId}-p-${i}`)
                             )}
                         </>
                     )}
@@ -366,7 +466,7 @@ export const BillingTable: React.FC<BillingTableProps> = ({ data, selectedMonth,
                             }).join(', ');
                             return (
                                 <BillingCard
-                                    key={`${item.tenantId}-u-${i}`}
+                                    key={`${item.feeKind || 'rent'}|${item.tenantId}-u-${i}`}
                                     item={item}
                                     building={building}
                                     unitNames={unitNames}
@@ -390,7 +490,7 @@ export const BillingTable: React.FC<BillingTableProps> = ({ data, selectedMonth,
                             }).join(', ');
                             return (
                                 <BillingCard
-                                    key={`${item.tenantId}-d-${i}`}
+                                    key={`${item.feeKind || 'rent'}|${item.tenantId}-d-${i}`}
                                     item={item}
                                     building={building}
                                     unitNames={unitNames}
@@ -415,7 +515,7 @@ export const BillingTable: React.FC<BillingTableProps> = ({ data, selectedMonth,
                             }).join(', ');
                             return (
                                 <BillingCard
-                                    key={`${item.tenantId}-sp-${idx}`}
+                                    key={`${item.feeKind || 'rent'}|${item.tenantId}-sp-${idx}`}
                                     item={item}
                                     building={building}
                                     unitNames={unitNames}

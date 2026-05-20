@@ -1,5 +1,11 @@
 import PocketBase from 'pocketbase';
-import { AuthUser, DashboardData, CloudBackupMetadata, MonthlyTrend, ParkInfo, UserRole } from '../types';
+import { AuthUser, DashboardData, CloudBackupMetadata, MonthlyTrend, ParkInfo, ReceivablePermission, UserRole } from '../types';
+import { applyDashboardDataScope } from './dataScopeFilter';
+import {
+    normalizeReceivablePermissions,
+    receivableDefaultsForRole,
+    resolveHideRentPricing,
+} from './receivablePermissions';
 import type { IntegrationFullSnapshotV1 } from './integrationSnapshot';
 import { INTEGRATION_FULL_SNAPSHOT_KIND } from './integrationSnapshot';
 import type { DirtyPayload } from './dirtyTracker';
@@ -209,7 +215,25 @@ const mapAuthUser = (record: Record<string, unknown> | null | undefined): AuthUs
         role: (String(record.role || 'park_user')) as UserRole,
         allowedProjectIds,
         enabled: record.enabled !== false,
+        receivablePermissions: normalizeReceivablePermissions(
+            record.receivable_permissions,
+            (String(record.role || 'park_user')) as UserRole,
+        ),
+        hideRentPricing: resolveHideRentPricing(String(record.role || 'park_user'), record.hide_rent_pricing),
     };
+};
+
+const mapParkBillingFeatures = (row: Record<string, unknown>) => {
+    const meta = (row.metadata || row.billing_features) as Record<string, unknown> | undefined;
+    if (!meta || typeof meta !== 'object') return undefined;
+    return {
+        managementFeeBilling: meta.managementFeeBilling === true || meta.management_fee_billing === true,
+        receivableMonthOffset: meta.receivableMonthOffset === 0 || meta.receivable_month_offset === 0 ? 0 : -1,
+        defaultManagementFeeUnitPriceMode:
+            meta.defaultManagementFeeUnitPriceMode === 'monthly' || meta.default_management_fee_unit_price_mode === 'monthly'
+                ? 'monthly'
+                : 'daily',
+    } as ParkInfo['billingFeatures'];
 };
 
 export const getCurrentAuthUser = (): AuthUser | null => {
@@ -259,14 +283,19 @@ export const fetchAuthorizedParks = async (): Promise<{ success: boolean; parks:
             filter: 'enabled = true',
             sort: 'sort_order,name',
         });
-        const parks = rows.map((row: any) => ({
-            id: row.id,
-            projectId: row.project_id,
-            name: row.name || row.project_id,
-            city: row.city || '',
-            enabled: row.enabled !== false,
-            sortOrder: row.sort_order ?? 0,
-        }));
+        const parks = rows.map((row: any) => {
+            const billingFeatures = mapParkBillingFeatures(row);
+            return {
+                id: row.id,
+                projectId: row.project_id,
+                name: row.name || row.project_id,
+                city: row.city || '',
+                enabled: row.enabled !== false,
+                sortOrder: row.sort_order ?? 0,
+                billingFeatures,
+                metadata: billingFeatures,
+            };
+        });
         return { success: true, parks, message: '加载成功' };
     } catch (e: unknown) {
         return { success: false, parks: [], message: errMsg(e) || '加载园区失败' };
@@ -281,6 +310,8 @@ export interface ManagedUserAccount {
     projectId: string;
     allowedProjectIds: string[];
     enabled: boolean;
+    receivablePermissions?: ReceivablePermission[];
+    hideRentPricing?: boolean;
     created?: string;
     updated?: string;
 }
@@ -293,6 +324,8 @@ export interface CreateManagedUserInput {
     projectId: string;
     allowedProjectIds?: string[];
     enabled?: boolean;
+    receivablePermissions?: ReceivablePermission[];
+    hideRentPricing?: boolean;
 }
 
 /** 更新已创建的 `users` 记录；`password` 留空表示不改密 */
@@ -304,6 +337,8 @@ export interface UpdateManagedUserInput {
     allowedProjectIds?: string[];
     enabled?: boolean;
     password?: string;
+    receivablePermissions?: ReceivablePermission[];
+    hideRentPricing?: boolean;
 }
 
 export interface SignupRequestRecord {
@@ -331,6 +366,11 @@ const mapManagedUser = (row: Record<string, unknown>): ManagedUserAccount => {
         projectId,
         allowedProjectIds: normalizeProjectIds(row.allowed_project_ids, projectId),
         enabled: row.enabled !== false,
+        receivablePermissions: normalizeReceivablePermissions(
+            row.receivable_permissions,
+            (String(row.role || 'park_user')) as UserRole,
+        ),
+        hideRentPricing: resolveHideRentPricing(String(row.role || 'park_user'), row.hide_rent_pricing),
         created: String(row.created || ''),
         updated: String(row.updated || ''),
     };
@@ -461,16 +501,25 @@ export const createManagedUser = async (
      * 通过 collection API 提交会触发 `Values don't match`。所以此处不传，使用集合默认值。
      * 若后续需要邮箱验证，可在 PocketBase Admin UI 手动勾选或走 `requestVerification` 流程。
      */
+    const role = (input.role || 'park_user') as UserRole;
+    const roleDefaults = receivableDefaultsForRole(role);
     const payload: Record<string, unknown> = {
         email,
         password,
         passwordConfirm: password,
         name: displayName,
-        role: input.role || 'park_user',
+        role,
         project_id: projectId,
         allowed_project_ids: allowedProjectIds,
         enabled: input.enabled !== false,
     };
+    const perms =
+        input.receivablePermissions?.length && role !== 'property_staff'
+            ? input.receivablePermissions
+            : roleDefaults.receivablePermissions;
+    payload.receivable_permissions = perms;
+    payload.hide_rent_pricing =
+        input.hideRentPricing === true || roleDefaults.hideRentPricing;
 
     try {
         const created = await pb.collection('users').create(payload);
@@ -513,7 +562,12 @@ export const updateManagedUser = async (
     if (input.name !== undefined) {
         patch.name = String(input.name || '').trim() || String(current.name || current.username || '').trim() || '用户';
     }
-    if (input.role !== undefined) patch.role = input.role;
+    if (input.role !== undefined) {
+        patch.role = input.role;
+        const roleDefaults = receivableDefaultsForRole(input.role);
+        patch.receivable_permissions = roleDefaults.receivablePermissions;
+        patch.hide_rent_pricing = roleDefaults.hideRentPricing;
+    }
     if (input.enabled !== undefined) patch.enabled = input.enabled;
 
     const effectiveProjectId =
@@ -538,6 +592,12 @@ export const updateManagedUser = async (
         }
         patch.password = pwd;
         patch.passwordConfirm = pwd;
+    }
+    if (input.receivablePermissions !== undefined && input.role === undefined) {
+        patch.receivable_permissions = input.receivablePermissions;
+    }
+    if (input.hideRentPricing !== undefined && input.role === undefined) {
+        patch.hide_rent_pricing = input.hideRentPricing;
     }
 
     if (Object.keys(patch).length === 0) {
@@ -1052,6 +1112,18 @@ export const saveToPocketBase = async (
             payment_cycle_changes: t.paymentCycleChanges || [],
             payment_period_adjustments: t.paymentPeriodAdjustments || [],
             payment_period_shift_months: t.paymentPeriodShiftMonths ?? 0,
+            management_fee_enabled: t.managementFeeEnabled ?? null,
+            management_fee_exempt: t.managementFeeExempt ?? null,
+            management_fee_free_periods: t.managementFeeFreePeriods || [],
+            management_fee_unit_price: t.managementFeeUnitPrice ?? null,
+            management_fee_unit_price_mode:
+                t.managementFeeUnitPrice != null && t.managementFeeUnitPrice > 0
+                    ? 'monthly'
+                    : t.managementFeeUnitPriceMode || 'monthly',
+            management_fee_monthly_amount: t.managementFeeMonthlyAmount ?? null,
+            management_fee_first_payment_date: t.managementFeeFirstPaymentDate || '',
+            management_fee_start_with_occupancy: t.managementFeeStartWithOccupancy ?? null,
+            management_fee_start_date: t.managementFeeStartDate || '',
             project_id: projectId,
         }));
         const payments = ensureArray<any>(data.payments).map((p) => ({
@@ -1347,6 +1419,28 @@ export const fetchPocketBaseBackup = async (
                       )
                     : [],
                 paymentPeriodShiftMonths: typeof t.payment_period_shift_months === 'number' ? t.payment_period_shift_months : 0,
+                managementFeeEnabled:
+                    t.management_fee_enabled != null
+                        ? !!t.management_fee_enabled
+                        : (t.project_id || projectId) === 'shenzhen_park',
+                managementFeeExempt: !!t.management_fee_exempt,
+                managementFeeFreePeriods: Array.isArray(t.management_fee_free_periods)
+                    ? t.management_fee_free_periods
+                    : [],
+                managementFeeUnitPrice:
+                    t.management_fee_unit_price != null ? Number(t.management_fee_unit_price) : undefined,
+                managementFeeUnitPriceMode:
+                    t.management_fee_unit_price_mode === 'monthly' ? 'monthly' : 'daily',
+                managementFeeMonthlyAmount:
+                    t.management_fee_monthly_amount != null
+                        ? Number(t.management_fee_monthly_amount)
+                        : undefined,
+                managementFeeFirstPaymentDate: t.management_fee_first_payment_date || undefined,
+                managementFeeStartWithOccupancy:
+                    t.management_fee_start_with_occupancy != null
+                        ? !!t.management_fee_start_with_occupancy
+                        : undefined,
+                managementFeeStartDate: t.management_fee_start_date || undefined,
             })),
             payments: paymentsRows.map((p: any) => ({
                 id: p.original_id,
@@ -1466,7 +1560,8 @@ export const fetchPocketBaseBackup = async (
             };
         }
 
-        return { success: true, data: rebuilt as DashboardData, message: '获取成功', recordMeta };
+        const scoped = applyDashboardDataScope(rebuilt as DashboardData, getCurrentAuthUser());
+        return { success: true, data: scoped, message: '获取成功', recordMeta };
     } catch (e: unknown) {
         return { success: false, message: 'PocketBase 数据获取失败: ' + errMsg(e) };
     }

@@ -1,17 +1,33 @@
 
 import React, { useState, useEffect, useMemo } from 'react';
-import { Tenant, Building, BudgetAdjustment, ContractStatus, DepositStatus, RentFreePeriod, UnitStatus, DashboardData, PaymentRecord, LeaseUnitTerm } from '../types';
+import { Tenant, Building, BudgetAdjustment, ContractStatus, DepositStatus, RentFreePeriod, UnitStatus, DashboardData, PaymentRecord, LeaseUnitTerm, AuthUser } from '../types';
 // Added missing UserMinus and Sparkles imports
 import { Search, Plus, FileText, Filter, XCircle, AlertTriangle, AlertCircle, Calendar, DollarSign, Edit2, X, Trash2, Users, Save, Building as BuildingIcon, UserCheck, UserPlus, UserMinus, UserX, Info, ShieldAlert, WalletIcon, ArrowLeft, ArrowLeftRight, Trash, TrendingUp, TrendingDown, PieChart, Activity, BarChart3, Clock, LayoutDashboard, ArrowUpRight, ArrowDownRight, Sparkles, Briefcase, User, Smartphone, Gift, MapPin, Receipt, CreditCard, ChevronLeft, ChevronRight, RotateCcw, LayoutGrid, Rows3, Download, Upload } from 'lucide-react';
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, BarChart, Bar, Cell, PieChart as RechartsPieChart, Pie, Legend, ComposedChart, Line } from 'recharts';
 import { OccupancyTrendChart, UnitPriceTrendChart } from './Charts';
-import { generateBudgetedBills, computeEarlyTerminationFreeRentClawbackAmount, buildVacancyBudgetAlignmentNote, parseDateLocal } from '../services/billingService';
+import {
+    generateBudgetedBills,
+    computeEarlyTerminationFreeRentClawbackAmount,
+    buildVacancyBudgetAlignmentNote,
+    parseDateLocal,
+    resolveRentUnitPriceForDisplay,
+} from '../services/billingService';
 import { AIContractRecognitionModal } from './AIContractRecognitionModal';
 import { NameChangeDialog } from './NameChangeDialog';
 import { PaymentCycleChangeDialog } from './PaymentCycleChangeDialog';
 import * as XLSX from 'xlsx';
 import { formatArea, formatCurrency, formatPercent } from '../services/numberFormat';
 import { paymentCycleLabelMap } from '../services/sharedUtils';
+import { isManagementFeeBillingEnabled } from '../services/parkBillingConfig';
+import { canViewRentPricing } from '../services/receivablePermissions';
+import {
+    generateManagementFeeBills,
+    getManagementFeeCardStatus,
+    resolveLeaseOccupancyDate,
+    resolveManagementFeeMonthly,
+    shouldGenerateManagementFeeBills,
+    toManagementFeeMonthlyUnitPrice,
+} from '../services/managementFeeBillingService';
 
 interface ContractManagerProps {
   tenants: Tenant[];
@@ -24,6 +40,8 @@ interface ContractManagerProps {
   onUpdateAdjustments?: (newAdjustments: BudgetAdjustment[]) => void;
   /** 手机窄屏：隐藏经营分析，默认进入在租列表便于录入合同 */
   mobileEntryMode?: boolean;
+  authUser?: AuthUser | null;
+  projectId?: string;
 }
 
 const contractStatusTextMap: Record<ContractStatus, string> = {
@@ -44,7 +62,78 @@ const paymentCycleMonthMap: Record<Tenant['paymentCycle'], number> = {
   Custom: 3,
 };
 
-export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, buildings, onUpdateTenants, dashboardData, payments = [], onUpdatePayments, budgetAdjustments = [], onUpdateAdjustments, mobileEntryMode = false }) => {
+const renderManagementFeeTags = (t: Tenant, projectIdFallback?: string) => {
+    const m = getManagementFeeCardStatus(t, projectIdFallback);
+    if (!m.parkEnabled) return null;
+    if (m.collecting) {
+        return (
+            <span
+                className="text-[10px] bg-teal-50 text-teal-800 border border-teal-200 px-1.5 py-0.5 rounded font-bold inline-flex items-center gap-0.5"
+                title={
+                    m.monthlyUnitPrice
+                        ? `物业费 ${m.monthlyUnitPrice} 元/月/㎡，月物业费约 ${m.monthlyAmount.toLocaleString()} 元`
+                        : `月物业费约 ${m.monthlyAmount.toLocaleString()} 元`
+                }
+            >
+                <WalletIcon size={10} /> 收取物业费
+            </span>
+        );
+    }
+    if (m.exempt) {
+        return (
+            <span className="text-[10px] bg-slate-100 text-slate-600 border border-slate-200 px-1.5 py-0.5 rounded font-bold">
+                全免物业费
+            </span>
+        );
+    }
+    if (m.disabled) {
+        return (
+            <span className="text-[10px] bg-slate-50 text-slate-500 border border-slate-200 px-1.5 py-0.5 rounded font-bold">
+                不收物业费
+            </span>
+        );
+    }
+    if (m.needsSetup) {
+        return (
+            <span className="text-[10px] bg-amber-50 text-amber-800 border border-amber-200 px-1.5 py-0.5 rounded font-bold">
+                需配置物业费
+            </span>
+        );
+    }
+    return null;
+};
+
+const renderManagementFeeCardFields = (t: Tenant, projectIdFallback?: string) => {
+    const m = getManagementFeeCardStatus(t, projectIdFallback);
+    if (!m.parkEnabled || (!m.collecting && !m.needsSetup)) return null;
+    return (
+        <>
+            <div>
+                <div className="text-[10px] text-slate-400 font-medium">物业费单价</div>
+                <div className="text-teal-700 font-bold tabular-nums">
+                    {m.monthlyUnitPrice != null && m.monthlyUnitPrice > 0 ? (
+                        <>
+                            ¥{m.monthlyUnitPrice.toFixed(2)}
+                            <span className="text-[10px] font-normal text-slate-400 ml-0.5">/㎡·月</span>
+                        </>
+                    ) : (
+                        <span className="text-amber-700 text-[11px] font-medium">待填写</span>
+                    )}
+                </div>
+            </div>
+            <div>
+                <div className="text-[10px] text-slate-400 font-medium">月物业费</div>
+                <div className="text-teal-800 font-bold tabular-nums">
+                    {m.monthlyAmount > 0 ? `¥${m.monthlyAmount.toLocaleString()}` : '—'}
+                </div>
+            </div>
+        </>
+    );
+};
+
+export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, buildings, onUpdateTenants, dashboardData, payments = [], onUpdatePayments, budgetAdjustments = [], onUpdateAdjustments, mobileEntryMode = false, authUser = null, projectId: projectIdProp }) => {
+  const viewRentPricing = canViewRentPricing(authUser);
+  const mgmtFeeParkEnabled = isManagementFeeBillingEnabled(projectIdProp || tenants[0]?.projectId);
   const currentCalendarYear = new Date().getFullYear();
   const [activeTab, setActiveTab] = useState<'List' | 'Terminated' | 'Analysis' | 'Expiring'>(() =>
     mobileEntryMode ? 'List' : 'Analysis'
@@ -836,8 +925,9 @@ export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, build
           const unitNames = t.unitIds
               .map((uid) => building?.units.find((u) => u.id === uid)?.name || uid)
               .join(',');
-          const isMonthlyMode = t.unitPriceMode === 'monthly';
-          const displayPrice = t.unitPrice || (t.totalArea ? (t.monthlyRent / t.totalArea * 12 / 365) : 0);
+          const rentDisplay = resolveRentUnitPriceForDisplay(t, projectIdProp);
+          const displayPrice = rentDisplay.unitPrice;
+          const isMonthlyMode = rentDisplay.mode === 'monthly';
           const exportRow: any = {
               original_id: t.id,
               企业名称: t.name,
@@ -1660,6 +1750,8 @@ export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, build
                         </section>
                     )}
 
+                    {viewRentPricing && (
+                    <>
                     {/* 2. Rent & Payments */}
                     <section className="bg-white p-6 rounded-xl border border-slate-100 shadow-sm space-y-4">
                         <div className="flex items-center gap-2 text-emerald-600 font-bold mb-2"><DollarSign size={18}/> <span>租金与支付</span></div>
@@ -1808,6 +1900,113 @@ export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, build
                             </select></div>
                         </div>
                     </section>
+
+                    {!viewRentPricing && mgmtFeeParkEnabled && (
+                        <p className="text-sm text-teal-800 bg-teal-50 border border-teal-100 rounded-lg px-4 py-3">
+                            当前为物业人员视图：租金、押金等招商价格已隐藏，请维护物业费条款与收款核销。
+                        </p>
+                    )}
+                    {(mgmtFeeParkEnabled || isManagementFeeBillingEnabled(currentTenant.projectId)) && (
+                    <section className="bg-white p-6 rounded-xl border border-slate-100 shadow-sm space-y-4">
+                            <div className="space-y-4">
+                                <div className="text-teal-800 font-bold text-sm">物业费条款</div>
+                                <label className="flex items-center gap-2 text-sm">
+                                    <input type="checkbox" checked={currentTenant.managementFeeEnabled !== false} onChange={(e) => setCurrentTenant({ ...currentTenant, managementFeeEnabled: e.target.checked })} />
+                                    收取物业费
+                                </label>
+                                <label className="flex items-center gap-2 text-sm">
+                                    <input type="checkbox" checked={!!currentTenant.managementFeeExempt} onChange={(e) => setCurrentTenant({ ...currentTenant, managementFeeExempt: e.target.checked })} />
+                                    全租期免物业费
+                                </label>
+                                <div>
+                                    <label className="block text-sm font-medium mb-1.5 text-slate-600">
+                                        物业费单价（元/月/㎡）
+                                    </label>
+                                    <input
+                                        type="number"
+                                        step="0.01"
+                                        min="0"
+                                        placeholder="例如 15"
+                                        className="w-full max-w-xs border border-slate-300 p-2.5 rounded-lg text-sm"
+                                        value={
+                                            toManagementFeeMonthlyUnitPrice(
+                                                currentTenant.managementFeeUnitPrice,
+                                                currentTenant.managementFeeUnitPriceMode,
+                                            ) ?? ''
+                                        }
+                                        onChange={(e) =>
+                                            setCurrentTenant({
+                                                ...currentTenant,
+                                                managementFeeUnitPrice:
+                                                    e.target.value === '' ? undefined : Number(e.target.value),
+                                                managementFeeUnitPriceMode: 'monthly',
+                                                managementFeeMonthlyAmount: undefined,
+                                            })
+                                        }
+                                    />
+                                    <p className="text-xs text-slate-500 mt-2 leading-relaxed">
+                                        签约面积 {formatArea(currentTenant.totalArea || 0)} · 月物业费 = 单价 × 面积 ={' '}
+                                        <span className="font-medium text-teal-800">
+                                            {formatCurrency(resolveManagementFeeMonthly(currentTenant as Tenant))}
+                                        </span>
+                                    </p>
+                                </div>
+                                <div className="border-t border-slate-100 pt-4 space-y-3">
+                                    <div className="text-sm font-medium text-slate-700">物业费起算时间</div>
+                                    <label className="flex items-start gap-2 text-sm cursor-pointer">
+                                        <input
+                                            type="checkbox"
+                                            className="mt-0.5"
+                                            checked={currentTenant.managementFeeStartWithOccupancy !== false}
+                                            onChange={(e) => {
+                                                const withOccupancy = e.target.checked;
+                                                setCurrentTenant({
+                                                    ...currentTenant,
+                                                    managementFeeStartWithOccupancy: withOccupancy,
+                                                    ...(withOccupancy ? { managementFeeStartDate: undefined } : {}),
+                                                });
+                                            }}
+                                        />
+                                        <span>
+                                            同招商租赁合同入驻时间
+                                            <span className="block text-xs text-slate-500 font-normal">
+                                                以实际入驻日为准，未填则按起租日
+                                            </span>
+                                        </span>
+                                    </label>
+                                    {currentTenant.managementFeeStartWithOccupancy !== false ? (
+                                        <p className="text-sm text-teal-800 bg-teal-50 border border-teal-100 rounded-lg px-3 py-2">
+                                            起算日：
+                                            {resolveLeaseOccupancyDate(currentTenant as Tenant) || '请先填写起租日或实际入驻日期'}
+                                            {currentTenant.moveInDate?.trim()
+                                                ? '（实际入驻日）'
+                                                : currentTenant.leaseStart
+                                                  ? '（起租日）'
+                                                  : ''}
+                                        </p>
+                                    ) : (
+                                        <div>
+                                            <label className="block text-sm font-medium mb-1.5 text-slate-600">
+                                                自定义起算日
+                                            </label>
+                                            <input
+                                                type="date"
+                                                className="w-full max-w-xs border border-slate-300 p-2.5 rounded-lg text-sm"
+                                                value={currentTenant.managementFeeStartDate || ''}
+                                                onChange={(e) =>
+                                                    setCurrentTenant({
+                                                        ...currentTenant,
+                                                        managementFeeStartWithOccupancy: false,
+                                                        managementFeeStartDate: e.target.value || undefined,
+                                                    })
+                                                }
+                                            />
+                                        </div>
+                                    )}
+                                </div>
+                            </div>
+                    </section>
+                    )}
 
                     {currentTenant.status === ContractStatus.Terminated &&
                         currentTenant.terminationType === 'Early' &&
@@ -2032,6 +2231,13 @@ export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, build
                                          previewEnd
                                      ); // 不再限制期数
 
+                                     const showMgmtPreview =
+                                         isManagementFeeBillingEnabled(inheritedProjectId) &&
+                                         shouldGenerateManagementFeeBills(tenantForPreview);
+                                     const mgmtBills = showMgmtPreview
+                                         ? generateManagementFeeBills(tenantForPreview, previewStart, previewEnd)
+                                         : [];
+
                                      // 同时生成「纯合同口径」用于对照（有预算层时计算）
                                      const billsRaw = showBillingDiffOverlay
                                          ? generateBudgetedBills(tenantForPreview, [], [], previewStart, previewEnd)
@@ -2050,13 +2256,55 @@ export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, build
                                          billsRaw.map(b => `${b.date.getFullYear()}-${b.date.getMonth()}-${b.date.getDate()}`)
                                      );
 
-                                     if (bills.length === 0) {
+                                     if (bills.length === 0 && mgmtBills.length === 0) {
                                          return (
                                              <div className="text-center py-4 text-slate-400 text-sm">
                                                  无法生成账单预览，请检查合同信息
                                              </div>
                                          );
                                      }
+
+                                     const billDateKey = (d: Date) =>
+                                         `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
+                                     type ReceivablePreviewRow = {
+                                         date: Date;
+                                         rentAmount: number;
+                                         mgmtAmount: number;
+                                         rentCoverageStart?: Date;
+                                         rentCoverageEnd?: Date;
+                                         mgmtCoverageStart?: Date;
+                                         mgmtCoverageEnd?: Date;
+                                         rentBill?: (typeof bills)[number];
+                                     };
+                                     const previewRowMap = new Map<string, ReceivablePreviewRow>();
+                                     for (const bill of bills) {
+                                         const k = billDateKey(bill.date);
+                                         const row = previewRowMap.get(k) || {
+                                             date: bill.date,
+                                             rentAmount: 0,
+                                             mgmtAmount: 0,
+                                         };
+                                         row.rentAmount += bill.amount;
+                                         row.rentBill = bill;
+                                         row.rentCoverageStart = bill.coverageStart || row.rentCoverageStart;
+                                         row.rentCoverageEnd = bill.coverageEnd || row.rentCoverageEnd;
+                                         previewRowMap.set(k, row);
+                                     }
+                                     for (const bill of mgmtBills) {
+                                         const k = billDateKey(bill.date);
+                                         const row = previewRowMap.get(k) || {
+                                             date: bill.date,
+                                             rentAmount: 0,
+                                             mgmtAmount: 0,
+                                         };
+                                         row.mgmtAmount += bill.amount;
+                                         row.mgmtCoverageStart = bill.coverageStart || row.mgmtCoverageStart;
+                                         row.mgmtCoverageEnd = bill.coverageEnd || row.mgmtCoverageEnd;
+                                         previewRowMap.set(k, row);
+                                     }
+                                     const previewRows = Array.from(previewRowMap.values()).sort(
+                                         (a, b) => a.date.getTime() - b.date.getTime(),
+                                     );
 
                                      const firstCustomBillIdx = (() => {
                                          const amt = currentTenant.firstReceivableAmount;
@@ -2065,11 +2313,14 @@ export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, build
                                          for (let i = 1; i < bills.length; i++) {
                                              if (bills[i].date.getTime() < bills[best].date.getTime()) best = i;
                                          }
-                                         return best;
+                                         const targetKey = billDateKey(bills[best].date);
+                                         return previewRows.findIndex((r) => billDateKey(r.date) === targetKey);
                                      })();
                                      
                                      // 计算财务汇总
-                                     const totalReceivable = bills.reduce((sum, bill) => sum + bill.amount, 0);
+                                     const totalRentReceivable = bills.reduce((sum, bill) => sum + bill.amount, 0);
+                                     const totalMgmtReceivable = mgmtBills.reduce((sum, bill) => sum + bill.amount, 0);
+                                     const totalReceivable = totalRentReceivable + totalMgmtReceivable;
                                      
                                      // 关联实际收款（根据 tenantId 匹配）
                                      const tenantPayments = payments.filter(p => p.tenantId === currentTenant.id);
@@ -2087,7 +2338,7 @@ export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, build
                                      // 实际月租金单价（元/天/㎡）
                                      // 公式：应收总额 / 合同月数 / 面积 / 30天
                                      const actualDailyPrice = currentTenant.totalArea && currentTenant.totalArea > 0 && totalMonths > 0
-                                         ? totalReceivable / totalMonths / currentTenant.totalArea / 30
+                                         ? totalRentReceivable / totalMonths / currentTenant.totalArea / 30
                                          : 0;
                                      
                                      return (
@@ -2100,7 +2351,15 @@ export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, build
                                                          <span className="text-xs font-bold text-blue-700">应收总额</span>
                                                      </div>
                                                     <div className="text-2xl font-bold text-blue-900">{formatCurrency(totalReceivable)}</div>
-                                                     <div className="text-xs text-blue-600 mt-1">合同期内共{bills.length}期</div>
+                                                     <div className="text-xs text-blue-600 mt-1">
+                                                         合同期内共{previewRows.length}期
+                                                         {showMgmtPreview && totalMgmtReceivable > 0 ? (
+                                                             <span className="block text-teal-700 mt-0.5">
+                                                                 租金 {formatCurrency(totalRentReceivable)} + 物业费{' '}
+                                                                 {formatCurrency(totalMgmtReceivable)}
+                                                             </span>
+                                                         ) : null}
+                                                     </div>
                                                  </div>
                                                  
                                                  <div className="bg-gradient-to-br from-green-50 to-green-100 p-4 rounded-xl border border-green-200">
@@ -2160,7 +2419,12 @@ export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, build
                                                      <div className="flex items-center gap-2">
                                                          <Receipt size={18} className="text-blue-600" />
                                                          <span className="text-sm font-bold text-slate-800">应收款明细预览</span>
-                                                         <span className="text-xs text-slate-500">（合同期内共{bills.length}期）</span>
+                                                         <span className="text-xs text-slate-500">（合同期内共{previewRows.length}期）</span>
+                                                         {showMgmtPreview && (
+                                                             <span className="text-[10px] font-bold bg-teal-50 text-teal-800 px-2 py-0.5 rounded border border-teal-100">
+                                                                 含物业费
+                                                             </span>
+                                                         )}
                                                          {willApplyBudget && (
                                                              <span className="inline-flex items-center gap-1 text-[10px] font-bold bg-purple-100 text-purple-700 px-2 py-0.5 rounded">
                                                                  <Sparkles size={10}/> 已叠加存量调优假设/调整
@@ -2290,27 +2554,54 @@ export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, build
                                                              <tr>
                                                                  <th className="px-3 py-2 text-left font-bold text-slate-600">期次</th>
                                                                  <th className="px-3 py-2 text-left font-bold text-slate-600">收款日期</th>
-                                                                 <th className="px-3 py-2 text-left font-bold text-slate-600">应收金额</th>
+                                                                 {showMgmtPreview ? (
+                                                                     <>
+                                                                         <th className="px-3 py-2 text-right font-bold text-slate-600">租金</th>
+                                                                         <th className="px-3 py-2 text-right font-bold text-teal-700">物业费</th>
+                                                                         <th className="px-3 py-2 text-right font-bold text-slate-800">合计</th>
+                                                                     </>
+                                                                 ) : (
+                                                                     <th className="px-3 py-2 text-left font-bold text-slate-600">应收金额</th>
+                                                                 )}
                                                                  <th className="px-3 py-2 text-left font-bold text-slate-600">覆盖周期</th>
                                                              </tr>
                                                          </thead>
                                                          <tbody className="divide-y divide-slate-100">
-                                                     {bills.map((bill, idx) => {
-                                                         // 计算覆盖周期
-                                                        const billDate = bill.date;
-                                                        const coverageStart = bill.coverageStart || new Date(currentTenant.leaseStart!);
-                                                        const coverageEnd = bill.coverageEnd || new Date(currentTenant.leaseEnd!);
-                                                         
-                                                         const formatDate = (d: Date) => {
-                                                             return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-                                                         };
+                                                     {previewRows.map((row, idx) => {
+                                                        const billDate = row.date;
+                                                        const bill = row.rentBill;
+                                                        const formatDate = (d: Date) =>
+                                                            `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+                                                        const rowTotal = row.rentAmount + row.mgmtAmount;
+                                                        const coverageParts: string[] = [];
+                                                        if (row.rentAmount > 0 && row.rentCoverageStart && row.rentCoverageEnd) {
+                                                            coverageParts.push(
+                                                                `租金 ${formatDate(row.rentCoverageStart)} ~ ${formatDate(row.rentCoverageEnd)}`,
+                                                            );
+                                                        }
+                                                        if (row.mgmtAmount > 0 && row.mgmtCoverageStart && row.mgmtCoverageEnd) {
+                                                            coverageParts.push(
+                                                                `物业费 ${formatDate(row.mgmtCoverageStart)} ~ ${formatDate(row.mgmtCoverageEnd)}`,
+                                                            );
+                                                        }
+                                                        const coverageText =
+                                                            coverageParts.length > 0
+                                                                ? coverageParts.join('；')
+                                                                : `${formatDate(row.rentCoverageStart || billDate)} ~ ${formatDate(row.rentCoverageEnd || billDate)}`;
 
-                                                         // 与「纯合同口径」对比，标注预算叠加效果
-                                                         const dateKey = `${billDate.getFullYear()}-${billDate.getMonth()}-${billDate.getDate()}`;
-                                                         const dateAmtKey = `${dateKey}|${bill.amount.toFixed(2)}`;
-                                                         const isBudgetNew = showBillingDiffOverlay && !rawDateSet.has(dateKey); // 新增账期（如调入、付款转移目标月）
+                                                         const dateKey = billDateKey(billDate);
+                                                         const dateAmtKey = bill
+                                                             ? `${dateKey}|${bill.amount.toFixed(2)}`
+                                                             : '';
+                                                         const isBudgetNew =
+                                                             !!bill &&
+                                                             showBillingDiffOverlay &&
+                                                             !rawDateSet.has(dateKey);
                                                          const isBudgetChanged =
-                                                             showBillingDiffOverlay && !isBudgetNew && !rawDateAmtSet.has(dateAmtKey); // 同日期但金额变化
+                                                             !!bill &&
+                                                             showBillingDiffOverlay &&
+                                                             !isBudgetNew &&
+                                                             !rawDateAmtSet.has(dateAmtKey);
 
                                                          return (
                                                              <tr key={idx} className={`hover:bg-slate-50 ${isBudgetNew ? 'bg-purple-50/40' : isBudgetChanged ? 'bg-amber-50/40' : ''}`}>
@@ -2319,12 +2610,17 @@ export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, build
                                                                      {idx === firstCustomBillIdx && (currentTenant.firstReceivableAmount ?? 0) > 0 && (
                                                                          <span className="ml-1 inline-flex items-center text-[10px] bg-amber-100 text-amber-900 px-1.5 py-0.5 rounded font-bold">首期自定义</span>
                                                                      )}
-                                                                     {bill.earlyTerminationExtraDetail && (
+                                                                     {bill?.earlyTerminationExtraDetail && (
                                                                          <span
                                                                              className="ml-1 inline-flex items-center text-[10px] bg-amber-100 text-amber-900 px-1.5 py-0.5 rounded font-bold border border-amber-200"
                                                                              title="免租扣回、押金扣款、其它调整（不含当期租金）"
                                                                          >
                                                                              提前退租结算
+                                                                         </span>
+                                                                     )}
+                                                                     {row.mgmtAmount > 0 && row.rentAmount <= 0 && (
+                                                                         <span className="ml-1 inline-flex items-center text-[10px] bg-teal-100 text-teal-800 px-1.5 py-0.5 rounded font-bold">
+                                                                             物业费
                                                                          </span>
                                                                      )}
                                                                      {isBudgetNew && (
@@ -2335,10 +2631,22 @@ export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, build
                                                                      )}
                                                                  </td>
                                                                  <td className="px-3 py-2 font-bold text-blue-600">{formatDate(billDate)}</td>
-                                                                 <td className="px-3 py-2 font-bold text-green-600">{formatCurrency(bill.amount)}</td>
-                                                                 <td className="px-3 py-2 text-slate-500">
-                                                                     {formatDate(coverageStart)} ~ {formatDate(coverageEnd)}
-                                                                 </td>
+                                                                 {showMgmtPreview ? (
+                                                                     <>
+                                                                         <td className="px-3 py-2 text-right text-slate-700">
+                                                                             {row.rentAmount > 0 ? formatCurrency(row.rentAmount) : '—'}
+                                                                         </td>
+                                                                         <td className="px-3 py-2 text-right font-medium text-teal-700">
+                                                                             {row.mgmtAmount > 0 ? formatCurrency(row.mgmtAmount) : '—'}
+                                                                         </td>
+                                                                         <td className="px-3 py-2 text-right font-bold text-green-600">
+                                                                             {formatCurrency(rowTotal)}
+                                                                         </td>
+                                                                     </>
+                                                                 ) : (
+                                                                     <td className="px-3 py-2 font-bold text-green-600">{formatCurrency(rowTotal)}</td>
+                                                                 )}
+                                                                 <td className="px-3 py-2 text-slate-500">{coverageText}</td>
                                                              </tr>
                                                          );
                                                      })}
@@ -2346,7 +2654,7 @@ export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, build
                                                      </table>
                                                      <p className="text-xs text-slate-500 mt-2">
                                                          <span className="text-amber-600">ℹ️ 提示：</span>
-                                                         收款日期为当期租金的收取时间，覆盖周期为该笔款项对应的租期范围。「财务报表 → 应收核销」按月筛选时：<strong className="text-slate-700">当期扣除</strong>模式按<strong className="text-slate-700">收款日期</strong>所在自然月归集；<strong className="text-slate-700">账期顺延</strong>（Defer）模式按<strong className="text-slate-700">覆盖期首月</strong>归集（与预算表、合同概要一致）。整笔应收仅在归属月出现一笔。
+                                                         收款日期为当期款项的收取时间；覆盖周期分别标注租金与物业费（若同日收款则合并为一行）。「财务报表 → 应收核销」按月筛选时：<strong className="text-slate-700">当期扣除</strong>模式按<strong className="text-slate-700">收款日期</strong>所在自然月归集；<strong className="text-slate-700">账期顺延</strong>（Defer）模式按<strong className="text-slate-700">覆盖期首月</strong>归集（与预算表、合同概要一致）。整笔应收仅在归属月出现一笔。
                                                          {(currentTenant.rentFreePeriods?.length || 0) > 0 && currentTenant.freeRentHandling === 'Defer' && '免租期采用账期顺延模式，收款时间会自动顺延。'}
                                                          {(currentTenant.rentFreePeriods?.length || 0) > 0 && currentTenant.freeRentHandling === 'Deduct' && '免租期采用当期扣除模式，应收金额会相应减少。'}
                                                          {showBillingDiffOverlay && (
@@ -2367,6 +2675,9 @@ export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, build
                              </div>
                          )}
                     </section>
+
+                    </>
+                    )}
 
                     {/* 4. Business Insights & Risk */}
                     <section className="bg-white p-6 rounded-xl border border-slate-100 shadow-sm space-y-4">
@@ -3301,10 +3612,8 @@ export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, build
                                                     const unitNames = t.unitIds
                                                         .map((uid) => building?.units.find((u) => u.id === uid)?.name || uid)
                                                         .join(', ');
-                                                    const isMonthlyPrice = t.unitPriceMode === 'monthly';
-                                                    const displayPrice =
-                                                        t.unitPrice ||
-                                                        (t.totalArea ? (t.monthlyRent / t.totalArea * 12) / 365 : 0);
+                                                    const rentDisplay = resolveRentUnitPriceForDisplay(t, projectIdProp);
+                                                    const displayPrice = rentDisplay.unitPrice;
                                                     // 北京：同时显示天单价和月租金
                                                     const showBoth = t.projectId === 'beijing_park';
                                                     const contractYear = Number(
@@ -3386,6 +3695,7 @@ export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, build
                                                                                     当期扣除
                                                                                 </span>
                                                                             )}
+                                                                            {renderManagementFeeTags(t, projectIdProp)}
                                                                         </div>
                                                                     </div>
                                                                 </div>
@@ -3417,24 +3727,27 @@ export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, build
                                                                             {t.leaseStart} <span className="text-slate-400 mx-0.5">~</span> {t.leaseEnd}
                                                                         </div>
                                                                     </div>
-                                                                    <div>
-                                                                        <div className="text-[10px] text-slate-400 font-medium">{isMonthlyPrice ? '月单价' : '日单价'}</div>
-                                                                        <div className="text-blue-600 font-bold tabular-nums">
-                                                                            ¥{Number(displayPrice).toFixed(2)}
-                                                                            <span className="text-[10px] font-normal text-slate-400 ml-0.5">/㎡·{isMonthlyPrice ? '月' : '天'}</span>
-                                                                        </div>
-                                                                        {showBoth && (
-                                                                            <div className="text-[11px] text-slate-500 mt-0.5 tabular-nums">
-                                                                                月租 ¥{(t.monthlyRent || 0).toLocaleString()}
+                                                                    {viewRentPricing && (
+                                                                        <div>
+                                                                            <div className="text-[10px] text-slate-400 font-medium">{rentDisplay.label}</div>
+                                                                            <div className="text-blue-600 font-bold tabular-nums">
+                                                                                ¥{Number(displayPrice).toFixed(2)}
+                                                                                <span className="text-[10px] font-normal text-slate-400 ml-0.5">/㎡·{rentDisplay.suffix}</span>
                                                                             </div>
-                                                                        )}
-                                                                    </div>
+                                                                            {showBoth && (
+                                                                                <div className="text-[11px] text-slate-500 mt-0.5 tabular-nums">
+                                                                                    月租 ¥{(t.monthlyRent || 0).toLocaleString()}
+                                                                                </div>
+                                                                            )}
+                                                                        </div>
+                                                                    )}
                                                                     <div>
                                                                         <div className="text-[10px] text-slate-400 font-medium">付款周期</div>
                                                                         <div className="text-slate-800 font-medium">
                                                                             {paymentCycleLabelMap[t.paymentCycle] || t.paymentCycle}
                                                                         </div>
                                                                     </div>
+                                                                    {renderManagementFeeCardFields(t, projectIdProp)}
                                                                 </div>
                                                             </div>
 
@@ -3575,7 +3888,8 @@ export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, build
                                         {fg.tenants.map(t => {
                                             const building = buildings.find(b => b.id === t.buildingId);
                                             const unitNames = t.unitIds.map(uid => building?.units.find(u => u.id === uid)?.name || uid).join(', ');
-                                            const displayPrice = t.unitPrice || (t.totalArea ? (t.monthlyRent / t.totalArea * 12 / 365) : 0);
+                                            const rentDisplay = resolveRentUnitPriceForDisplay(t, projectIdProp);
+                                            const displayPrice = rentDisplay.unitPrice;
                                             const contractYear = Number((t.signingDate || t.leaseStart || '').slice(0, 4));
                                             const isThisYearContract = contractYear === currentCalendarYear;
                                             const isRenewalContract = Boolean(t.rootId);
@@ -3618,6 +3932,7 @@ export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, build
                                                             {t.rentFreePeriods && t.rentFreePeriods.length > 0 && t.freeRentHandling === 'Deduct' && (
                                                                 <span className="text-[10px] bg-green-50 text-green-700 px-2 py-0.5 rounded-md border border-green-200 font-bold">当期扣除</span>
                                                             )}
+                                                            {renderManagementFeeTags(t, projectIdProp)}
                                                         </div>
                                                     </td>
                                                     <td className="px-6 py-4 text-slate-600">{building?.name} <span className="text-xs bg-slate-100 px-1 rounded font-medium">{unitNames}</span></td>
@@ -3638,7 +3953,8 @@ export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, build
                                 {group.tenants.map(t => {
                                     const building = buildings.find(b => b.id === t.buildingId);
                                     const unitNames = t.unitIds.map(uid => building?.units.find(u => u.id === uid)?.name || uid).join(', ');
-                                    const displayPrice = t.unitPrice || (t.totalArea ? (t.monthlyRent / t.totalArea * 12 / 365) : 0);
+                                    const rentDisplay = resolveRentUnitPriceForDisplay(t, projectIdProp);
+                                    const displayPrice = rentDisplay.unitPrice;
                                     return (
                                         <tr key={t.id} className="hover:bg-slate-50 transition-colors">
                                             <td className="px-6 py-4">
@@ -3699,7 +4015,8 @@ export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, build
                                             {fg.tenants.map((t) => {
                                                 const building = buildings.find((b) => b.id === t.buildingId);
                                                 const unitNames = t.unitIds.map((uid) => building?.units.find((u) => u.id === uid)?.name || uid).join(', ');
-                                                const displayPrice = t.unitPrice || (t.totalArea ? (t.monthlyRent / t.totalArea * 12 / 365) : 0);
+                                                const rentDisplay = resolveRentUnitPriceForDisplay(t, projectIdProp);
+                                            const displayPrice = rentDisplay.unitPrice;
                                                 const contractYear = Number((t.signingDate || t.leaseStart || '').slice(0, 4));
                                                 const isThisYearContract = contractYear === currentCalendarYear;
                                                 const isRenewalContract = Boolean(t.rootId);
@@ -3729,6 +4046,7 @@ export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, build
                                                             {t.rentFreePeriods && t.rentFreePeriods.length > 0 && t.freeRentHandling === 'Deduct' && (
                                                                 <span className="text-[10px] bg-green-50 text-green-700 px-2 py-0.5 rounded-md border border-green-200 font-bold">当期扣除</span>
                                                             )}
+                                                            {renderManagementFeeTags(t, projectIdProp)}
                                                         </div>
                                                         <div className="text-xs text-slate-600 mt-1">
                                                             {building?.name}{' '}
@@ -3747,14 +4065,40 @@ export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, build
                                                                 <span className="text-slate-400">合同期 </span>
                                                                 {t.leaseStart} ~ {t.leaseEnd}
                                                             </span>
-                                                            <span>
-                                                                <span className="text-slate-400">单价 </span>
-                                                                <span className="text-blue-600 font-bold">{formatCurrency(displayPrice)}</span>
-                                                            </span>
+                                                            {viewRentPricing && (
+                                                                <span>
+                                                                    <span className="text-slate-400">单价 </span>
+                                                                    <span className="text-blue-600 font-bold">{formatCurrency(displayPrice)}</span>
+                                                                </span>
+                                                            )}
                                                             <span>
                                                                 <span className="text-slate-400">付款 </span>
                                                                 {paymentCycleLabelMap[t.paymentCycle] || t.paymentCycle}
                                                             </span>
+                                                            {(() => {
+                                                                const m = getManagementFeeCardStatus(t, projectIdProp);
+                                                                if (!m.parkEnabled || (!m.collecting && !m.needsSetup)) return null;
+                                                                return (
+                                                                    <>
+                                                                        <span>
+                                                                            <span className="text-slate-400">物业费 </span>
+                                                                            <span className="text-teal-700 font-bold">
+                                                                                {m.monthlyUnitPrice
+                                                                                    ? `¥${m.monthlyUnitPrice.toFixed(2)}/㎡·月`
+                                                                                    : m.monthlyAmount > 0
+                                                                                      ? formatCurrency(m.monthlyAmount)
+                                                                                      : '待配置'}
+                                                                            </span>
+                                                                        </span>
+                                                                        {m.monthlyAmount > 0 && m.monthlyUnitPrice ? (
+                                                                            <span>
+                                                                                <span className="text-slate-400">月物业费 </span>
+                                                                                <span className="text-teal-800 font-bold">{formatCurrency(m.monthlyAmount)}</span>
+                                                                            </span>
+                                                                        ) : null}
+                                                                    </>
+                                                                );
+                                                            })()}
                                                         </div>
                                                         <div className="flex flex-wrap gap-3 mt-3">
                                                             <button type="button" onClick={() => handleEdit(t)} className="text-blue-600 font-bold text-xs">
@@ -3790,7 +4134,8 @@ export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, build
                                 {group.tenants.map((t) => {
                                     const building = buildings.find((b) => b.id === t.buildingId);
                                     const unitNames = t.unitIds.map((uid) => building?.units.find((u) => u.id === uid)?.name || uid).join(', ');
-                                    const displayPrice = t.unitPrice || (t.totalArea ? (t.monthlyRent / t.totalArea * 12 / 365) : 0);
+                                    const rentDisplay = resolveRentUnitPriceForDisplay(t, projectIdProp);
+                                    const displayPrice = rentDisplay.unitPrice;
                                     return (
                                         <div key={t.id} className="px-4 py-3 border-b border-slate-100 bg-white">
                                             <div className="flex flex-wrap items-center gap-2">

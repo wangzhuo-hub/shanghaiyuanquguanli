@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { computeEarlyTerminationFreeRentClawbackAmount, generateBudgetedBills } from '../billingService';
+import {
+  computeEarlyTerminationFreeRentClawbackAmount,
+  generateBudgetedBills,
+  resolveRentUnitPriceForDisplay,
+} from '../billingService';
 import { ContractStatus, DepositStatus, Tenant } from '../../types';
 
 function tenant(overrides: Partial<Tenant>): Tenant {
@@ -649,5 +653,42 @@ describe('generateBudgetedBills payment cycles', () => {
     expect(partialMarApr).toBeDefined();
     expect(partialMarApr!.amount).toBe(78840);
     expect(partialMarApr!.date.getTime()).toBeLessThan(settlement!.date.getTime());
+  });
+});
+
+describe('resolveRentUnitPriceForDisplay', () => {
+  it('uses monthly rent ÷ area for Shenzhen when unitPrice is mislabeled daily value', () => {
+    const display = resolveRentUnitPriceForDisplay(
+      tenant({
+        projectId: 'shenzhen_park',
+        unitPrice: 3.29,
+        unitPriceMode: 'monthly',
+        monthlyRent: 200000,
+        totalArea: 2000,
+      }),
+      'shenzhen_park',
+    );
+
+    expect(display.unitPrice).toBe(100);
+    expect(display.mode).toBe('monthly');
+    expect(display.label).toBe('月单价');
+    expect(display.suffix).toBe('月');
+  });
+
+  it('keeps daily unit price display for Shanghai when not configured for monthly', () => {
+    const display = resolveRentUnitPriceForDisplay(
+      tenant({
+        projectId: 'shanghai_park',
+        unitPrice: 3.29,
+        unitPriceMode: 'daily',
+        monthlyRent: 200000,
+        totalArea: 2000,
+      }),
+      'shanghai_park',
+    );
+
+    expect(display.unitPrice).toBe(3.29);
+    expect(display.mode).toBe('daily');
+    expect(display.label).toBe('日单价');
   });
 });

@@ -93,7 +93,17 @@ export const generateOverdueAlerts = (
     const level =
       unpaidWan >= 10 ? 'high' : unpaidWan >= 3 ? 'medium' : 'low';
     const statusLabel =
-      b.status === 'Overdue' ? '逾期未收' : b.status === 'Partial' ? '部分未收' : '待收款';
+      b.feeKind === 'management_fee'
+        ? b.status === 'Overdue'
+          ? '物业费逾期未收'
+          : b.status === 'Partial'
+            ? '物业费部分未收'
+            : '物业费待收'
+        : b.status === 'Overdue'
+          ? '逾期未收'
+          : b.status === 'Partial'
+            ? '部分未收'
+            : '待收款';
     alerts.push({
       id: `overdue_${parkId}_${b.tenantId}`,
       parkId,

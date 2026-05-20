@@ -2,6 +2,7 @@ import React from 'react';
 import { Banknote, Target, ArrowDown, ArrowUp } from 'lucide-react';
 import { type BigScreenParkMetric } from '../../services/bigScreenMetrics';
 import { formatWan, formatPercent, formatArea } from '../../services/numberFormat';
+import { BigScreenPeriodCards } from './BigScreenPeriodCards';
 
 interface Props {
   park: BigScreenParkMetric;
@@ -18,11 +19,21 @@ const kpiCard =
 export const BigScreenParkSlide: React.FC<Props> = ({ park, year, hideAmount }) => {
   const occupancyOk = park.occupancyRate >= park.annualOccupancyTarget;
   const collectionOk = park.annualGoalCompletion >= 90;
-  const hasUnpaid = park.currentMonthUnpaid > 0;
+  const showManagementFee =
+    park.managementFeeBillingEnabled &&
+    (park.annualManagementFeeReceivable > 0 ||
+      park.annualManagementFeeCollected > 0 ||
+      park.currentMonthManagementFeeReceivable > 0);
 
   return (
     <div className="h-full w-full min-h-0 px-6 md:px-10 xl:px-16 py-4 xl:py-5">
-      <div className="h-full w-full max-w-[1800px] mx-auto min-h-0 grid grid-rows-[auto_minmax(0,2.1fr)_minmax(0,1fr)_minmax(0,1.5fr)] gap-3 xl:gap-4">
+      <div
+        className={`h-full w-full max-w-[1800px] mx-auto min-h-0 grid gap-3 xl:gap-4 ${
+          showManagementFee
+            ? 'grid-rows-[auto_minmax(0,2fr)_minmax(0,0.9fr)_minmax(0,0.75fr)_minmax(0,1.4fr)]'
+            : 'grid-rows-[auto_minmax(0,2.1fr)_minmax(0,1fr)_minmax(0,1.5fr)]'
+        }`}
+      >
         {/* Header */}
         <header className="text-center shrink-0">
           <h1 className="text-2xl md:text-4xl xl:text-5xl font-bold tracking-tight">{park.parkName}</h1>
@@ -38,7 +49,7 @@ export const BigScreenParkSlide: React.FC<Props> = ({ park, year, hideAmount }) 
                   <div className="w-9 h-9 xl:w-11 xl:h-11 rounded-lg bg-emerald-500/20 flex items-center justify-center shrink-0">
                     <Banknote className="text-emerald-400 w-[18px] h-[18px] xl:w-5 xl:h-5" />
                   </div>
-                  <span className="text-sm xl:text-xl text-slate-400 font-medium">年度累计实收</span>
+                  <span className="text-sm xl:text-xl text-slate-400 font-medium">年度租金实收</span>
                 </div>
                 <div className="text-5xl md:text-6xl xl:text-[5.25rem] font-bold text-white tabular-nums tracking-tight leading-none">
                   {fmtWan(park.annualRevenueCollected, 0, hideAmount)}
@@ -53,6 +64,18 @@ export const BigScreenParkSlide: React.FC<Props> = ({ park, year, hideAmount }) 
                     完成率 {formatPercent(park.annualGoalCompletion, 0)}
                   </span>
                 </div>
+                {showManagementFee ? (
+                  <div className="mt-3 xl:mt-4 pt-3 xl:pt-4 border-t border-white/10">
+                    <div className="text-xs xl:text-lg text-teal-400/80 font-medium">年度物业费实收</div>
+                    <div className="text-2xl md:text-3xl xl:text-4xl font-bold text-teal-300 tabular-nums mt-1 leading-none">
+                      {fmtWan(park.annualManagementFeeCollected, 0, hideAmount)}
+                    </div>
+                    <div className="text-xs xl:text-lg text-slate-500 mt-1">
+                      应收 {fmtWan(park.annualManagementFeeReceivable, 0, hideAmount)} · 收缴{' '}
+                      {formatPercent(park.annualManagementFeeCompletion, 0)}
+                    </div>
+                  </div>
+                ) : null}
               </div>
 
               <div className="text-center md:text-right md:border-l md:border-white/10 md:pl-8 xl:pl-16">
@@ -84,35 +107,30 @@ export const BigScreenParkSlide: React.FC<Props> = ({ park, year, hideAmount }) 
           </div>
         </section>
 
-        {/* 当前账期 */}
+        {/* 当前账期 · 租金 */}
         <section className="min-h-0">
-          <div className="grid grid-cols-3 gap-3 xl:gap-5 h-full min-h-[88px]">
-            <div className="bg-emerald-500/5 rounded-xl xl:rounded-2xl border border-emerald-500/10 px-4 xl:px-6 flex flex-col justify-center text-center min-h-0">
-              <div className="text-xs xl:text-lg text-emerald-400/70 font-medium">本账期已收</div>
-              <div className="text-2xl md:text-3xl xl:text-5xl font-bold text-emerald-400 tabular-nums whitespace-nowrap mt-1 leading-none">
-                {fmtWan(park.currentMonthCollected, 0, hideAmount)}
-              </div>
-            </div>
-            <div className="bg-sky-500/5 rounded-xl xl:rounded-2xl border border-sky-500/10 px-4 xl:px-6 flex flex-col justify-center text-center min-h-0">
-              <div className="text-xs xl:text-lg text-sky-400/70 font-medium">本账期应收</div>
-              <div className="text-2xl md:text-3xl xl:text-5xl font-bold text-sky-400 tabular-nums whitespace-nowrap mt-1 leading-none">
-                {fmtWan(park.currentMonthReceivable, 0, hideAmount)}
-              </div>
-            </div>
-            <div
-              className={`rounded-xl xl:rounded-2xl border px-4 xl:px-6 flex flex-col justify-center text-center min-h-0 ${hasUnpaid ? 'bg-red-500/5 border-red-500/10' : 'bg-emerald-500/5 border-emerald-500/10'}`}
-            >
-              <div className={`text-xs xl:text-lg font-medium ${hasUnpaid ? 'text-red-400/70' : 'text-emerald-400/70'}`}>
-                本账期末收
-              </div>
-              <div
-                className={`text-2xl md:text-3xl xl:text-5xl font-bold tabular-nums whitespace-nowrap mt-1 leading-none ${hasUnpaid ? 'text-red-400' : 'text-emerald-400'}`}
-              >
-                {fmtWan(park.currentMonthUnpaid, 0, hideAmount)}
-              </div>
-            </div>
-          </div>
+          <BigScreenPeriodCards
+            title="本账期 · 租金"
+            receivable={park.currentMonthReceivable}
+            collected={park.currentMonthCollected}
+            unpaid={park.currentMonthUnpaid}
+            hideAmount={hideAmount}
+            variant="rent"
+          />
         </section>
+
+        {showManagementFee ? (
+          <section className="min-h-0">
+            <BigScreenPeriodCards
+              title="本账期 · 物业费"
+              receivable={park.currentMonthManagementFeeReceivable}
+              collected={park.currentMonthManagementFeeCollected}
+              unpaid={park.currentMonthManagementFeeUnpaid}
+              hideAmount={hideAmount}
+              variant="management_fee"
+            />
+          </section>
+        ) : null}
 
         {/* 经营指标 */}
         <section className="min-h-0 flex flex-col gap-2 xl:gap-3">

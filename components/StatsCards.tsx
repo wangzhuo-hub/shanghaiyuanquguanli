@@ -1,28 +1,50 @@
 
 import React, { useMemo } from 'react';
 import { TrendingUp, TrendingDown, Target, Edit3, CalendarRange, UserPlus, UserMinus } from 'lucide-react';
-import { DashboardData, Tenant, ContractStatus } from '../types';
+import { AuthUser, DashboardData, Tenant, ContractStatus, MonthlyTrend } from '../types';
 import { formatArea, formatPercent, formatWan } from '../services/numberFormat';
 import { resolveAnnualInitialBudget } from '../services/dashboardMetrics';
 import { resolveInitMonthInitialBudget } from '../services/initDataBudget';
+import { isManagementFeeBillingEnabled } from '../services/parkBillingConfig';
+import { canViewRentPricing } from '../services/receivablePermissions';
+
+type FeeScope = 'rent' | 'management_fee' | 'combined';
 
 interface StatsCardsProps {
   data: DashboardData;
   onEditTargets: (type: 'revenue' | 'occupancy') => void;
   selectedYear: number;
-  tenants: Tenant[]; // 新增：用于计算新租退租数据
+  tenants: Tenant[];
+  projectId?: string;
+  authUser?: AuthUser | null;
 }
 
-export const StatsCards: React.FC<StatsCardsProps> = ({ data, onEditTargets, selectedYear, tenants }) => {
-  // 租赁维度切换状态：'year' | 'quarter' | 'month'
+export const StatsCards: React.FC<StatsCardsProps> = ({
+  data,
+  onEditTargets,
+  selectedYear,
+  tenants,
+  projectId: projectIdProp,
+  authUser = null,
+}) => {
   const [leasePeriod, setLeasePeriod] = React.useState<'year' | 'quarter' | 'month'>('year');
+  const projectId = projectIdProp || tenants[0]?.projectId || '';
+  const mgmtFeeParkEnabled = isManagementFeeBillingEnabled(projectId);
+  const viewRentPricing = canViewRentPricing(authUser);
+  const [feeScope, setFeeScope] = React.useState<FeeScope>(() =>
+      viewRentPricing ? 'rent' : 'management_fee',
+  );
+
+  React.useEffect(() => {
+      if (!viewRentPricing && mgmtFeeParkEnabled) {
+          setFeeScope('management_fee');
+      }
+  }, [viewRentPricing, mgmtFeeParkEnabled]);
 
   const formatWanCurrency = formatWan;
   /** 工作台「预算执行」表：万元、百分比取整 */
   const dashboardWan = (v: number | null | undefined) => formatWan(v, 0);
   const dashboardPct = (v: number | null | undefined) => formatPercent(v, 0);
-
-  const projectId = tenants[0]?.projectId;
 
   const initialBudgetMonthMap = useMemo(() => {
       const map = new Map<number, number>();
@@ -144,69 +166,211 @@ export const StatsCards: React.FC<StatsCardsProps> = ({ data, onEditTargets, sel
       [initialBudgetMonthMap]
   );
 
-  // Calculate Monthly Breakdown Data with YoY comparison
+  const pickScopeAmounts = (
+      trend: MonthlyTrend | undefined,
+      prevTrend: MonthlyTrend | undefined,
+      scope: FeeScope,
+  ) => {
+      const rentContract = trend?.contractReceivable ?? trend?.revenueTarget ?? 0;
+      const rentActual = trend?.revenueCollected ?? 0;
+      const rentHasActual = trend?.revenueCollected !== null && trend?.revenueCollected !== undefined;
+      const mgmtContract = trend?.managementFeeContractReceivable ?? 0;
+      const mgmtActual = trend?.managementFeeCollected ?? 0;
+      const mgmtHasActual = trend?.managementFeeCollected !== null && trend?.managementFeeCollected !== undefined;
+      const prevRent = prevTrend?.revenueCollected || 0;
+      const prevMgmt = prevTrend?.managementFeeCollected || 0;
+
+      if (scope === 'management_fee') {
+          return {
+              contractReceivable: mgmtContract,
+              actual: mgmtHasActual ? mgmtActual : null,
+              hasActual: mgmtHasActual,
+              prevActual: prevMgmt,
+              useInitialBudget: false,
+          };
+      }
+      if (scope === 'combined') {
+          const hasActual = rentHasActual || mgmtHasActual;
+          const actual =
+              (rentHasActual ? rentActual : 0) + (mgmtHasActual ? mgmtActual : 0);
+          return {
+              contractReceivable: rentContract + mgmtContract,
+              actual: hasActual ? actual : null,
+              hasActual,
+              prevActual: prevRent + prevMgmt,
+              useInitialBudget: true,
+          };
+      }
+      return {
+          contractReceivable: rentContract,
+          actual: rentHasActual ? rentActual : null,
+          hasActual: rentHasActual,
+          prevActual: prevRent,
+          useInitialBudget: true,
+      };
+  };
+
   const monthlyBreakdown = useMemo(() => {
       let cumulativeCollected = 0;
       let cumulativeInitialBudget = 0;
+      let cumulativeContractGoal = 0;
       return Array.from({ length: 12 }, (_, i) => {
           const trend = data.monthlyTrends[i];
-          const contractReceivable = trend?.contractReceivable ?? trend?.revenueTarget ?? 0;
-          const actual = trend?.revenueCollected || 0;
-          const hasActual = trend?.revenueCollected !== null;
-          const monthInitialBudget = initialBudgetMonthMap.get(i + 1) ?? 0;
-
-          if (hasActual) {
-              cumulativeCollected += actual;
-          }
-          cumulativeInitialBudget += monthInitialBudget;
-
-          // 完成率 = 实收 / 年初预算
-          const monthlyRate = monthInitialBudget > 0 && hasActual ? (actual / monthInitialBudget) * 100 : 0;
-          const cumulativeProgress = totalInitialBudget > 0 ? (cumulativeCollected / totalInitialBudget) * 100 : 0;
-
-          // Get previous year data for YoY comparison
           const prevYearData = data.prevYearMonthlyTrends?.[i];
-          const prevActual = prevYearData?.revenueCollected || 0;
+          const scoped = pickScopeAmounts(trend, prevYearData, feeScope);
+          const monthInitialBudget = initialBudgetMonthMap.get(i + 1) ?? 0;
+          const monthGoal =
+              feeScope === 'management_fee'
+                  ? scoped.contractReceivable
+                  : monthInitialBudget > 0.005
+                    ? monthInitialBudget
+                    : scoped.contractReceivable;
+
+          if (scoped.hasActual && scoped.actual != null) {
+              cumulativeCollected += scoped.actual;
+          }
+          if (scoped.useInitialBudget) {
+              cumulativeInitialBudget += monthInitialBudget;
+          }
+          cumulativeContractGoal += scoped.contractReceivable;
+
+          const monthlyRate =
+              monthGoal > 0 && scoped.hasActual && scoped.actual != null
+                  ? (scoped.actual / monthGoal) * 100
+                  : 0;
+          const progressDenominator =
+              feeScope === 'management_fee'
+                  ? cumulativeContractGoal
+                  : totalInitialBudget > 0
+                    ? totalInitialBudget
+                    : cumulativeContractGoal;
+          const cumulativeProgress =
+              progressDenominator > 0 ? (cumulativeCollected / progressDenominator) * 100 : 0;
+
           let yoy = 0;
-          if (prevActual > 0 && hasActual) {
-              yoy = ((actual - prevActual) / prevActual) * 100;
+          if (scoped.prevActual > 0 && scoped.hasActual && scoped.actual != null) {
+              yoy = ((scoped.actual - scoped.prevActual) / scoped.prevActual) * 100;
           }
 
           return {
               month: i + 1,
               monthName: trend?.month || `${i + 1}月`,
-              budget: contractReceivable,
-              actual: hasActual ? actual : null,
+              budget: scoped.contractReceivable,
+              actual: scoped.actual,
+              monthGoal,
               monthlyRate,
               cumulativeProgress,
-              hasActual,
-              prevActual,
-              yoy
+              hasActual: scoped.hasActual,
+              prevActual: scoped.prevActual,
+              yoy,
+              showInitialBudget: scoped.useInitialBudget && feeScope !== 'management_fee',
           };
       });
-  }, [data.monthlyTrends, data.prevYearMonthlyTrends, initialBudgetMonthMap, totalInitialBudget]);
+  }, [
+      data.monthlyTrends,
+      data.prevYearMonthlyTrends,
+      initialBudgetMonthMap,
+      totalInitialBudget,
+      feeScope,
+  ]);
 
   const budgetExecutionTotal = useMemo(() => {
       const totalContractReceivable = monthlyBreakdown.reduce((sum, month) => sum + month.budget, 0);
-      const actualMonths = monthlyBreakdown.filter(month => month.hasActual);
-      const actualBudgetMonths = actualMonths.filter(m => initialBudgetMonthMap.has(m.month));
-      const actualInitialBudget = actualBudgetMonths.reduce((sum, m) => sum + (initialBudgetMonthMap.get(m.month) ?? 0), 0);
+      const actualMonths = monthlyBreakdown.filter((month) => month.hasActual);
+      const actualBudgetMonths = actualMonths.filter((m) => initialBudgetMonthMap.has(m.month));
+      const actualInitialBudget = actualBudgetMonths.reduce(
+          (sum, m) => sum + (initialBudgetMonthMap.get(m.month) ?? 0),
+          0,
+      );
+      const totalGoalForRate = actualMonths.reduce((sum, m) => sum + m.monthGoal, 0);
       const totalActual = actualMonths.reduce((sum, month) => sum + (month.actual || 0), 0);
       const comparablePrevActual = actualMonths.reduce((sum, month) => sum + month.prevActual, 0);
       const yearPrevActual = monthlyBreakdown.reduce((sum, month) => sum + month.prevActual, 0);
+      const progressDenominator =
+          feeScope === 'management_fee'
+              ? totalContractReceivable
+              : totalInitialBudget > 0
+                ? totalInitialBudget
+                : totalContractReceivable;
 
       return {
           totalBudget: totalContractReceivable,
           totalActual,
           comparablePrevActual,
           yearPrevActual,
-          // 完成率 = 实收 / 年初预算
-          monthlyRate: actualInitialBudget > 0 ? (totalActual / actualInitialBudget) * 100 : 0,
-          cumulativeProgress: totalInitialBudget > 0 ? (totalActual / totalInitialBudget) * 100 : 0,
+          monthlyRate: totalGoalForRate > 0 ? (totalActual / totalGoalForRate) * 100 : 0,
+          cumulativeProgress: progressDenominator > 0 ? (totalActual / progressDenominator) * 100 : 0,
           yoy: comparablePrevActual > 0 ? ((totalActual - comparablePrevActual) / comparablePrevActual) * 100 : 0,
           hasActual: actualMonths.length > 0,
       };
-  }, [monthlyBreakdown, initialBudgetMonthMap, totalInitialBudget]);
+  }, [monthlyBreakdown, initialBudgetMonthMap, totalInitialBudget, feeScope]);
+
+  const scopeLabels = useMemo(() => {
+      if (feeScope === 'management_fee') {
+          return {
+              budgetTitle: '预算执行 · 物业费',
+              contractCol: '物业费应收',
+              actualCol: '物业费实收',
+              annualTitle: '物业费收缴达成',
+              completedLabel: '已收(万元)',
+              remainingLabel: '待收(万元)',
+          };
+      }
+      if (feeScope === 'combined') {
+          return {
+              budgetTitle: '预算执行 · 租金+物业费',
+              contractCol: '合计合同应收',
+              actualCol: '合计实收',
+              annualTitle: '综合收缴达成',
+              completedLabel: '已收合计(万元)',
+              remainingLabel: '待收合计(万元)',
+          };
+      }
+      return {
+          budgetTitle: '预算执行',
+          contractCol: '合同应收',
+          actualCol: '实际收款',
+          annualTitle: '营收达成',
+          completedLabel: '已完成(万元)',
+          remainingLabel: '剩余目标(万元)',
+      };
+  }, [feeScope]);
+
+  const annualScopeMetrics = useMemo(() => {
+      const rentCollected = data.annualRevenueCollected || 0;
+      const rentGoal = annualRevenueGoal;
+      const mgmtCollected = data.annualManagementFeeCollected || 0;
+      const mgmtGoal = data.annualManagementFeeContractReceivable || 0;
+
+      if (feeScope === 'management_fee') {
+          return {
+              collected: mgmtCollected,
+              goal: mgmtGoal,
+              progress: mgmtGoal > 0 ? Math.min(100, (mgmtCollected / mgmtGoal) * 100) : 0,
+          };
+      }
+      if (feeScope === 'combined') {
+          const collected = rentCollected + mgmtCollected;
+          const goal = rentGoal + mgmtGoal;
+          return {
+              collected,
+              goal,
+              progress: goal > 0 ? Math.min(100, (collected / goal) * 100) : 0,
+          };
+      }
+      return {
+          collected: rentCollected,
+          goal: rentGoal,
+          progress: annualProgress,
+      };
+  }, [
+      feeScope,
+      data.annualRevenueCollected,
+      data.annualManagementFeeCollected,
+      data.annualManagementFeeContractReceivable,
+      annualRevenueGoal,
+      annualProgress,
+  ]);
 
   return (
     <div className="space-y-4 md:space-y-6">
@@ -217,10 +381,23 @@ export const StatsCards: React.FC<StatsCardsProps> = ({ data, onEditTargets, sel
                 {/* Left: Table */}
                 <div className="bg-white rounded-xl shadow-sm border border-slate-100 overflow-hidden min-w-0 flex flex-col hover:shadow-md transition-shadow duration-300">
                     <div className="bg-gradient-to-r from-emerald-50 to-emerald-100 px-4 sm:px-5 py-2.5 border-b border-emerald-200">
-                        <div className="flex flex-wrap items-center gap-2 text-emerald-800 min-w-0">
-                            <CalendarRange size={16} className="shrink-0" />
-                            <h3 className="font-bold text-xs sm:text-sm">预算执行</h3>
-                            <span className="text-[10px] font-semibold bg-emerald-600 text-white px-1.5 py-0.5 rounded shrink-0">实时</span>
+                        <div className="flex flex-wrap items-center justify-between gap-2 text-emerald-800 min-w-0">
+                            <div className="flex flex-wrap items-center gap-2 min-w-0">
+                                <CalendarRange size={16} className="shrink-0" />
+                                <h3 className="font-bold text-xs sm:text-sm">{scopeLabels.budgetTitle}</h3>
+                                <span className="text-[10px] font-semibold bg-emerald-600 text-white px-1.5 py-0.5 rounded shrink-0">实时</span>
+                            </div>
+                            {mgmtFeeParkEnabled && (
+                                <div className="flex rounded-lg overflow-hidden border border-emerald-300/80 text-[10px] font-semibold shrink-0">
+                                    {viewRentPricing && (
+                                        <button type="button" onClick={() => setFeeScope('rent')} className={`px-2 py-1 ${feeScope === 'rent' ? 'bg-emerald-600 text-white' : 'bg-white/80 text-emerald-800'}`}>租金</button>
+                                    )}
+                                    <button type="button" onClick={() => setFeeScope('management_fee')} className={`px-2 py-1 ${feeScope === 'management_fee' ? 'bg-teal-600 text-white' : 'bg-white/80 text-emerald-800'}`}>物业费</button>
+                                    {viewRentPricing && (
+                                        <button type="button" onClick={() => setFeeScope('combined')} className={`px-2 py-1 ${feeScope === 'combined' ? 'bg-indigo-600 text-white' : 'bg-white/80 text-emerald-800'}`}>合计</button>
+                                    )}
+                                </div>
+                            )}
                         </div>
                     </div>
                     <div className="overflow-x-auto min-w-0 flex-1">
@@ -228,9 +405,11 @@ export const StatsCards: React.FC<StatsCardsProps> = ({ data, onEditTargets, sel
                             <thead>
                                 <tr className="bg-slate-50 border-b border-slate-200">
                                     <th className="px-3 py-2.5 text-center font-semibold text-slate-700 whitespace-nowrap">月份</th>
-                                    <th className="px-3 py-2.5 text-right font-semibold text-amber-700 bg-amber-50/30 whitespace-nowrap">年初预算</th>
-                                    <th className="px-3 py-2.5 text-right font-semibold text-blue-700 bg-blue-50/30 whitespace-nowrap">合同应收</th>
-                                    <th className="px-3 py-2.5 text-right font-semibold text-emerald-700 bg-emerald-50/30 whitespace-nowrap">实际收款</th>
+                                    {feeScope !== 'management_fee' && (
+                                        <th className="px-3 py-2.5 text-right font-semibold text-amber-700 bg-amber-50/30 whitespace-nowrap">年初预算</th>
+                                    )}
+                                    <th className="px-3 py-2.5 text-right font-semibold text-blue-700 bg-blue-50/30 whitespace-nowrap">{scopeLabels.contractCol}</th>
+                                    <th className="px-3 py-2.5 text-right font-semibold text-emerald-700 bg-emerald-50/30 whitespace-nowrap">{scopeLabels.actualCol}</th>
                                     <th className="px-3 py-2.5 text-right font-semibold text-slate-700 hidden sm:table-cell whitespace-nowrap">去年同期</th>
                                     <th className="px-3 py-2.5 text-right font-semibold text-slate-700 whitespace-nowrap">同比</th>
                                     <th className="px-3 py-2.5 text-center font-semibold text-slate-700 whitespace-nowrap">完成率</th>
@@ -241,11 +420,13 @@ export const StatsCards: React.FC<StatsCardsProps> = ({ data, onEditTargets, sel
                                 {monthlyBreakdown.map((month) => (
                                     <tr key={month.month} className="border-b border-slate-100 hover:bg-slate-50 transition-colors">
                                         <td className="px-3 py-2.5 font-medium text-slate-800 text-center">{month.monthName}</td>
-                                        <td className="px-3 py-2.5 text-right text-slate-500 tabular-nums bg-amber-50/10 whitespace-nowrap">
-                                            {initialBudgetMonthMap.has(month.month)
-                                                ? dashboardWan(initialBudgetMonthMap.get(month.month)!)
-                                                : '—'}
-                                        </td>
+                                        {feeScope !== 'management_fee' && (
+                                            <td className="px-3 py-2.5 text-right text-slate-500 tabular-nums bg-amber-50/10 whitespace-nowrap">
+                                                {initialBudgetMonthMap.has(month.month)
+                                                    ? dashboardWan(initialBudgetMonthMap.get(month.month)!)
+                                                    : '—'}
+                                            </td>
+                                        )}
                                         <td className="px-3 py-2.5 text-right text-slate-600 tabular-nums bg-blue-50/10 whitespace-nowrap">
                                             {dashboardWan(month.budget)}
                                         </td>
@@ -286,9 +467,11 @@ export const StatsCards: React.FC<StatsCardsProps> = ({ data, onEditTargets, sel
                             <tfoot>
                                 <tr className="bg-slate-800 text-white border-t-2 border-slate-600">
                                     <td className="px-3 py-2.5 font-bold text-center">合计</td>
-                                    <td className="px-3 py-2.5 text-right font-bold tabular-nums bg-amber-500/10 whitespace-nowrap">
-                                        {initialBudgetFooterSum > 0 ? dashboardWan(initialBudgetFooterSum) : '—'}
-                                    </td>
+                                    {feeScope !== 'management_fee' && (
+                                        <td className="px-3 py-2.5 text-right font-bold tabular-nums bg-amber-500/10 whitespace-nowrap">
+                                            {initialBudgetFooterSum > 0 ? dashboardWan(initialBudgetFooterSum) : '—'}
+                                        </td>
+                                    )}
                                     <td className="px-3 py-2.5 text-right font-bold tabular-nums bg-blue-500/10 whitespace-nowrap">
                                         {dashboardWan(budgetExecutionTotal.totalBudget)}
                                     </td>
@@ -335,34 +518,34 @@ export const StatsCards: React.FC<StatsCardsProps> = ({ data, onEditTargets, sel
                             {/* Revenue Completion */}
                             <div>
                                 <div className="flex justify-between items-baseline mb-2">
-                                    <span className="text-xs text-slate-600 font-medium">营收达成</span>
+                                    <span className="text-xs text-slate-600 font-medium">{scopeLabels.annualTitle}</span>
                                     <span className={`text-3xl font-bold tracking-tight tabular-nums ${
-                                        annualProgress >= 100 ? 'text-emerald-600' :
-                                        annualProgress >= 80 ? 'text-blue-600' :
+                                        annualScopeMetrics.progress >= 100 ? 'text-emerald-600' :
+                                        annualScopeMetrics.progress >= 80 ? 'text-blue-600' :
                                         'text-amber-600'
                                     }`}>
-                                        {formatPercent(annualProgress)}
+                                        {formatPercent(annualScopeMetrics.progress)}
                                     </span>
                                 </div>
                                 <div className="w-full bg-slate-100 rounded-full h-3 overflow-hidden">
                                     <div 
                                         className={`h-full rounded-full transition-all duration-1000 ${
-                                            annualProgress >= 100 ? 'bg-gradient-to-r from-emerald-400 to-emerald-600' :
-                                            annualProgress >= 80 ? 'bg-gradient-to-r from-blue-400 to-blue-600' :
+                                            annualScopeMetrics.progress >= 100 ? 'bg-gradient-to-r from-emerald-400 to-emerald-600' :
+                                            annualScopeMetrics.progress >= 80 ? 'bg-gradient-to-r from-blue-400 to-blue-600' :
                                             'bg-gradient-to-r from-amber-400 to-amber-600'
                                         }`}
-                                        style={{ width: `${Math.min(100, annualProgress)}%` }}
+                                        style={{ width: `${Math.min(100, annualScopeMetrics.progress)}%` }}
                                     ></div>
                                 </div>
                                 <div className="grid grid-cols-2 gap-2 mt-2 text-xs">
                                     <div className="bg-blue-50 rounded-lg p-2">
-                                        <div className="text-slate-500 mb-0.5">已完成(万元)</div>
-                                        <div className="font-bold text-blue-700">{formatWanCurrency(data.annualRevenueCollected)}</div>
+                                        <div className="text-slate-500 mb-0.5">{scopeLabels.completedLabel}</div>
+                                        <div className="font-bold text-blue-700">{formatWanCurrency(annualScopeMetrics.collected)}</div>
                                     </div>
                                     <div className="bg-slate-50 rounded-lg p-2">
-                                        <div className="text-slate-500 mb-0.5">剩余目标(万元)</div>
-                                        <div className="font-bold text-slate-700">{annualRevenueGoal > 0
-                                                ? formatWanCurrency(Math.max(0, annualRevenueGoal - data.annualRevenueCollected))
+                                        <div className="text-slate-500 mb-0.5">{scopeLabels.remainingLabel}</div>
+                                        <div className="font-bold text-slate-700">{annualScopeMetrics.goal > 0
+                                                ? formatWanCurrency(Math.max(0, annualScopeMetrics.goal - annualScopeMetrics.collected))
                                                 : '—'}</div>
                                     </div>
                                 </div>

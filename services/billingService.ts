@@ -10,6 +10,7 @@ import {
     ContractStatus,
     PaymentCycle,
 } from '../types';
+import { getParkBillingFeatures, getReceivableMonthOffsetForProject } from './parkBillingConfig';
 
 const rentFreePeriodKey = (r: RentFreePeriod) => `${r.start}|${r.end}`;
 
@@ -57,9 +58,71 @@ const applyExistingPaymentShiftToMergedBills = (bills: BudgetedBill[], ps: NonNu
 
 /** 最小金额阈值（低于此值视为零，用于舍入和过滤） */
 /** 根据 unitPriceMode 将单价转换为月租金 */
-const monthlyRentFromUnitPrice = (unitPrice: number, area: number, mode?: 'daily' | 'monthly'): number => {
+export const monthlyRentFromUnitPrice = (unitPrice: number, area: number, mode?: 'daily' | 'monthly'): number => {
     if (mode === 'monthly') return unitPrice * area;
     return (unitPrice * area * 365) / 12;
+};
+
+/** 天单价 → 月单价（元/㎡/月） */
+export const toMonthlyRentUnitPrice = (
+    unitPrice: number | undefined,
+    mode?: 'daily' | 'monthly',
+): number | undefined => {
+    if (unitPrice == null || !(unitPrice > 0)) return undefined;
+    if (mode === 'monthly') return round2(unitPrice);
+    return round2((unitPrice * 365) / 12);
+};
+
+export type RentUnitPriceDisplay = {
+    unitPrice: number;
+    mode: 'daily' | 'monthly';
+    label: string;
+    suffix: string;
+};
+
+/**
+ * 列表/卡片租金单价展示：深圳等园区固定按月单价（元/㎡/月），优先用 月租金÷面积 避免历史天单价误标为月单价。
+ */
+export const resolveRentUnitPriceForDisplay = (
+    tenant: Tenant,
+    projectIdFallback?: string,
+): RentUnitPriceDisplay => {
+    const projectId = tenant.projectId || projectIdFallback || '';
+    const preferMonthly = getParkBillingFeatures(projectId).defaultRentUnitPriceMode === 'monthly';
+    const area = tenant.totalArea || 0;
+    const monthlyRent = tenant.monthlyRent || 0;
+
+    if (preferMonthly) {
+        if (area > 0 && monthlyRent > 0) {
+            return {
+                unitPrice: round2(monthlyRent / area),
+                mode: 'monthly',
+                label: '月单价',
+                suffix: '月',
+            };
+        }
+        const monthly = toMonthlyRentUnitPrice(
+            tenant.unitPrice,
+            tenant.unitPriceMode === 'monthly' ? 'monthly' : 'daily',
+        );
+        return {
+            unitPrice: monthly ?? 0,
+            mode: 'monthly',
+            label: '月单价',
+            suffix: '月',
+        };
+    }
+
+    const isMonthly = tenant.unitPriceMode === 'monthly';
+    const unitPrice =
+        tenant.unitPrice ||
+        (area > 0 && monthlyRent > 0 ? round2((monthlyRent / area) * 12 / 365) : 0);
+    return {
+        unitPrice,
+        mode: isMonthly ? 'monthly' : 'daily',
+        label: isMonthly ? '月单价' : '日单价',
+        suffix: isMonthly ? '月' : '天',
+    };
 };
 
 export const MIN_AMOUNT_THRESHOLD = 0.005;
@@ -92,6 +155,10 @@ export function getReceivableMonthOffsetForTenant(
     tenant: Pick<Tenant, 'projectId'>,
 ): number {
     const projectId = (tenant.projectId || '').trim();
+    if (projectId) {
+        const fromConfig = getReceivableMonthOffsetForProject(projectId);
+        if (fromConfig === 0 || fromConfig === -1) return fromConfig;
+    }
     if (projectId && SAME_MONTH_RECEIVABLE_PROJECT_IDS.has(projectId)) return 0;
     return -1;
 }

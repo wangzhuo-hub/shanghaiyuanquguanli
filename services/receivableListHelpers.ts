@@ -180,6 +180,23 @@ export function paymentAllocatedAmountForBillingPeriod(p: PaymentRecord, periodY
  * 某账单行在指定账期已归属的租金流水合计（含押金转租金）。
  * 与财务报表 FinanceManager 一致：同一 rootId 合同链上任意 tenantId 的流水均可核销当前行。
  */
+export function sumManagementFeePaymentsAllocatedToBillingTenant(
+    billingTenantId: string,
+    periodYYYYMM: string,
+    tenantList: Tenant[],
+    paymentsByTenantId: Map<string, PaymentRecord[]>,
+): number {
+    let sum = 0;
+    for (const list of paymentsByTenantId.values()) {
+        for (const p of list) {
+            if (p.type !== 'ManagementFee') continue;
+            if (!paymentTenantMatchesBillingTenant(p.tenantId, billingTenantId, tenantList, p.tenantName)) continue;
+            sum += paymentAllocatedAmountForBillingPeriod(p, periodYYYYMM);
+        }
+    }
+    return roundMoney2(sum);
+}
+
 export function sumRentPaymentsAllocatedToBillingTenant(
     billingTenantId: string,
     periodYYYYMM: string,

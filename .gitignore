@@ -54,3 +54,6 @@ dist-ssr
 *.sln
 *.sw?
 pocketbase/pb_public/
+
+# 本地备份（含业务 JSON / pb_data 归档）
+backups/

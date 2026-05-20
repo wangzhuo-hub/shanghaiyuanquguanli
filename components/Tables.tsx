@@ -333,28 +333,52 @@ export interface AnnualComparisonData {
     revenueYoY: number | null; // %
     occupancyRate: number; // Snapshot at year end
     occupancyYoY: number | null; // % difference (points)
+    managementFeeActual?: number;
+    managementFeeContractReceivable?: number;
+    managementFeeCompletionRate?: number;
+    combinedActual?: number;
+    combinedCompletionRate?: number;
 }
 
 interface AnnualMetricComparisonTableProps {
     data: AnnualComparisonData[];
+    showManagementFee?: boolean;
 }
 
-export const AnnualMetricComparisonTable: React.FC<AnnualMetricComparisonTableProps> = ({ data }) => {
+export const AnnualMetricComparisonTable: React.FC<AnnualMetricComparisonTableProps> = ({
+    data,
+    showManagementFee = false,
+}) => {
     return (
         <div className="bg-white rounded-xl shadow-sm border border-slate-100 overflow-hidden mb-6">
             <div className="p-4 md:p-6 border-b border-slate-100 bg-gradient-to-r from-blue-50 to-white">
                 <h3 className="text-lg font-bold text-slate-800 flex items-center gap-2">
                     <TrendingUp size={20} className="text-blue-600"/> 年度经营指标对比
                 </h3>
+                {showManagementFee && (
+                    <p className="text-xs text-slate-500 mt-1">含租金与物业费分项；综合完成率 =（租金实收+物业费实收）÷（租金年初预算+物业费合同应收）</p>
+                )}
             </div>
             <div className="overflow-x-auto">
-                <table className="w-full text-sm text-left min-w-[700px]">
+                <table className={`w-full text-sm text-left ${showManagementFee ? 'min-w-[1100px]' : 'min-w-[700px]'}`}>
                     <thead className="bg-slate-50 text-slate-500 font-medium">
                         <tr>
                             <th className="px-6 py-3">年度</th>
                             <th className="px-6 py-3 text-right">年初预算(万元)</th>
-                            <th className="px-6 py-3 text-right">实际收款(万元)</th>
-                            <th className="px-6 py-3 text-right">指标完成率</th>
+                            <th className="px-6 py-3 text-right">租金实收(万元)</th>
+                            {showManagementFee && (
+                                <>
+                                    <th className="px-6 py-3 text-right text-teal-700">物业费应收(万元)</th>
+                                    <th className="px-6 py-3 text-right text-teal-700">物业费实收(万元)</th>
+                                </>
+                            )}
+                            <th className="px-6 py-3 text-right">租金完成率</th>
+                            {showManagementFee && (
+                                <>
+                                    <th className="px-6 py-3 text-right text-teal-700">物业费完成率</th>
+                                    <th className="px-6 py-3 text-right text-indigo-700">综合完成率</th>
+                                </>
+                            )}
                             <th className="px-6 py-3 text-right">营收同比</th>
                             <th className="px-6 py-3 text-right">年末出租率</th>
                         </tr>
@@ -372,11 +396,43 @@ export const AnnualMetricComparisonTable: React.FC<AnnualMetricComparisonTablePr
                                 <td className="px-6 py-4 text-right font-medium text-slate-800">
                                     {formatWan(row.revenueActual, 0)}
                                 </td>
+                                {showManagementFee && (
+                                    <>
+                                        <td className="px-6 py-4 text-right text-teal-800">
+                                            {formatWan(row.managementFeeContractReceivable || 0, 0)}
+                                        </td>
+                                        <td className="px-6 py-4 text-right font-medium text-teal-800">
+                                            {formatWan(row.managementFeeActual || 0, 0)}
+                                        </td>
+                                    </>
+                                )}
                                 <td className="px-6 py-4 text-right">
                                     <span className={`px-2 py-1 rounded text-xs font-bold ${row.revenueCompletionRate >= 100 ? 'bg-emerald-100 text-emerald-700' : row.revenueCompletionRate >= 90 ? 'bg-blue-100 text-blue-700' : 'bg-amber-100 text-amber-700'}`}>
                                         {formatPercent(row.revenueCompletionRate, 0)}
                                     </span>
                                 </td>
+                                {showManagementFee && (
+                                    <>
+                                        <td className="px-6 py-4 text-right">
+                                            {row.managementFeeCompletionRate != null ? (
+                                                <span className="px-2 py-1 rounded text-xs font-bold bg-teal-50 text-teal-700">
+                                                    {formatPercent(row.managementFeeCompletionRate, 0)}
+                                                </span>
+                                            ) : (
+                                                <span className="text-slate-300">—</span>
+                                            )}
+                                        </td>
+                                        <td className="px-6 py-4 text-right">
+                                            {row.combinedCompletionRate != null ? (
+                                                <span className="px-2 py-1 rounded text-xs font-bold bg-indigo-50 text-indigo-700">
+                                                    {formatPercent(row.combinedCompletionRate, 0)}
+                                                </span>
+                                            ) : (
+                                                <span className="text-slate-300">—</span>
+                                            )}
+                                        </td>
+                                    </>
+                                )}
                                 <td className="px-6 py-4 text-right">
                                     {row.revenueYoY !== null ? (
                                         <div className={`flex items-center justify-end gap-1 font-medium ${row.revenueYoY >= 0 ? 'text-emerald-600' : 'text-rose-500'}`}>

@@ -69,6 +69,8 @@ import {
     type DashboardQuarter,
 } from './services/dashboardMetrics';
 import { formatCurrency } from './services/numberFormat';
+import { isManagementFeeBillingEnabled } from './services/parkBillingConfig';
+import { userRoleLabel } from './services/receivablePermissions';
 import { DEFAULT_CLOUD_CONFIG, mergeStoredCloudConfig } from './config/deploymentDefaults';
 import { DirtyTrackerProvider } from './services/dirtyTrackerContext';
 import { DirtyTracker } from './services/dirtyTracker';
@@ -141,7 +143,7 @@ type NewManagedUserForm = {
     name: string;
     password: string;
     projectId: string;
-    role: 'park_user' | 'park_admin' | 'group_admin';
+    role: 'park_user' | 'park_admin' | 'group_admin' | 'property_staff';
     enabled: boolean;
 };
 
@@ -1825,6 +1827,13 @@ const App: React.FC = () => {
       const currentSystemYear = new Date().getFullYear();
       const years = [currentSystemYear - 2, currentSystemYear - 1, currentSystemYear];
       const BUDGET_EXECUTION_FROM_YEAR = 2026;
+      const projectId = cloudConfig.projectId || data.tenants?.[0]?.projectId || '';
+      const mgmtEnabled = isManagementFeeBillingEnabled(projectId);
+
+      const sumMgmtFromTrends = (trends: MonthlyTrend[] | undefined) =>
+          (trends || []).reduce((sum, t) => sum + (t.managementFeeCollected || 0), 0);
+      const sumMgmtContractFromTrends = (trends: MonthlyTrend[] | undefined) =>
+          (trends || []).reduce((sum, t) => sum + (t.managementFeeContractReceivable || 0), 0);
 
       const result: AnnualComparisonData[] = [];
 
@@ -1878,6 +1887,18 @@ const App: React.FC = () => {
               occupancyYoY = occupancy - prev.occupancyRate;
           }
 
+          let managementFeeActual = 0;
+          let managementFeeContractReceivable = 0;
+          if (mgmtEnabled) {
+              if (year === selectedYear) {
+                  managementFeeActual = sumMgmtFromTrends(data.monthlyTrends);
+                  managementFeeContractReceivable = sumMgmtContractFromTrends(data.monthlyTrends);
+              } else if (year === selectedYear - 1) {
+                  managementFeeActual = sumMgmtFromTrends(data.prevYearMonthlyTrends);
+                  managementFeeContractReceivable = sumMgmtContractFromTrends(data.prevYearMonthlyTrends);
+              }
+          }
+
           result.push({
               year,
               revenueTarget: yearlyInitialBudget,
@@ -1885,12 +1906,23 @@ const App: React.FC = () => {
               revenueCompletionRate: yearlyInitialBudget > 0 ? (yearlyActual / yearlyInitialBudget) * 100 : 0,
               revenueYoY,
               occupancyRate: occupancy,
-              occupancyYoY
+              occupancyYoY,
+              managementFeeActual: mgmtEnabled ? managementFeeActual : undefined,
+              managementFeeContractReceivable: mgmtEnabled ? managementFeeContractReceivable : undefined,
+              managementFeeCompletionRate:
+                  mgmtEnabled && managementFeeContractReceivable > 0
+                      ? (managementFeeActual / managementFeeContractReceivable) * 100
+                      : undefined,
+              combinedActual: mgmtEnabled ? yearlyActual + managementFeeActual : undefined,
+              combinedCompletionRate:
+                  mgmtEnabled && yearlyInitialBudget + managementFeeContractReceivable > 0
+                      ? ((yearlyActual + managementFeeActual) / (yearlyInitialBudget + managementFeeContractReceivable)) * 100
+                      : undefined,
           });
       });
 
       return result;
-  }, [data, selectedYear]);
+  }, [data, selectedYear, cloudConfig.projectId]);
 
   if (!data) return <div className="min-h-screen flex items-center justify-center bg-slate-50"><div className="flex flex-col items-center gap-2"><Loader2 size={32} className="text-blue-500 animate-spin"/><div className="text-slate-400">Loading Dashboard...</div></div></div>;
 
@@ -2124,20 +2156,32 @@ const App: React.FC = () => {
                    </div>
                </div>
 
-               <StatsCards data={data} selectedYear={selectedYear} onEditTargets={openTargetModal} tenants={data.tenants} />
-               <AnnualMetricComparisonTable data={annualComparisonData} />
+               <StatsCards
+                  data={data}
+                  selectedYear={selectedYear}
+                  onEditTargets={openTargetModal}
+                  tenants={data.tenants}
+                  projectId={cloudConfig.projectId}
+                  authUser={authUser}
+               />
+               <AnnualMetricComparisonTable
+                  data={annualComparisonData}
+                  showManagementFee={isManagementFeeBillingEnabled(cloudConfig.projectId || data.tenants?.[0]?.projectId)}
+               />
                <RecentActivityTable data={data} />
                <BillingTable
                   data={data}
                   selectedMonth={billingSelectedMonth}
                   onMonthChange={setBillingSelectedMonth}
                   onUpdateRentRemark={updateRentCollectionRemark}
+                  projectId={cloudConfig.projectId}
+                  authUser={authUser}
                />
             </div>
           )}
 
           {activeTab === 'buildings' && (<div className="animate-in fade-in zoom-in-50 duration-300"><BuildingManager buildings={data.buildings} tenants={data.tenants} onUpdateBuildings={updateBuildings} onCommitBuildingsTenants={commitBuildingsTenants} /></div>)}
-          {activeTab === 'contracts' && (<div className="animate-in fade-in zoom-in-50 duration-300"><ContractManager tenants={data.tenants} buildings={data.buildings} onUpdateTenants={updateTenants} dashboardData={data} payments={data.payments} onUpdatePayments={updatePayments} budgetAdjustments={data.budgetAdjustments} onUpdateAdjustments={updateBudgetAdjustments} mobileEntryMode={mobileNavLayout} /></div>)}
+          {activeTab === 'contracts' && (<div className="animate-in fade-in zoom-in-50 duration-300"><ContractManager tenants={data.tenants} buildings={data.buildings} onUpdateTenants={updateTenants} dashboardData={data} payments={data.payments} onUpdatePayments={updatePayments} budgetAdjustments={data.budgetAdjustments} onUpdateAdjustments={updateBudgetAdjustments} mobileEntryMode={mobileNavLayout} authUser={authUser} projectId={cloudConfig.projectId} /></div>)}
           {activeTab === 'finance' && (
               <div className="animate-in fade-in zoom-in-50 duration-300">
                   <FinanceManager
@@ -2158,6 +2202,8 @@ const App: React.FC = () => {
                       budgetAssumptions={data.budgetAssumptions}
                       budgetAdjustments={data.budgetAdjustments}
                       mobileReceivableOnly={mobileNavLayout}
+                      authUser={authUser}
+                      projectId={cloudConfig.projectId}
                   />
               </div>
           )}
@@ -2258,18 +2304,30 @@ const App: React.FC = () => {
                                     <select
                                         className="bg-slate-50 border border-slate-200 rounded px-3 py-2 text-sm"
                                         value={newUserForm.role}
-                                        onChange={e => setNewUserForm(prev => ({ ...prev, role: e.target.value as 'park_user' | 'park_admin' | 'group_admin' }))}
+                                        onChange={e =>
+                                            setNewUserForm(prev => ({
+                                                ...prev,
+                                                role: e.target.value as NewManagedUserForm['role'],
+                                            }))
+                                        }
                                     >
-                                        <option value="park_user">普通用户（park_user）</option>
-                                        <option value="park_admin">园区管理员（park_admin）</option>
-                                        <option value="group_admin">集团管理员（group_admin）</option>
+                                        <option value="park_user">普通用户</option>
+                                        <option value="property_staff">物业人员（隐藏租金，仅物业费）</option>
+                                        <option value="park_admin">园区管理员</option>
+                                        <option value="group_admin">集团管理员</option>
                                     </select>
-                                    <input
+                                    <select
                                         className="bg-slate-50 border border-slate-200 rounded px-3 py-2 text-sm"
-                                        placeholder="默认园区 project_id"
                                         value={newUserForm.projectId}
                                         onChange={e => setNewUserForm(prev => ({ ...prev, projectId: e.target.value }))}
-                                    />
+                                    >
+                                        <option value="">选择默认园区</option>
+                                        {(authorizedParks.length ? authorizedParks : []).map(park => (
+                                            <option key={park.projectId} value={park.projectId}>
+                                                {park.name} ({park.projectId})
+                                            </option>
+                                        ))}
+                                    </select>
                                     <label className="flex items-center gap-2 text-sm text-slate-600">
                                         <input
                                             type="checkbox"
@@ -2303,7 +2361,7 @@ const App: React.FC = () => {
                                                 <div key={u.id} className="px-4 py-3 border-t border-slate-100 flex items-center justify-between gap-3">
                                                     <div className="min-w-0">
                                                         <div className="font-medium text-sm text-slate-700 truncate">{u.email}</div>
-                                                        <div className="text-xs text-slate-500 mt-1">{u.name || '未填写姓名'} · {u.projectId || '未绑定园区'} · {u.role}</div>
+                                                        <div className="text-xs text-slate-500 mt-1">{u.name || '未填写姓名'} · {u.projectId || '未绑定园区'} · {userRoleLabel(u.role)}</div>
                                                     </div>
                                                     <button onClick={() => handleApproveManagedUser(u, true)} className="px-3 py-1.5 text-xs rounded bg-emerald-600 text-white hover:bg-emerald-700">审批通过</button>
                                                 </div>
@@ -2337,7 +2395,7 @@ const App: React.FC = () => {
                                                                 {u.email}
                                                             </div>
                                                             <div className="text-xs text-slate-500 mt-0.5">
-                                                                {u.name || '未填姓名'} · {u.role} · 默认{' '}
+                                                                {u.name || '未填姓名'} · {userRoleLabel(u.role)} · 默认{' '}
                                                                 {u.projectId || '—'} · 可访问{' '}
                                                                 {u.allowedProjectIds.length
                                                                     ? u.allowedProjectIds.join('、')
@@ -2587,15 +2645,21 @@ const App: React.FC = () => {
                                                         }))
                                                     }
                                                 >
-                                                    <option value="park_user">普通用户（park_user）</option>
-                                                    <option value="park_admin">园区管理员（park_admin）</option>
-                                                    <option value="group_admin">集团管理员（group_admin）</option>
-                                                    <option value="platform_admin">平台管理员（platform_admin）</option>
+                                                    <option value="park_user">普通用户</option>
+                                                    <option value="property_staff">物业人员（隐藏租金，仅物业费）</option>
+                                                    <option value="park_admin">园区管理员</option>
+                                                    <option value="group_admin">集团管理员</option>
+                                                    <option value="platform_admin">平台管理员</option>
                                                 </select>
+                                                {userManageForm.role === 'property_staff' && (
+                                                    <p className="text-xs text-teal-700 mt-2 leading-relaxed">
+                                                        物业人员：不显示租金单价、月租金、押金及租金收款；可维护物业费并在「物业费应收」核销。
+                                                    </p>
+                                                )}
                                             </div>
                                             <div>
                                                 <label className="block text-xs font-medium text-slate-500 mb-1">
-                                                    默认园区 project_id
+                                                    默认园区
                                                 </label>
                                                 <input
                                                     className="w-full bg-slate-50 border border-slate-200 rounded px-3 py-2 text-sm font-mono"

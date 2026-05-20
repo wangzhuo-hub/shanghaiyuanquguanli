@@ -2,6 +2,7 @@ import React from 'react';
 import { Banknote, Target } from 'lucide-react';
 import { type BigScreenParkMetric } from '../../services/bigScreenMetrics';
 import { formatWan, formatPercent, formatArea } from '../../services/numberFormat';
+import { BigScreenPeriodCards } from './BigScreenPeriodCards';
 
 interface Props {
   totals: BigScreenParkMetric;
@@ -19,11 +20,21 @@ const kpiCard =
 export const BigScreenSummary: React.FC<Props> = ({ totals, parkCount, year, hideAmount }) => {
   const occupancyOk = totals.occupancyRate >= totals.annualOccupancyTarget;
   const collectionOk = totals.annualGoalCompletion >= 90;
-  const hasUnpaid = totals.currentMonthUnpaid > 0;
+  const showManagementFee =
+    totals.managementFeeBillingEnabled &&
+    (totals.annualManagementFeeReceivable > 0 ||
+      totals.annualManagementFeeCollected > 0 ||
+      totals.currentMonthManagementFeeReceivable > 0);
 
   return (
     <div className="h-full w-full min-h-0 px-6 md:px-10 xl:px-16 py-4 xl:py-5">
-      <div className="h-full w-full max-w-[1800px] mx-auto min-h-0 grid grid-rows-[auto_minmax(0,2.1fr)_minmax(0,1fr)_minmax(0,1.5fr)] gap-3 xl:gap-4">
+      <div
+        className={`h-full w-full max-w-[1800px] mx-auto min-h-0 grid gap-3 xl:gap-4 ${
+          showManagementFee
+            ? 'grid-rows-[auto_minmax(0,2fr)_minmax(0,0.9fr)_minmax(0,0.75fr)_minmax(0,1.4fr)]'
+            : 'grid-rows-[auto_minmax(0,2.1fr)_minmax(0,1fr)_minmax(0,1.5fr)]'
+        }`}
+      >
         {/* Header */}
         <header className="text-center shrink-0">
           <h1 className="text-2xl md:text-4xl xl:text-5xl font-bold tracking-tight">集团经营总览</h1>
@@ -87,35 +98,30 @@ export const BigScreenSummary: React.FC<Props> = ({ totals, parkCount, year, hid
           </div>
         </section>
 
-        {/* 当前账期 */}
+        {/* 当前账期 · 租金 */}
         <section className="min-h-0">
-          <div className="grid grid-cols-3 gap-3 xl:gap-5 h-full min-h-[88px]">
-            <div className="bg-emerald-500/5 rounded-xl xl:rounded-2xl border border-emerald-500/10 px-4 xl:px-6 flex flex-col justify-center text-center min-h-0">
-              <div className="text-xs xl:text-lg text-emerald-400/70 font-medium">本账期已收</div>
-              <div className="text-2xl md:text-3xl xl:text-5xl font-bold text-emerald-400 tabular-nums whitespace-nowrap mt-1 leading-none">
-                {fmtWan(totals.currentMonthCollected, 0, hideAmount)}
-              </div>
-            </div>
-            <div className="bg-sky-500/5 rounded-xl xl:rounded-2xl border border-sky-500/10 px-4 xl:px-6 flex flex-col justify-center text-center min-h-0">
-              <div className="text-xs xl:text-lg text-sky-400/70 font-medium">本账期应收</div>
-              <div className="text-2xl md:text-3xl xl:text-5xl font-bold text-sky-400 tabular-nums whitespace-nowrap mt-1 leading-none">
-                {fmtWan(totals.currentMonthReceivable, 0, hideAmount)}
-              </div>
-            </div>
-            <div
-              className={`rounded-xl xl:rounded-2xl border px-4 xl:px-6 flex flex-col justify-center text-center min-h-0 ${hasUnpaid ? 'bg-red-500/5 border-red-500/10' : 'bg-emerald-500/5 border-emerald-500/10'}`}
-            >
-              <div className={`text-xs xl:text-lg font-medium ${hasUnpaid ? 'text-red-400/70' : 'text-emerald-400/70'}`}>
-                本账期末收
-              </div>
-              <div
-                className={`text-2xl md:text-3xl xl:text-5xl font-bold tabular-nums whitespace-nowrap mt-1 leading-none ${hasUnpaid ? 'text-red-400' : 'text-emerald-400'}`}
-              >
-                {fmtWan(totals.currentMonthUnpaid, 0, hideAmount)}
-              </div>
-            </div>
-          </div>
+          <BigScreenPeriodCards
+            title="本账期 · 租金"
+            receivable={totals.currentMonthReceivable}
+            collected={totals.currentMonthCollected}
+            unpaid={totals.currentMonthUnpaid}
+            hideAmount={hideAmount}
+            variant="rent"
+          />
         </section>
+
+        {showManagementFee ? (
+          <section className="min-h-0">
+            <BigScreenPeriodCards
+              title="本账期 · 物业费"
+              receivable={totals.currentMonthManagementFeeReceivable}
+              collected={totals.currentMonthManagementFeeCollected}
+              unpaid={totals.currentMonthManagementFeeUnpaid}
+              hideAmount={hideAmount}
+              variant="management_fee"
+            />
+          </section>
+        ) : null}
 
         {/* 关键指标 */}
         <section className="min-h-0 flex flex-col gap-2 xl:gap-3">
@@ -125,7 +131,21 @@ export const BigScreenSummary: React.FC<Props> = ({ totals, parkCount, year, hid
               关键指标
             </span>
           </div>
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-3 xl:gap-5 flex-1 min-h-0">
+          <div
+            className={`grid grid-cols-2 gap-3 xl:gap-5 flex-1 min-h-0 ${showManagementFee ? 'md:grid-cols-5' : 'md:grid-cols-4'}`}
+          >
+            {showManagementFee ? (
+              <div className={`${kpiCard} p-4 xl:p-6 border-teal-500/10 bg-teal-500/5`}>
+                <div className="text-xs xl:text-lg text-teal-400/80">年度物业费实收</div>
+                <div className="text-xl md:text-2xl xl:text-4xl font-bold text-teal-300 tabular-nums mt-1 xl:mt-2 leading-tight">
+                  {fmtWan(totals.annualManagementFeeCollected, 0, hideAmount)}
+                </div>
+                <div className="text-xs xl:text-lg text-slate-500 mt-1 xl:mt-2">
+                  应收 {fmtWan(totals.annualManagementFeeReceivable, 0, hideAmount)} · 收缴{' '}
+                  {formatPercent(totals.annualManagementFeeCompletion, 0)}
+                </div>
+              </div>
+            ) : null}
             <div className={`${kpiCard} p-4 xl:p-6`}>
               <div className="text-xs xl:text-lg text-slate-500">年初预算</div>
               <div className="text-xl md:text-2xl xl:text-4xl font-bold text-white tabular-nums mt-1 xl:mt-2 leading-tight">

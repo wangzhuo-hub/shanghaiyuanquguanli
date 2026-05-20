@@ -28,8 +28,11 @@ import {
     parseSpecialBusinessReceivablesFromNotes,
     receivableBudgetMonthForBill,
     specialBusinessArDisplayTenantId,
+    sumManagementFeePaymentsAllocatedToBillingTenant,
     sumRentPaymentsAllocatedToBillingTenant,
 } from './receivableListHelpers';
+import { generateManagementFeeBills, shouldGenerateManagementFeeBills } from './managementFeeBillingService';
+import { isManagementFeeBillingEnabled } from './parkBillingConfig';
 
 export type DashboardQuarter = 'All' | 'Q1' | 'Q2' | 'Q3' | 'Q4';
 
@@ -54,6 +57,7 @@ type BillingCache = {
     rentParkingByMonth: Map<string, number>;
     initByYearMonth: Map<string, MonthlyInitData>;
     generatedBillsByTenantYear: Map<string, BudgetedBill[]>;
+    generatedMgmtFeeBillsByTenantYear: Map<string, BudgetedBill[]>;
     detailsByKey: Map<string, BillingDetail[]>;
     contextSeq: WeakMap<object, number>;
     nextContextId: number;
@@ -90,6 +94,7 @@ const createBillingCache = (
         rentParkingByMonth,
         initByYearMonth,
         generatedBillsByTenantYear: new Map(),
+        generatedMgmtFeeBillsByTenantYear: new Map(),
         detailsByKey: new Map(),
         contextSeq: new WeakMap(),
         nextContextId: 1,
@@ -521,6 +526,40 @@ const calculateBudgetedReceivableForTenant = (
     return roundMoney2(total);
 };
 
+const getGeneratedMgmtFeeBillsForTenantYear = (
+    tenant: Tenant,
+    year: number,
+    cache: BillingCache,
+    contextKey: string,
+) => {
+    const key = `${tenant.id}|mgmt|${year}|${contextKey}`;
+    const cached = cache.generatedMgmtFeeBillsByTenantYear.get(key);
+    if (cached) return cached;
+    const genStart = new Date(year - 2, 0, 1);
+    const genEnd = new Date(year + 2, 11, 31);
+    const bills = generateManagementFeeBills(tenant, genStart, genEnd);
+    cache.generatedMgmtFeeBillsByTenantYear.set(key, bills);
+    return bills;
+};
+
+const calculateManagementFeeReceivableForTenant = (
+    tenant: Tenant,
+    periodStart: Date,
+    cache: BillingCache,
+    contextKey: string,
+): number => {
+    if (!isManagementFeeBillingEnabled(tenant.projectId)) return 0;
+    if (!shouldGenerateManagementFeeBills(tenant)) return 0;
+    const bills = getGeneratedMgmtFeeBillsForTenantYear(tenant, periodStart.getFullYear(), cache, contextKey);
+    let total = 0;
+    for (const bill of bills) {
+        if (billAttributedToReceivablePeriod(bill, tenant, periodStart)) {
+            total += bill.amount;
+        }
+    }
+    return roundMoney2(total);
+};
+
 const getBillingDetailsForPeriodInternal = (
     year: number,
     month: number,
@@ -605,7 +644,53 @@ const getBillingDetailsForPeriodInternal = (
                 status,
                 earlyTerminationBreakdown,
                 billingTermsTenant: tenant,
+                feeKind: 'rent',
             });
+        }
+
+        if (isManagementFeeBillingEnabled(tenant.projectId) && shouldGenerateManagementFeeBills(tenant)) {
+            const mgmtDue = calculateManagementFeeReceivableForTenant(tenant, periodStart, cache, contextKey);
+            const mgmtPaid = sumManagementFeePaymentsAllocatedToBillingTenant(
+                tenant.id,
+                periodPrefix,
+                paymentMatchTenants,
+                cache.paymentsByTenantId,
+            );
+            if (tenant.status === 'Terminated' && !tenant.id.startsWith('virt_')) {
+                if (mgmtDue <= 0.005 && mgmtPaid <= 0.005) {
+                    /* skip */
+                } else {
+                    let mgmtStatus: BillingDetail['status'] = 'Unpaid';
+                    if (mgmtPaid >= mgmtDue && mgmtDue > 0) mgmtStatus = 'Paid';
+                    else if (mgmtPaid > 0 && mgmtPaid < mgmtDue) mgmtStatus = 'Partial';
+                    else if (mgmtDue === 0 && mgmtPaid > 0) mgmtStatus = 'Paid';
+                    details.push({
+                        tenantId: tenant.id,
+                        tenantName: tenant.name,
+                        unitIds: tenant.unitIds,
+                        amountDue: mgmtDue,
+                        amountPaid: mgmtPaid,
+                        status: mgmtStatus,
+                        billingTermsTenant: tenant,
+                        feeKind: 'management_fee',
+                    });
+                }
+            } else if (mgmtDue > 0 || mgmtPaid > 0) {
+                let mgmtStatus: BillingDetail['status'] = 'Unpaid';
+                if (mgmtPaid >= mgmtDue && mgmtDue > 0) mgmtStatus = 'Paid';
+                else if (mgmtPaid > 0 && mgmtPaid < mgmtDue) mgmtStatus = 'Partial';
+                else if (mgmtDue === 0 && mgmtPaid > 0) mgmtStatus = 'Paid';
+                details.push({
+                    tenantId: tenant.id,
+                    tenantName: tenant.name,
+                    unitIds: tenant.unitIds,
+                    amountDue: mgmtDue,
+                    amountPaid: mgmtPaid,
+                    status: mgmtStatus,
+                    billingTermsTenant: tenant,
+                    feeKind: 'management_fee',
+                });
+            }
         }
     }
 
@@ -752,6 +837,7 @@ export const buildBillingDetailsForPeriod = (
     );
     const contractRollByTenantId = new Map<string, number>();
     for (const d of internal) {
+        if (d.feeKind === 'management_fee') continue;
         contractRollByTenantId.set(d.tenantId, roundMoney2(d.amountDue));
     }
 
@@ -837,11 +923,51 @@ export const buildContractOnlyReceivableForPeriod = (
         ctx.tenants || []
     );
     const byTenantId = new Map<string, number>();
+    let totalAmountDue = 0;
     for (const d of details) {
+        if (d.feeKind === 'management_fee') continue;
         byTenantId.set(d.tenantId, roundMoney2(d.amountDue));
+        totalAmountDue += d.amountDue;
     }
-    const totalAmountDue = roundMoney2(details.reduce((sum, d) => sum + d.amountDue, 0));
-    return { totalAmountDue, byTenantId };
+    return { totalAmountDue: roundMoney2(totalAmountDue), byTenantId };
+};
+
+/** 物业费「合同应收」单月汇总（与财务报表物业费应收口径一致） */
+export const buildManagementFeeContractReceivableForPeriod = (
+    year: number,
+    month: number,
+    ctx: ContractOnlyReceivableCtx,
+    cache?: BillingCache,
+): { totalAmountDue: number } => {
+    const localCache = cache || createBillingCache(ctx.buildings || [], ctx.payments || [], ctx.initializationData || []);
+    const receivableScenario = getReceivableScenarioForYear(ctx.budgetScenarios, year);
+    const receivableCtx = buildReceivableContextForScenario(
+        receivableScenario,
+        ctx.tenants || [],
+        ctx.buildings || [],
+        ctx.budgetAssumptions,
+        ctx.budgetAdjustments,
+    );
+    const selfUseUnitIds = new Set<string>();
+    (receivableCtx.buildings || []).forEach((b) => b.units.forEach((u) => u.isSelfUse && selfUseUnitIds.add(u.id)));
+    const mergedForContractOnly = mergeTenantsForReceivablePeriod(year, month, ctx.tenants, receivableCtx.tenants || []);
+    const contextKey = `receivable|${getContextId(localCache, receivableCtx.assumptions)}|${getContextId(localCache, receivableCtx.adjustments)}`;
+    const details = getBillingDetailsForPeriodInternal(
+        year,
+        month,
+        mergedForContractOnly,
+        [],
+        selfUseUnitIds,
+        receivableCtx.assumptions,
+        receivableCtx.adjustments,
+        localCache,
+        contextKey,
+        ctx.tenants || [],
+    );
+    const totalAmountDue = roundMoney2(
+        details.filter((d) => d.feeKind === 'management_fee').reduce((sum, d) => sum + d.amountDue, 0),
+    );
+    return { totalAmountDue };
 };
 
 /**
@@ -1027,11 +1153,20 @@ const calculateTrends = (
             contractReceivableCtxResolved,
             cache,
         );
+        const mgmtFeeBilling = isManagementFeeBillingEnabled(projectId);
+        const { totalAmountDue: managementFeeContractReceivable } = mgmtFeeBilling
+            ? buildManagementFeeContractReceivableForPeriod(year, month, contractReceivableCtxResolved, cache)
+            : { totalAmountDue: 0 };
         const periodPrefix = `${year}-${String(month + 1).padStart(2, '0')}`;
         // 工作台预算执行的实际收款按真实入账日期归集，不按关联账期分摊。
         const actualFromPaymentDetails = payments
             .filter((p) => p.date && p.date.startsWith(periodPrefix) && (p.type === 'Rent' || p.type === 'DepositToRent'))
             .reduce((sum, p) => sum + p.amount, 0);
+        const mgmtCollectedFromPayments = mgmtFeeBilling
+            ? payments
+                  .filter((p) => p.date && p.date.startsWith(periodPrefix) && p.type === 'ManagementFee')
+                  .reduce((sum, p) => sum + p.amount, 0)
+            : 0;
 
         // 预算收款：优先使用初始化中的月度年度任务（revenueTarget）；若为 0 或未填写则回退到预算表（导入）或生效方案滚动应收
         const budgetFromTableOrScenario = importedBudgetTable
@@ -1053,12 +1188,24 @@ const calculateTrends = (
             collectionRate = revenueTarget > 0 ? toFixedNumber((revenueCollected / revenueTarget) * 100) : 0;
         }
 
+        let managementFeeCollected: number | null = mgmtFeeBilling ? mgmtCollectedFromPayments : null;
         if (isFutureMonth) {
             revenueCollected = null;
             collectionRate = null;
+            managementFeeCollected = mgmtFeeBilling ? null : null;
         }
 
-        trends.push({ month: monthLabel, occupancyRate, revenueTarget, revenueCollected, avgUnitPrice, collectionRate, contractReceivable });
+        trends.push({
+            month: monthLabel,
+            occupancyRate,
+            revenueTarget,
+            revenueCollected,
+            avgUnitPrice,
+            collectionRate,
+            contractReceivable,
+            managementFeeContractReceivable: mgmtFeeBilling ? managementFeeContractReceivable : undefined,
+            managementFeeCollected: mgmtFeeBilling ? managementFeeCollected : undefined,
+        });
     }
 
     return trends;
@@ -1232,6 +1379,12 @@ export const calculateDashboardMetrics = (
 
     const annualRevenueCollected = monthlyTrends.reduce((sum, t) => sum + (t.revenueCollected || 0), 0);
     const annualRevenueTarget = monthlyTrends.reduce((sum, t) => sum + t.revenueTarget, 0);
+    const annualManagementFeeCollected = isManagementFeeBillingEnabled(projectId)
+        ? monthlyTrends.reduce((sum, t) => sum + (t.managementFeeCollected || 0), 0)
+        : 0;
+    const annualManagementFeeContractReceivable = isManagementFeeBillingEnabled(projectId)
+        ? monthlyTrends.reduce((sum, t) => sum + (t.managementFeeContractReceivable || 0), 0)
+        : 0;
     const monthlyRevenueTarget = annualRevenueTarget;
     const monthlyRevenueCollected = annualRevenueCollected;
 
@@ -1405,6 +1558,9 @@ export const calculateDashboardMetrics = (
         annualRevenueTarget: yearTargets.revenue,
         annualOccupancyTarget: yearTargets.occupancy,
         annualRevenueCollected,
+        annualManagementFeeCollected: annualManagementFeeCollected > 0.005 ? annualManagementFeeCollected : undefined,
+        annualManagementFeeContractReceivable:
+            annualManagementFeeContractReceivable > 0.005 ? annualManagementFeeContractReceivable : undefined,
         monthlyRevenueTarget,
         monthlyRevenueCollected,
         collectionRate,

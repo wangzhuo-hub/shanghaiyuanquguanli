@@ -30,7 +30,7 @@
 - PocketBase：`/api/pb/` → 由 Nginx 反代到 PocketBase
 - 千问代理：`/api/chat` → `ai-proxy`
 
-数据持久化在 Docker 卷 `pb_data`（勿把 `pocketbase/pb_data/` 提交到 Git）。多园区登录、飞书/OpenClaw 来源映射和 Tailscale 异地访问见 [多园区登录与 Tailscale 部署](docs/04-多园区登录与Tailscale部署.md)。
+数据持久化在 Docker 卷 `pb_data`（勿把 `pocketbase/pb_data/` 提交到 Git）。多园区登录、飞书/OpenClaw 来源映射和 Tailscale 异地访问见 [多园区登录与 Tailscale 部署](docs/04-多园区登录与Tailscale部署.md)。深圳园区物业费收款、工作台 KPI 租金/物业费分项及权限见 [06-深圳物业费收款与权限方案](docs/06-深圳物业费收款与权限方案.md)。
 
 ### PocketBase 空库初始化说明
 

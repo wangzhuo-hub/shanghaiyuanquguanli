@@ -12,7 +12,9 @@
     "gateway": "npx tsx scripts/integration-gateway.ts",
     "gateway:integration": "npx tsx scripts/integration-gateway.ts",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "backup:baseline": "bash scripts/create-dev-baseline-backup.sh",
+    "export:pb": "node scripts/export-pb-dashboard-backup.mjs"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.39.7",

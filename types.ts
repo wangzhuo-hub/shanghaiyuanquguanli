@@ -183,6 +183,20 @@ export interface Tenant {
 
   parkingUnitPrice?: number; // Price per space per month
 
+  /** 是否按合同收取物业费（深圳等园区） */
+  managementFeeEnabled?: boolean;
+  /** 全租期免物业费 */
+  managementFeeExempt?: boolean;
+  managementFeeFreePeriods?: RentFreePeriod[];
+  managementFeeUnitPrice?: number;
+  managementFeeUnitPriceMode?: 'daily' | 'monthly';
+  managementFeeMonthlyAmount?: number;
+  managementFeeFirstPaymentDate?: string;
+  /** 物业费起算日是否与合同入驻时间一致（实际入驻日，未填则起租日）；默认 true */
+  managementFeeStartWithOccupancy?: boolean;
+  /** 自定义物业费起算日（YYYY-MM-DD），仅在 managementFeeStartWithOccupancy === false 时生效 */
+  managementFeeStartDate?: string;
+
   // New: Customer Insights
   keyMoments?: KeyMoment[];
 
@@ -216,6 +230,10 @@ export interface MonthlyTrend {
   revenueCollected: number | null; // Changed to allow null for future months
   avgUnitPrice: number; // Average Rent Unit Price (Daily)
   collectionRate: number | null; // Changed to allow null for future months
+  /** 物业费合同应收（仅启用物业费计费的园区） */
+  managementFeeContractReceivable?: number;
+  /** 物业费实收（按入账日归集） */
+  managementFeeCollected?: number | null;
 }
 
 export interface BillingDetail {
@@ -245,6 +263,8 @@ export interface BillingDetail {
    * 缺省/手工合成行 fallback 为 0。
    */
   contractAmountDue?: number;
+  /** 费用种类：租金应收（默认）或物业费应收 */
+  feeKind?: 'rent' | 'management_fee';
 }
 
 export interface ParkingStatDetail {
@@ -338,7 +358,15 @@ export interface CloudConfig {
     pocketbasePassword?: string;
 }
 
-export type UserRole = 'park_user' | 'park_admin' | 'group_admin' | 'platform_admin';
+export type UserRole = 'park_user' | 'park_admin' | 'group_admin' | 'platform_admin' | 'property_staff';
+
+export interface ParkBillingFeaturesConfig {
+    managementFeeBilling?: boolean;
+    receivableMonthOffset?: -1 | 0;
+    /** 租金单价展示与录入默认口径（深圳为月单价 元/㎡/月） */
+    defaultRentUnitPriceMode?: 'daily' | 'monthly';
+    defaultManagementFeeUnitPriceMode?: 'daily' | 'monthly';
+}
 
 export interface ParkInfo {
     id?: string;
@@ -347,7 +375,11 @@ export interface ParkInfo {
     city?: string;
     enabled: boolean;
     sortOrder?: number;
+    billingFeatures?: ParkBillingFeaturesConfig;
+    metadata?: ParkBillingFeaturesConfig;
 }
+
+export type ReceivablePermission = 'rent_receivable' | 'mgmt_fee_receivable';
 
 export interface AuthUser {
     id: string;
@@ -357,6 +389,8 @@ export interface AuthUser {
     role: UserRole;
     allowedProjectIds: string[];
     enabled: boolean;
+    receivablePermissions?: ReceivablePermission[];
+    hideRentPricing?: boolean;
 }
 
 export interface AIConfig {
@@ -469,6 +503,10 @@ export interface DashboardData {
   // Financials (Current Selected Year)
   annualRevenueTarget: number;
   annualRevenueCollected: number;
+  /** 年度物业费合同应收合计（启用物业费园区） */
+  annualManagementFeeContractReceivable?: number;
+  /** 年度物业费实收合计 */
+  annualManagementFeeCollected?: number;
   annualOccupancyTarget: number;
   
   monthlyRevenueTarget: number;
