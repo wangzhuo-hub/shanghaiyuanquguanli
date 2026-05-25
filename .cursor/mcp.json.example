@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "kdpark": {
+      "command": "npx",
+      "args": ["tsx", "packages/kdpark-plugin/src/mcp.ts"],
+      "cwd": "/Users/wangzhuo/Desktop/金蝶招商管理看板（标准版20260402）"
+    }
+  }
+}

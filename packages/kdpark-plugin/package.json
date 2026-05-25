@@ -1,0 +1,22 @@
+{
+  "name": "@kdpark/agent-plugin",
+  "version": "1.0.0",
+  "description": "金蝶园区轻量 Agent 插件：登录即用，按权限查询/录合同/核销",
+  "type": "module",
+  "private": true,
+  "bin": {
+    "kdpark-plugin": "./src/mcp.ts"
+  },
+  "scripts": {
+    "start": "tsx src/mcp.ts"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.1",
+    "pocketbase": "^0.21.0",
+    "zod": "^3.24.2"
+  },
+  "devDependencies": {
+    "tsx": "^4.21.0",
+    "typescript": "^5.2.2"
+  }
+}

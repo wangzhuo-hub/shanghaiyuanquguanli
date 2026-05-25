@@ -275,6 +275,17 @@ export const logoutPocketBase = () => {
     pb?.authStore?.clear();
 };
 
+/** MCP / 外部 Agent：用已登录用户的 token 恢复 pocketbaseService 单例会话（与前端同一 pb 客户端） */
+export const restorePocketBaseUserSession = (
+    url: string,
+    token: string,
+    model: Record<string, unknown> | null,
+): void => {
+    initPocketBase(url);
+    if (!pb) throw new Error('PocketBase 未初始化');
+    pb.authStore.save(token, model);
+};
+
 export const fetchAuthorizedParks = async (): Promise<{ success: boolean; parks: ParkInfo[]; message: string }> => {
     if (!pb) return { success: false, parks: [], message: 'PocketBase 未初始化' };
     if (!pb.authStore?.isValid) return { success: false, parks: [], message: '尚未登录' };
