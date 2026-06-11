@@ -275,7 +275,7 @@ export function registerTools(server: McpServer): void {
             remarks: input.remarks,
             tenant_name: input.tenant_name,
             original_id: input.original_id,
-            status: input.status as 'Received' | 'Pending' | 'Overdue' | undefined,
+            status: input.status as 'Received' | 'Pending' | undefined,
           },
           ctx,
         );

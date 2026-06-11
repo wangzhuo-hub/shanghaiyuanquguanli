@@ -26,6 +26,24 @@ import crypto from 'node:crypto';
 import express from 'express';
 import PocketBase from 'pocketbase';
 import { computeKpi, computeBilling } from './compute-engine.js';
+import {
+  AuthError,
+  ForbiddenError,
+  authenticateRequest,
+  loginWithPassword,
+  publicUserProfile,
+  resolveAuthorizedProjectId,
+  assertPaymentWriteAllowed,
+} from './paymentApiAuth.js';
+import {
+  archiveTenantLikeFrontend,
+  buildMcpSaveContext,
+  deletePaymentLikeFrontend,
+  deleteTenantLikeFrontend,
+  savePaymentLikeFrontend,
+  saveTenantLikeFrontend,
+  updatePaymentLikeFrontend,
+} from '../services/mcpIncrementalSave.js';
 
 // ── 配置 ──
 
@@ -33,6 +51,9 @@ const PB_URL: string = process.env.PB_URL || 'http://127.0.0.1:8090';
 const ADMIN_EMAIL: string = process.env.PB_ADMIN_EMAIL || '';
 const ADMIN_PASSWORD: string = process.env.PB_ADMIN_PASSWORD || '';
 const PORT: number = Number(process.env.INTEGRATION_GATEWAY_PORT || 8787);
+const APP_API_WRITE_ENABLED: boolean = process.env.APP_API_WRITE_ENABLED === '1';
+const APP_API_PAYMENT_WRITE_ENABLED: boolean = process.env.APP_API_PAYMENT_WRITE_ENABLED === '1';
+const APP_API_TENANT_WRITE_ENABLED: boolean = process.env.APP_API_TENANT_WRITE_ENABLED === '1';
 
 const WRITABLE_COLLECTIONS = new Set([
   'pb_buildings', 'pb_units', 'pb_tenants', 'pb_payments',
@@ -42,6 +63,362 @@ const WRITABLE_COLLECTIONS = new Set([
 ]);
 
 const pb = new PocketBase(PB_URL);
+
+function envelope(data: Record<string, unknown>, meta?: Record<string, unknown>) {
+  return {
+    success: data.ok !== false,
+    data,
+    meta: {
+      auditId: `app_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+      dryRun: Boolean(meta?.dryRun),
+      source: meta?.source || 'app-api',
+      ...meta,
+    },
+  };
+}
+
+function sendAppError(res: express.Response, e: unknown, fallback = '内部错误') {
+  const err = e as { status?: number; message?: string; data?: { message?: string } };
+  const status =
+    e instanceof AuthError ? 401
+      : e instanceof ForbiddenError ? 403
+        : err?.status && err.status >= 400 && err.status < 600 ? err.status
+          : 500;
+  const code =
+    status === 401 ? 'AUTH_UNAUTHORIZED'
+      : status === 403 ? 'AUTH_FORBIDDEN'
+        : status === 404 ? 'APP_NOT_FOUND'
+          : 'APP_ERROR';
+  res.status(status).json({
+    success: false,
+    error: {
+      code,
+      message: err?.data?.message || err?.message || fallback,
+    },
+    meta: {
+      auditId: `app_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+      source: 'app-api',
+    },
+  });
+}
+
+function assertAppWriteFeatureEnabled(res: express.Response, action: string): boolean {
+  const actionEnabled =
+    action.startsWith('payment.') ? APP_API_PAYMENT_WRITE_ENABLED : APP_API_TENANT_WRITE_ENABLED;
+  if (APP_API_WRITE_ENABLED && actionEnabled) return true;
+  res.status(403).json({
+    success: false,
+    error: {
+      code: 'APP_WRITE_DISABLED',
+      message: `Application API 正式写入未开启：${action}。当前仅允许 dry-run。`,
+    },
+    meta: {
+      dryRun: false,
+      source: 'app-api',
+      writeEnabled: APP_API_WRITE_ENABLED,
+      actionEnabled,
+    },
+  });
+  return false;
+}
+
+async function handleAppLogin(req: express.Request, res: express.Response) {
+  try {
+    const body = (req.body || {}) as { email?: string; password?: string };
+    const auth = await loginWithPassword(PB_URL, body.email || '', body.password || '');
+    res.json(envelope({
+      ok: true,
+      token: auth.token,
+      user: publicUserProfile(auth.user),
+      authHint: '后续请求请携带 Authorization: Bearer <token>',
+    }));
+  } catch (e) {
+    sendAppError(res, e, '登录失败');
+  }
+}
+
+async function handleAppMe(req: express.Request, res: express.Response) {
+  try {
+    const auth = await authenticateRequest(req, PB_URL);
+    res.json(envelope({ ok: true, user: publicUserProfile(auth.user) }));
+  } catch (e) {
+    sendAppError(res, e, '读取当前用户失败');
+  }
+}
+
+async function handleAppPaymentReceive(req: express.Request, res: express.Response) {
+  try {
+    const auth = await authenticateRequest(req, PB_URL);
+    const body = (req.body || {}) as Record<string, unknown>;
+    const dryRun = body.dry_run === true || body.dryRun === true;
+    const projectId = resolveAuthorizedProjectId(auth.user, body.project_id);
+    const type = String(body.type || 'Rent');
+    assertPaymentWriteAllowed(auth.user, type);
+
+    const originalId = String(body.original_id || body.idempotency_key || body.idempotencyKey || '').trim();
+    if (!dryRun && !originalId) {
+      res.status(400).json({
+        success: false,
+        error: {
+          code: 'PAYMENT_IDEMPOTENCY_REQUIRED',
+          message: '正式写入必须提供 original_id 或 idempotency_key，避免重复核销',
+        },
+        meta: { dryRun, source: 'app-api' },
+      });
+      return;
+    }
+
+    const params = {
+      project_id: projectId,
+      tenant_id: String(body.tenant_id || body.tenantId || ''),
+      amount: Number(body.amount),
+      type,
+      date: String(body.date || ''),
+      period: body.period as string | undefined,
+      remarks: body.remarks as string | undefined,
+      tenant_name: body.tenant_name as string | undefined,
+      original_id: originalId || undefined,
+      status: body.status as 'Received' | 'Pending' | 'Overdue' | undefined as never,
+      invoice_status: body.invoice_status as 'Issued' | 'Pending' | 'NotRequired' | undefined as never,
+    };
+
+    if (dryRun) {
+      res.json(envelope({
+        ok: true,
+        action: 'payment.receive',
+        project_id: projectId,
+        preview: params,
+        message: 'dry-run 通过：未写入 PocketBase',
+      }, { dryRun }));
+      return;
+    }
+
+    if (!assertAppWriteFeatureEnabled(res, 'payment.receive')) return;
+
+    const ctx = buildMcpSaveContext(auth.user, auth.userPb, PB_URL, { projectId });
+    const result = await savePaymentLikeFrontend(params, ctx);
+    res.status(result.ok === false ? 400 : 200).json(envelope(result as Record<string, unknown>, { dryRun }));
+  } catch (e) {
+    sendAppError(res, e, '收款核销失败');
+  }
+}
+
+async function handleAppPaymentUpdate(req: express.Request, res: express.Response) {
+  try {
+    const auth = await authenticateRequest(req, PB_URL);
+    const body = (req.body || {}) as Record<string, unknown>;
+    const dryRun = body.dry_run === true || body.dryRun === true;
+    const projectId = resolveAuthorizedProjectId(auth.user, body.project_id);
+    const patchSource = (body.patch && typeof body.patch === 'object' ? body.patch : body) as Record<string, unknown>;
+    const patch = {
+      tenantId: patchSource.tenant_id as string | undefined,
+      tenantName: patchSource.tenant_name as string | undefined,
+      amount: patchSource.amount === undefined ? undefined : Number(patchSource.amount),
+      type: patchSource.type as never,
+      date: patchSource.date as string | undefined,
+      period: patchSource.period as string | undefined,
+      status: patchSource.status as never,
+      invoiceStatus: (patchSource.invoice_status || patchSource.invoiceStatus) as never,
+      remarks: patchSource.remarks as string | undefined,
+    };
+    Object.keys(patch).forEach((key) => {
+      if ((patch as Record<string, unknown>)[key] === undefined) delete (patch as Record<string, unknown>)[key];
+    });
+    const paymentId = String(body.original_id || body.payment_id || body.paymentId || '').trim();
+
+    if (dryRun) {
+      res.json(envelope({
+        ok: true,
+        action: 'payment.update',
+        project_id: projectId,
+        payment_id: paymentId,
+        preview: patch,
+        message: 'dry-run 通过：未写入 PocketBase',
+      }, { dryRun }));
+      return;
+    }
+
+    if (!assertAppWriteFeatureEnabled(res, 'payment.update')) return;
+
+    const ctx = buildMcpSaveContext(auth.user, auth.userPb, PB_URL, { projectId });
+    const result = await updatePaymentLikeFrontend({
+      original_id: paymentId,
+      project_id: projectId,
+      patch,
+    }, ctx);
+    res.status(result.ok === false ? 400 : 200).json(envelope(result as Record<string, unknown>, { dryRun }));
+  } catch (e) {
+    sendAppError(res, e, '修改收款失败');
+  }
+}
+
+async function handleAppPaymentDelete(req: express.Request, res: express.Response) {
+  try {
+    const auth = await authenticateRequest(req, PB_URL);
+    const body = (req.body || {}) as Record<string, unknown>;
+    const dryRun = body.dry_run === true || body.dryRun === true;
+    const projectId = resolveAuthorizedProjectId(auth.user, body.project_id);
+    const paymentId = String(body.original_id || body.payment_id || body.paymentId || '').trim();
+
+    if (dryRun) {
+      res.json(envelope({
+        ok: true,
+        action: 'payment.delete',
+        project_id: projectId,
+        payment_id: paymentId,
+        message: 'dry-run 通过：未写入 PocketBase',
+      }, { dryRun }));
+      return;
+    }
+
+    if (body.confirm_delete !== true && body.confirmDelete !== true) {
+      res.status(400).json({
+        success: false,
+        error: {
+          code: 'PAYMENT_DELETE_CONFIRM_REQUIRED',
+          message: '删除收款必须传 confirm_delete=true，建议先 dry_run=true 预演',
+        },
+        meta: { dryRun, source: 'app-api' },
+      });
+      return;
+    }
+
+    if (!assertAppWriteFeatureEnabled(res, 'payment.delete')) return;
+
+    const ctx = buildMcpSaveContext(auth.user, auth.userPb, PB_URL, { projectId });
+    const result = await deletePaymentLikeFrontend({
+      original_id: paymentId,
+      project_id: projectId,
+    }, ctx);
+    res.status(result.ok === false ? 400 : 200).json(envelope(result as Record<string, unknown>, { dryRun }));
+  } catch (e) {
+    sendAppError(res, e, '删除收款失败');
+  }
+}
+
+async function handleAppTenantUpsert(req: express.Request, res: express.Response) {
+  try {
+    const auth = await authenticateRequest(req, PB_URL);
+    const body = (req.body || {}) as Record<string, unknown>;
+    const dryRun = body.dry_run === true || body.dryRun === true;
+    const projectId = resolveAuthorizedProjectId(auth.user, body.project_id);
+    const data = (body.data && typeof body.data === 'object' ? body.data : body) as Record<string, unknown>;
+    const originalId = String(body.original_id || data.original_id || data.id || '').trim();
+    if (!originalId) {
+      res.status(400).json({
+        success: false,
+        error: { code: 'TENANT_ORIGINAL_ID_REQUIRED', message: '缺少 original_id / 租户 id' },
+        meta: { dryRun, source: 'app-api' },
+      });
+      return;
+    }
+
+    if (dryRun) {
+      res.json(envelope({
+        ok: true,
+        action: 'tenant.upsert',
+        project_id: projectId,
+        tenant_id: originalId,
+        preview: data,
+        message: 'dry-run 通过：未写入 PocketBase',
+      }, { dryRun }));
+      return;
+    }
+
+    if (!assertAppWriteFeatureEnabled(res, 'tenant.upsert')) return;
+
+    const ctx = buildMcpSaveContext(auth.user, auth.userPb, PB_URL, { projectId });
+    const result = await saveTenantLikeFrontend({
+      original_id: originalId,
+      mode: String(body.mode || 'upsert') === 'create' ? 'create' : 'update',
+      data,
+      project_id: projectId,
+    }, ctx);
+    res.status(result.ok === false ? 400 : 200).json(envelope(result as Record<string, unknown>, { dryRun }));
+  } catch (e) {
+    sendAppError(res, e, '租户保存失败');
+  }
+}
+
+async function handleAppTenantArchive(req: express.Request, res: express.Response) {
+  try {
+    const auth = await authenticateRequest(req, PB_URL);
+    const body = (req.body || {}) as Record<string, unknown>;
+    const dryRun = body.dry_run === true || body.dryRun === true;
+    const projectId = resolveAuthorizedProjectId(auth.user, body.project_id);
+    const tenantId = String(body.original_id || body.tenant_id || body.tenantId || '').trim();
+
+    if (dryRun) {
+      res.json(envelope({
+        ok: true,
+        action: 'tenant.archive',
+        project_id: projectId,
+        tenant_id: tenantId,
+        termination_date: body.termination_date,
+        termination_reason: body.termination_reason,
+        message: 'dry-run 通过：未写入 PocketBase',
+      }, { dryRun }));
+      return;
+    }
+
+    if (!assertAppWriteFeatureEnabled(res, 'tenant.archive')) return;
+
+    const ctx = buildMcpSaveContext(auth.user, auth.userPb, PB_URL, { projectId });
+    const result = await archiveTenantLikeFrontend({
+      original_id: tenantId,
+      project_id: projectId,
+      termination_date: body.termination_date as string | undefined,
+      termination_reason: body.termination_reason as string | undefined,
+    }, ctx);
+    res.status(result.ok === false ? 400 : 200).json(envelope(result as Record<string, unknown>, { dryRun }));
+  } catch (e) {
+    sendAppError(res, e, '作废租户失败');
+  }
+}
+
+async function handleAppTenantDelete(req: express.Request, res: express.Response) {
+  try {
+    const auth = await authenticateRequest(req, PB_URL);
+    const body = (req.body || {}) as Record<string, unknown>;
+    const dryRun = body.dry_run === true || body.dryRun === true;
+    const projectId = resolveAuthorizedProjectId(auth.user, body.project_id);
+    const tenantId = String(body.original_id || body.tenant_id || body.tenantId || '').trim();
+
+    if (dryRun) {
+      res.json(envelope({
+        ok: true,
+        action: 'tenant.delete',
+        project_id: projectId,
+        tenant_id: tenantId,
+        message: 'dry-run 通过：未写入 PocketBase',
+      }, { dryRun }));
+      return;
+    }
+
+    if (body.confirm_delete !== true && body.confirmDelete !== true) {
+      res.status(400).json({
+        success: false,
+        error: {
+          code: 'TENANT_DELETE_CONFIRM_REQUIRED',
+          message: '删除租户必须传 confirm_delete=true；业务退租建议使用 tenants/archive',
+        },
+        meta: { dryRun, source: 'app-api' },
+      });
+      return;
+    }
+
+    if (!assertAppWriteFeatureEnabled(res, 'tenant.delete')) return;
+
+    const ctx = buildMcpSaveContext(auth.user, auth.userPb, PB_URL, { projectId });
+    const result = await deleteTenantLikeFrontend({
+      original_id: tenantId,
+      project_id: projectId,
+    }, ctx);
+    res.status(result.ok === false ? 400 : 200).json(envelope(result as Record<string, unknown>, { dryRun }));
+  } catch (e) {
+    sendAppError(res, e, '删除租户失败');
+  }
+}
 
 // ── 工具函数 ──
 
@@ -535,6 +912,36 @@ async function main() {
 
   app.get('/health', (_req, res) => res.json({ ok: true, pb: PB_URL }));
 
+  // Application API（语义写入入口）：MCP / CLI / 未来 Web 共用。
+  // 这里禁止裸 collection 写入，底层复用与前端一致的增量保存路径。
+  app.post('/api/v1/app/auth/login', handleAppLogin);
+  app.get('/api/v1/app/auth/me', handleAppMe);
+  app.post('/api/v1/app/payments/create', handleAppPaymentReceive);
+  app.post('/api/v1/app/payments/receive', handleAppPaymentReceive);
+  app.post('/api/v1/app/payments/update', handleAppPaymentUpdate);
+  app.put('/api/v1/app/payments/:id', (req, res) => {
+    req.body = { ...(req.body || {}), original_id: req.params.id };
+    return handleAppPaymentUpdate(req, res);
+  });
+  app.post('/api/v1/app/payments/delete', handleAppPaymentDelete);
+  app.delete('/api/v1/app/payments/:id', (req, res) => {
+    req.body = { ...(req.body || {}), original_id: req.params.id };
+    return handleAppPaymentDelete(req, res);
+  });
+  app.post('/api/v1/app/tenants/upsert', handleAppTenantUpsert);
+  app.post('/api/v1/app/tenants/archive', handleAppTenantArchive);
+  app.post('/api/v1/app/tenants/delete', handleAppTenantDelete);
+  // 兼容路径：复用现有 Caddy `/api/integration/* -> gateway` 路由，首轮生产灰度不必改 Caddy。
+  app.post('/api/integration/app/auth/login', handleAppLogin);
+  app.get('/api/integration/app/auth/me', handleAppMe);
+  app.post('/api/integration/app/payments/create', handleAppPaymentReceive);
+  app.post('/api/integration/app/payments/receive', handleAppPaymentReceive);
+  app.post('/api/integration/app/payments/update', handleAppPaymentUpdate);
+  app.post('/api/integration/app/payments/delete', handleAppPaymentDelete);
+  app.post('/api/integration/app/tenants/upsert', handleAppTenantUpsert);
+  app.post('/api/integration/app/tenants/archive', handleAppTenantArchive);
+  app.post('/api/integration/app/tenants/delete', handleAppTenantDelete);
+
   // 只读查询
   app.get('/api/integration/kpi', handleKpiQuery);
   app.get('/api/integration/dashboard', handleDashboardQuery);
@@ -606,6 +1013,18 @@ async function main() {
     console.log(`  POST /api/integration/compute/kpi      — 重算 KPI（与前端同口径）`);
     console.log(`  POST /api/integration/compute/billing  — 重算应收明细`);
     console.log(`  POST /api/integration/compute/refresh  — 重算并回写快照`);
+    console.log(`[integration-gateway] App API endpoints:`);
+    console.log(`  POST /api/v1/app/auth/login            — 看板用户登录`);
+    console.log(`  GET  /api/v1/app/auth/me               — 当前用户`);
+    console.log(`  POST /api/v1/app/payments/create       — 直接录入收款`);
+    console.log(`  POST /api/v1/app/payments/receive      — 收款核销`);
+    console.log(`  POST /api/v1/app/payments/update       — 修改收款`);
+    console.log(`  POST /api/v1/app/payments/delete       — 删除收款（需 confirm_delete）`);
+    console.log(`  POST /api/v1/app/tenants/upsert        — 租户保存`);
+    console.log(`  POST /api/v1/app/tenants/archive       — 租户作废/退租`);
+    console.log(`  POST /api/v1/app/tenants/delete        — 删除租户（需 confirm_delete）`);
+    console.log(`  /api/integration/app/*                 — 兼容 Caddy 现有 gateway 路由`);
+    console.log(`[integration-gateway] App API write flags: global=${APP_API_WRITE_ENABLED} payment=${APP_API_PAYMENT_WRITE_ENABLED} tenant=${APP_API_TENANT_WRITE_ENABLED}`);
   });
 }
 

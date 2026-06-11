@@ -3,6 +3,7 @@ import React from 'react';
 import { DashboardData, ContractStatus } from '../types';
 import { ChevronDown, ChevronRight, TrendingUp, TrendingDown, Target, Activity } from 'lucide-react';
 import { formatArea, formatPercent, formatWan } from '../services/numberFormat';
+import { useMinMdViewport } from '../hooks/useMediaQuery';
 
 const StatusBadge: React.FC<{ status: ContractStatus }> = ({ status }) => {
   const styles = {
@@ -46,6 +47,17 @@ const ActivityCard: React.FC<{ tenant: any, buildingName: string, unitNames: str
 );
 
 export const RecentActivityTable: React.FC<{ data: DashboardData }> = ({ data }) => {
+  const isDesktop = useMinMdViewport();
+
+  const rows = data.recentSignings.map((tenant) => {
+      const building = data.buildings.find(b => b.id === tenant.buildingId);
+      const unitNames = tenant.unitIds.map(uid => {
+          const unit = building?.units.find(u => u.id === uid);
+          return unit ? unit.name : uid;
+      }).join(', ');
+      return { tenant, building, unitNames };
+  });
+
   return (
     <div className="bg-white rounded-xl shadow-sm border border-slate-100 overflow-hidden h-full">
       <div className="p-4 md:p-6 border-b border-slate-100 flex justify-between items-start gap-3">
@@ -56,8 +68,8 @@ export const RecentActivityTable: React.FC<{ data: DashboardData }> = ({ data })
         <span className="text-xs font-medium text-slate-500 bg-slate-100 px-2 py-1 rounded-md shrink-0">近 1 个月</span>
       </div>
       
-      {/* Desktop View */}
-      <div className="hidden md:block overflow-x-auto">
+      {isDesktop ? (
+      <div className="overflow-x-auto">
         <table className="w-full text-sm text-left">
           <thead className="bg-slate-50 text-slate-500 font-medium">
             <tr>
@@ -69,19 +81,12 @@ export const RecentActivityTable: React.FC<{ data: DashboardData }> = ({ data })
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-100">
-            {data.recentSignings.length === 0 && (
+            {rows.length === 0 && (
               <tr>
                 <td colSpan={5} className="px-6 py-10 text-center text-slate-400 text-sm">近一个月内暂无签约记录</td>
               </tr>
             )}
-            {data.recentSignings.map((tenant) => {
-              const building = data.buildings.find(b => b.id === tenant.buildingId);
-              const unitNames = tenant.unitIds.map(uid => {
-                  const unit = building?.units.find(u => u.id === uid);
-                  return unit ? unit.name : uid;
-              }).join(', ');
-              
-              return (
+            {rows.map(({ tenant, building, unitNames }) => (
               <tr key={tenant.id} className="hover:bg-slate-50 transition-colors">
                 <td className="px-6 py-4 font-medium text-slate-800">{tenant.name}</td>
                 <td className="px-6 py-4 text-slate-600">
@@ -93,23 +98,18 @@ export const RecentActivityTable: React.FC<{ data: DashboardData }> = ({ data })
                   <StatusBadge status={tenant.status} />
                 </td>
               </tr>
-            )})}
+            ))}
           </tbody>
         </table>
       </div>
-
-      {/* Mobile View */}
-      <div className="md:hidden">
-          {data.recentSignings.map((tenant) => {
-              const building = data.buildings.find(b => b.id === tenant.buildingId);
-              const unitNames = tenant.unitIds.map(uid => {
-                  const unit = building?.units.find(u => u.id === uid);
-                  return unit ? unit.name : uid;
-              }).join(', ');
-              return <ActivityCard key={tenant.id} tenant={tenant} buildingName={building?.name || ''} unitNames={unitNames} />;
-          })}
-          {data.recentSignings.length === 0 && <div className="p-4 text-center text-slate-400 text-sm">暂无近期签约</div>}
+      ) : (
+      <div>
+          {rows.map(({ tenant, building, unitNames }) => (
+              <ActivityCard key={tenant.id} tenant={tenant} buildingName={building?.name || ''} unitNames={unitNames} />
+          ))}
+          {rows.length === 0 && <div className="p-4 text-center text-slate-400 text-sm">暂无近期签约</div>}
       </div>
+      )}
     </div>
   );
 };

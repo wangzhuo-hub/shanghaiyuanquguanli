@@ -1,6 +1,6 @@
 
 import React, { useEffect, useMemo, useState } from 'react';
-import { AuthUser, BillingDetail, DashboardData } from '../types';
+import { AuthUser, BillingDetail, Building, DashboardData } from '../types';
 import { CheckCircle2, AlertCircle, Building2, Wallet, Calendar, ChevronLeft, ChevronRight, Info } from 'lucide-react';
 import {
     buildReceivableSections,
@@ -12,10 +12,39 @@ import {
 import { formatCurrency, formatPercent } from '../services/numberFormat';
 import { isManagementFeeBillingEnabled } from '../services/parkBillingConfig';
 import { canViewRentPricing } from '../services/receivablePermissions';
+import { useMinMdViewport } from '../hooks/useMediaQuery';
 
 function isMgmtFeeRow(row: BillingDetail): boolean {
     return (row.feeKind || 'rent') === 'management_fee';
 }
+
+/** 备注仅本地编辑，debounce 后写入父级，避免每次按键触发整页重渲染 */
+const RentRemarkField: React.FC<{
+    tenantId: string;
+    periodYYYYMM: string;
+    notes: Record<string, string> | undefined;
+    onSave?: (tenantId: string, period: string, text: string) => void;
+    className?: string;
+}> = ({ tenantId, periodYYYYMM, notes, onSave, className }) => {
+    const saved = getRentCollectionRemark(notes, tenantId, periodYYYYMM);
+    const [draft, setDraft] = useState(saved);
+    useEffect(() => {
+        setDraft(saved);
+    }, [saved, tenantId, periodYYYYMM]);
+    return (
+        <textarea
+            className={className}
+            placeholder="预期收款日、沟通情况等"
+            value={draft}
+            onChange={(e) => {
+                const next = e.target.value;
+                setDraft(next);
+                onSave?.(tenantId, periodYYYYMM, next);
+            }}
+            disabled={!onSave}
+        />
+    );
+};
 
 function sumBillingTotals(rows: BillingDetail[]) {
     const totalDue = rows.reduce((acc, curr) => acc + receivableBudgetDisplay(curr), 0);
@@ -53,10 +82,11 @@ const BillingCard: React.FC<{
     building: any;
     unitNames: string;
     writeOffLabel: string;
-    remark: string;
-    onRemarkChange: (text: string) => void;
+    notes: Record<string, string> | undefined;
+    selectedMonth: string;
+    onRemarkSave?: (tenantId: string, period: string, text: string) => void;
     remarkDisabled?: boolean;
-}> = ({ item, building, unitNames, writeOffLabel, remark, onRemarkChange, remarkDisabled }) => {
+}> = ({ item, building, unitNames, writeOffLabel, notes, selectedMonth, onRemarkSave, remarkDisabled }) => {
     const deferShell = deferReceivableShellClass(item);
     const hasDeferOut = !!(item.deferredToPeriod && (item.deferredAmount ?? 0) > 0);
     const hasDeferIn = !!(item.deferredInAmount && item.deferredInAmount > 0);
@@ -103,12 +133,12 @@ const BillingCard: React.FC<{
         </div>
         <div className="mt-2">
             <label className="text-[10px] text-slate-400 font-medium">备注</label>
-            <textarea
+            <RentRemarkField
+                tenantId={item.tenantId}
+                periodYYYYMM={selectedMonth}
+                notes={notes}
+                onSave={remarkDisabled ? undefined : onRemarkSave}
                 className="mt-0.5 w-full min-h-[52px] text-xs border border-slate-200 rounded-lg p-2 text-slate-700 resize-y"
-                placeholder="预期收款日、沟通情况等"
-                value={remark}
-                onChange={(e) => onRemarkChange(e.target.value)}
-                disabled={remarkDisabled}
             />
         </div>
     </div>
@@ -123,6 +153,7 @@ export const BillingTable: React.FC<BillingTableProps> = ({
   projectId: projectIdProp,
   authUser = null,
 }) => {
+  const isDesktop = useMinMdViewport();
   const projectId =
       projectIdProp ||
       data.tenants?.find((t) => (t.projectId || '').trim())?.projectId ||
@@ -174,13 +205,33 @@ export const BillingTable: React.FC<BillingTableProps> = ({
       ? '来源: 合同物业费条款 · 与财务报表「物业费应收」一致'
       : '来源: 预算管理 (含手动调整) · 与财务报表「租金应收」一致';
 
+  const unitLocationByUnitId = useMemo(() => {
+      const map = new Map<string, { building: Building; unitName: string }>();
+      for (const building of data.buildings) {
+          for (const unit of building.units) {
+              map.set(unit.id, { building, unitName: unit.name });
+          }
+      }
+      return map;
+  }, [data.buildings]);
+
+  const resolveUnitLocation = (unitIds: string[]) => {
+      const names: string[] = [];
+      let building: Building | undefined;
+      for (const uid of unitIds) {
+          const hit = unitLocationByUnitId.get(uid);
+          if (hit) {
+              building = hit.building;
+              names.push(hit.unitName);
+          } else {
+              names.push(uid);
+          }
+      }
+      return { building, unitNames: names.join(', ') };
+  };
+
   const renderBillingDetailRow = (item: BillingDetail, writeOffLabel: string, rowKey: string) => {
-      const building = data.buildings.find(b => b.units.some(u => item.unitIds.includes(u.id)));
-      const unitNames = item.unitIds.map(uid => {
-          const unit = building?.units.find(u => u.id === uid);
-          return unit ? unit.name : uid;
-      }).join(', ');
-      const remark = getRentCollectionRemark(data.billingPeriodNotes, item.tenantId, selectedMonth);
+      const { building, unitNames } = resolveUnitLocation(item.unitIds);
       const paidClass =
           writeOffLabel === WRITEOFF_LABELS.settled
               ? 'text-green-600 font-medium'
@@ -241,12 +292,12 @@ export const BillingTable: React.FC<BillingTableProps> = ({
                   </div>
               </td>
               <td className="px-6 py-3 align-top max-w-[240px]">
-                  <textarea
+                  <RentRemarkField
+                      tenantId={item.tenantId}
+                      periodYYYYMM={selectedMonth}
+                      notes={data.billingPeriodNotes}
+                      onSave={onUpdateRentRemark}
                       className="w-full min-h-[52px] text-xs border border-slate-200 rounded-lg p-2 text-slate-700 resize-y"
-                      placeholder="预期收款日、沟通情况等"
-                      value={remark}
-                      onChange={(e) => onUpdateRentRemark?.(item.tenantId, selectedMonth, e.target.value)}
-                      disabled={!onUpdateRentRemark}
                   />
               </td>
           </tr>
@@ -394,10 +445,8 @@ export const BillingTable: React.FC<BillingTableProps> = ({
              </div>
              <p className="text-slate-500">{isMgmtTab ? "该月份暂无应收物业费账单。" : "该月份暂无应收租金账单。"}</p>
           </div>
-      ) : (
-        <>
-            {/* Desktop View */}
-            <div className="hidden md:block overflow-x-auto">
+      ) : isDesktop ? (
+            <div className="overflow-x-auto">
                 <table className="w-full text-sm text-left">
                 <thead className="bg-slate-50 text-slate-500 font-medium">
                     <tr>
@@ -452,18 +501,13 @@ export const BillingTable: React.FC<BillingTableProps> = ({
                 </tbody>
                 </table>
             </div>
-
-            {/* Mobile View */}
-            <div className="md:hidden">
+      ) : (
+            <div>
                 {receivableSections.unsettled.length > 0 && (
                     <>
                         <div className="px-3 py-2 text-xs font-bold bg-amber-50/60 text-amber-900 border-b border-amber-100">{WRITEOFF_LABELS.pending}</div>
                         {receivableSections.unsettled.map(({ item, i }) => {
-                            const building = data.buildings.find(b => b.units.some(u => item.unitIds.includes(u.id)));
-                            const unitNames = item.unitIds.map(uid => {
-                                const unit = building?.units.find(u => u.id === uid);
-                                return unit ? unit.name : uid;
-                            }).join(', ');
+                            const { building, unitNames } = resolveUnitLocation(item.unitIds);
                             return (
                                 <BillingCard
                                     key={`${item.feeKind || 'rent'}|${item.tenantId}-u-${i}`}
@@ -471,8 +515,9 @@ export const BillingTable: React.FC<BillingTableProps> = ({
                                     building={building}
                                     unitNames={unitNames}
                                     writeOffLabel={WRITEOFF_LABELS.pending}
-                                    remark={getRentCollectionRemark(data.billingPeriodNotes, item.tenantId, selectedMonth)}
-                                    onRemarkChange={(text) => onUpdateRentRemark?.(item.tenantId, selectedMonth, text)}
+                                    notes={data.billingPeriodNotes}
+                                    selectedMonth={selectedMonth}
+                                    onRemarkSave={onUpdateRentRemark}
                                     remarkDisabled={!onUpdateRentRemark}
                                 />
                             );
@@ -483,11 +528,7 @@ export const BillingTable: React.FC<BillingTableProps> = ({
                     <>
                         <div className="px-3 py-2 text-xs font-bold bg-indigo-50/70 text-indigo-900 border-b border-indigo-100">{WRITEOFF_LABELS.deferred}（原账期已调至他月）</div>
                         {receivableSections.deferred.map(({ item, i }) => {
-                            const building = data.buildings.find(b => b.units.some(u => item.unitIds.includes(u.id)));
-                            const unitNames = item.unitIds.map(uid => {
-                                const unit = building?.units.find(u => u.id === uid);
-                                return unit ? unit.name : uid;
-                            }).join(', ');
+                            const { building, unitNames } = resolveUnitLocation(item.unitIds);
                             return (
                                 <BillingCard
                                     key={`${item.feeKind || 'rent'}|${item.tenantId}-d-${i}`}
@@ -495,8 +536,9 @@ export const BillingTable: React.FC<BillingTableProps> = ({
                                     building={building}
                                     unitNames={unitNames}
                                     writeOffLabel={WRITEOFF_LABELS.deferred}
-                                    remark={getRentCollectionRemark(data.billingPeriodNotes, item.tenantId, selectedMonth)}
-                                    onRemarkChange={(text) => onUpdateRentRemark?.(item.tenantId, selectedMonth, text)}
+                                    notes={data.billingPeriodNotes}
+                                    selectedMonth={selectedMonth}
+                                    onRemarkSave={onUpdateRentRemark}
                                     remarkDisabled={!onUpdateRentRemark}
                                 />
                             );
@@ -508,11 +550,7 @@ export const BillingTable: React.FC<BillingTableProps> = ({
                         <div className="px-3 py-2 text-xs font-bold bg-emerald-50/50 text-emerald-900 border-b border-emerald-100">{WRITEOFF_LABELS.settled}</div>
                         {[...receivableSections.settledThisMonth, ...receivableSections.prepaid].map((entry, idx) => {
                             const { item } = entry;
-                            const building = data.buildings.find(b => b.units.some(u => item.unitIds.includes(u.id)));
-                            const unitNames = item.unitIds.map(uid => {
-                                const unit = building?.units.find(u => u.id === uid);
-                                return unit ? unit.name : uid;
-                            }).join(', ');
+                            const { building, unitNames } = resolveUnitLocation(item.unitIds);
                             return (
                                 <BillingCard
                                     key={`${item.feeKind || 'rent'}|${item.tenantId}-sp-${idx}`}
@@ -520,8 +558,9 @@ export const BillingTable: React.FC<BillingTableProps> = ({
                                     building={building}
                                     unitNames={unitNames}
                                     writeOffLabel={WRITEOFF_LABELS.settled}
-                                    remark={getRentCollectionRemark(data.billingPeriodNotes, item.tenantId, selectedMonth)}
-                                    onRemarkChange={(text) => onUpdateRentRemark?.(item.tenantId, selectedMonth, text)}
+                                    notes={data.billingPeriodNotes}
+                                    selectedMonth={selectedMonth}
+                                    onRemarkSave={onUpdateRentRemark}
                                     remarkDisabled={!onUpdateRentRemark}
                                 />
                             );
@@ -529,7 +568,6 @@ export const BillingTable: React.FC<BillingTableProps> = ({
                     </>
                 )}
             </div>
-        </>
       )}
     </div>
   );

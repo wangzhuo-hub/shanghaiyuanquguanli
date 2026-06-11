@@ -1,4 +1,5 @@
 import type { DashboardData, MonthlyTrend } from '../types';
+import { resolveAnnualInitialBudget } from './dashboardMetrics';
 
 /**
  * 与看板「预算执行 / 年度指标」同源口径的快照，供 OpenClaw 等每日只读拉取。
@@ -14,7 +15,7 @@ export type OpenClawKpiSnapshot = {
     calendar_year: number;
     calendar_month: number;
 
-    /** 年度营收目标（元），来自 pb_yearly_targets / yearlyTargets */
+    /** 年初目标（元），与看板「营收达成」分母同源：initializationData 各月 initialBudget 合计 */
     annual_revenue_goal_yuan: number;
     annual_occupancy_goal_pct: number;
 
@@ -41,6 +42,12 @@ export type OpenClawKpiSnapshot = {
     current_month_collection_rate_pct: number | null;
 
     occupancy_rate_current_pct: number;
+    /** 当前已租面积（㎡），与看板 / 资产管理 / payload.dashboard.leasedArea 同源 */
+    leased_area_sqm: number;
+    /** 当前可出租面积（㎡），与 payload.dashboard.totalArea 同源 */
+    leasable_area_sqm: number;
+    /** 当前待出租面积（㎡） */
+    vacant_area_sqm: number;
     accumulated_arrears_yuan: number;
     cloud_save_version: number;
 
@@ -66,7 +73,14 @@ export function buildOpenClawKpiSnapshot(
     const calYear = wall.getFullYear();
     const calMonth = wall.getMonth() + 1;
 
-    const annualRevenueGoalYuan = dashboard.annualRevenueTarget;
+    const annualInitialGoalYuan = resolveAnnualInitialBudget(
+        dashboard.yearlyTargets,
+        dashboard.initializationData,
+        context.statsYear,
+        context.projectId
+    );
+    const annualRevenueGoalYuan =
+        annualInitialGoalYuan > 0 ? annualInitialGoalYuan : dashboard.annualRevenueTarget;
     const annualOccupancyGoalPct = dashboard.annualOccupancyTarget;
 
     const trends: MonthlyTrend[] = fullYearMonthlyTrends.slice(0, 12);
@@ -174,6 +188,9 @@ export function buildOpenClawKpiSnapshot(
         current_month_collected_yuan: currentMonthCollected,
         current_month_collection_rate_pct: currentMonthRate,
         occupancy_rate_current_pct: dashboard.occupancyRate,
+        leased_area_sqm: dashboard.leasedArea,
+        leasable_area_sqm: dashboard.totalArea,
+        vacant_area_sqm: dashboard.vacantArea ?? Math.max(0, dashboard.totalArea - dashboard.leasedArea),
         accumulated_arrears_yuan: dashboard.accumulatedArrears,
         cloud_save_version: dashboard.cloudSaveVersion ?? 0,
         monthly,

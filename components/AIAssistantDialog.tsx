@@ -2,8 +2,6 @@ import React, { useState, useRef, useEffect } from 'react';
 import { X, Send, Loader2, FileText, Calendar, TrendingUp, Sparkles, Download, Image as ImageIcon } from 'lucide-react';
 import { DashboardData } from '../types';
 import { getAiProxyBaseForMessage, getAiProxyChatUrl } from '../config/urls';
-import html2canvas from 'html2canvas';
-import jsPDF from 'jspdf';
 import { formatArea, formatCurrency, formatPercent } from '../services/numberFormat';
 
 /** 对 AI 返回的 HTML 做基础 XSS 清洗：移除 script 标签、事件处理器、javascript: 链接 */
@@ -124,6 +122,7 @@ export const AIAssistantDialog: React.FC<AIAssistantDialogProps> = ({
     }
 
     try {
+      const { default: html2canvas } = await import('html2canvas');
       const canvas = await html2canvas(element, {
         scale: 2, // 高清度
         useCORS: true,
@@ -149,6 +148,10 @@ export const AIAssistantDialog: React.FC<AIAssistantDialogProps> = ({
     }
 
     try {
+      const [{ default: html2canvas }, { default: jsPDF }] = await Promise.all([
+        import('html2canvas'),
+        import('jspdf'),
+      ]);
       const canvas = await html2canvas(element, {
         scale: 2,
         useCORS: true,
@@ -366,27 +369,11 @@ async function generateReport(period: string, data: DashboardData, aiConfig: any
 function buildContext(data: DashboardData): string {
   const currentYear = new Date().getFullYear();
   const currentMonth = new Date().getMonth() + 1; // 1-12
-  const activeТеnants = data.tenants.filter(t => !t.terminationDate);
-  
-  // 按照 App.tsx 的逻辑计算可出租面积：排除 Site 类型建筑，排除自用单元
-  const totalLeasableArea = data.buildings.reduce((sum, b) => {
-    if (b.type === 'Site') return sum; // 跳过 Site 类型
-    const buildingArea = b.units
-      .filter(u => !u.isSelfUse) // 排除自用单元
-      .reduce((unitSum, u) => unitSum + (u.area || 0), 0);
-    return sum + buildingArea;
-  }, 0);
-  
-  // 已租面积：按 Signing Date 统计
-  const now = new Date();
-  const rentedArea = activeТеnants
-    .filter(t => {
-      const signingDate = t.signingDate ? new Date(t.signingDate) : null;
-      return signingDate && signingDate <= now;
-    })
-    .reduce((sum, t) => sum + (t.totalArea || 0), 0);
-    
-  const occupancyRate = totalLeasableArea > 0 ? (rentedArea / totalLeasableArea * 100) : 0;
+  const activeTenants = data.tenants.filter((t) => !t.terminationDate);
+
+  const totalLeasableArea = data.totalArea || 0;
+  const rentedArea = data.leasedArea || 0;
+  const occupancyRate = data.occupancyRate || 0;
 
   // 构建当年月度完成率表格（参照预算执行表）
   let monthlyTable = '\n\n【当年月度完成率】\n';
@@ -420,7 +407,7 @@ function buildContext(data: DashboardData): string {
 - 总面积（可出租）：${formatArea(totalLeasableArea)}
 - 已租面积：${formatArea(rentedArea)}
 - 出租率：${formatPercent(occupancyRate)}
-- 在租客户数：${activeТеnants.length}家
+- 在租客户数：${activeTenants.length}家
 - 年度营收目标：${formatCurrency(data.annualRevenueTarget)}
 - 年度已收：${formatCurrency(data.annualRevenueCollected)}
 - 出租率目标：${formatPercent(data.annualOccupancyTarget)}

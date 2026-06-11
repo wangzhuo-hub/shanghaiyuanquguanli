@@ -436,6 +436,13 @@ export const SystemSettingsPanel: React.FC<SystemSettingsPanelProps> = (props) =
                                                         </div>
                                                         <div className="text-xs text-slate-500">
                                                             {u.name || '未填姓名'} · {userRoleLabel(u.role)}
+                                                            {u.password ? (
+                                                                <>
+                                                                    {' '}
+                                                                    · 密码{' '}
+                                                                    <span className="font-mono text-slate-600">{u.password}</span>
+                                                                </>
+                                                            ) : null}
                                                         </div>
                                                     </div>
                                                     <button
@@ -469,6 +476,12 @@ export const SystemSettingsPanel: React.FC<SystemSettingsPanelProps> = (props) =
                                                         {req.applicantName || '（未填姓名）'}
                                                     </div>
                                                     <div className="text-xs text-slate-500">{req.email}</div>
+                                                    {req.password ? (
+                                                        <div className="text-xs text-slate-500">
+                                                            密码{' '}
+                                                            <span className="font-mono text-slate-600">{req.password}</span>
+                                                        </div>
+                                                    ) : null}
                                                     <div className="flex justify-end">
                                                         <button
                                                             type="button"
@@ -489,6 +502,8 @@ export const SystemSettingsPanel: React.FC<SystemSettingsPanelProps> = (props) =
                                 <div className="max-h-96 overflow-y-auto rounded-lg border border-slate-200">
                                     {isLoadingManagedUsers ? (
                                         <EmptyRow>加载中…</EmptyRow>
+                                    ) : managedUsersError ? (
+                                        <EmptyRow>{managedUsersError}</EmptyRow>
                                     ) : activeUsers.length === 0 ? (
                                         <EmptyRow>暂无已启用账号</EmptyRow>
                                     ) : (
@@ -504,6 +519,13 @@ export const SystemSettingsPanel: React.FC<SystemSettingsPanelProps> = (props) =
                                                     <div className="text-xs text-slate-500">
                                                         {u.name || '未填姓名'} · {userRoleLabel(u.role)} ·{' '}
                                                         {u.projectId || '—'}
+                                                        {u.password ? (
+                                                            <>
+                                                                {' '}
+                                                                · 密码{' '}
+                                                                <span className="font-mono text-slate-600">{u.password}</span>
+                                                            </>
+                                                        ) : null}
                                                     </div>
                                                 </div>
                                                 <div className="flex shrink-0 gap-1">
@@ -930,6 +952,9 @@ export const SystemSettingsPanel: React.FC<SystemSettingsPanelProps> = (props) =
                                     placeholder="至少 8 位"
                                     autoComplete="new-password"
                                 />
+                                <p className="mt-1 text-xs leading-relaxed text-slate-500">
+                                    仅修改密码时填写；系统将使用账号备份的旧密码完成 PocketBase 改密校验。
+                                </p>
                             </div>
                         </div>
                         <div className="mt-5 flex justify-end gap-2">

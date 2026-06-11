@@ -10,7 +10,12 @@ import {
     ContractStatus,
     PaymentCycle,
 } from '../types';
-import { getParkBillingFeatures, getReceivableMonthOffsetForProject } from './parkBillingConfig';
+import {
+    getParkBillingFeatures,
+    getReceivableMonthOffsetForProject,
+    snapBeijingLateMonthReceivableBillDate,
+    usesSameMonthReceivableBillDate,
+} from './parkBillingConfig';
 
 const rentFreePeriodKey = (r: RentFreePeriod) => `${r.start}|${r.end}`;
 
@@ -138,22 +143,42 @@ export const FAR_FUTURE_DATE = '2099-12-31';
 export const farFutureDate = (): Date => parseDateLocal(FAR_FUTURE_DATE);
 
 /**
- * 当月应收账期园区清单。上海 / 北京默认账期是「应收月的前一个自然月」（账单日 = 覆盖期开始月 − 1），
- * 深圳园区则在「应收月当月」生成账单（账单日 = 覆盖期开始月）。
- *
- * NOTE：仅作用于系统自动推算的账单日；用户显式填写的 `firstPaymentDate` 仍按原值落账，
- * 由用户决定具体收款日。后续如需扩展为更多园区，可改为通过 `ParkInfo` 配置项注入。
+ * 当月应收账期园区清单（全园区统一 offset 0）。
+ * 上海 / 北京默认仍为「覆盖期开始月 − 1」，但北京 28–31 日起租见 `usesSameMonthReceivableBillDate`。
  */
 export const SAME_MONTH_RECEIVABLE_PROJECT_IDS: ReadonlySet<string> = new Set(['shenzhen_park']);
 
 /**
  * 计算「账单日」相对「覆盖期开始日」的月份偏移。
- * - 上海 / 北京等默认园区：返回 `-1`，账单日落在覆盖期前一个自然月（即「应收月的前一个月」）。
- * - 深圳园区：返回 `0`，账单日与覆盖期开始日同一自然月（即「应收月当月」产生应收）。
+ * - 默认（上海 / 北京 1–27 日起租）：`-1`，账单日在覆盖期开始前一个自然月。
+ * - 深圳园区、北京 28–31 日起租：`0`，账单日与覆盖期开始在同一自然月（合同约定「当月收款」）。
+ *
+ * NOTE：仅作用于系统自动推算的账单日；用户显式填写的 `firstPaymentDate` 仍按原值落账。
  */
+/** 按园区 / 起租日规则解析账单日（含北京 28–31 日季付锚点） */
+export const resolveReceivableBillDate = (
+    coverageStart: Date,
+    tentativeBillDate: Date,
+    tenant: Pick<Tenant, 'projectId' | 'leaseStart' | 'paymentCycle' | 'firstPaymentDate'>,
+    opts?: { isFirstCycle?: boolean },
+): Date => {
+    if (opts?.isFirstCycle && tenant.firstPaymentDate?.trim()) {
+        return parseDateLocal(tenant.firstPaymentDate);
+    }
+    const aligned = snapBeijingLateMonthReceivableBillDate(
+        coverageStart,
+        tentativeBillDate,
+        tenant.projectId,
+        tenant.leaseStart,
+        tenant.paymentCycle,
+    );
+    return aligned;
+};
+
 export function getReceivableMonthOffsetForTenant(
-    tenant: Pick<Tenant, 'projectId'>,
+    tenant: Pick<Tenant, 'projectId' | 'leaseStart'>,
 ): number {
+    if (usesSameMonthReceivableBillDate(tenant)) return 0;
     const projectId = (tenant.projectId || '').trim();
     if (projectId) {
         const fromConfig = getReceivableMonthOffsetForProject(projectId);
@@ -303,10 +328,62 @@ export const isRentFreeDate = (date: Date, rentFreePeriods: RentFreePeriod[]): b
 };
 
 /**
+ * Defer 模式：新账期锚点若落在某免租段开始前的「紧邻窗口」内，整段顺延至该免租段结束次日。
+ * 避免上期覆盖止于 2/11、免租 2/15 起算时，在 2/12 误开季付（覆盖期穿过免租段、应收落在 2 月）。
+ */
+export const DEFER_IMMINENT_RENT_FREE_GAP_DAYS = 31;
+
+export const snapDeferCycleCursorPastImminentRentFree = (
+    cursor: Date,
+    rentFreePeriods: RentFreePeriod[] | undefined,
+    leaseEnd: Date,
+): Date => {
+    const out = new Date(cursor.getFullYear(), cursor.getMonth(), cursor.getDate());
+    const periods = rentFreePeriods || [];
+    if (periods.length === 0) return out;
+
+    const advancePastEnd = (rf: RentFreePeriod) => {
+        const end = parseDateLocal(rf.end);
+        out.setTime(end.getTime());
+        out.setDate(out.getDate() + 1);
+    };
+
+    let guard = 0;
+    while (guard++ < periods.length * 2 + 4) {
+        if (out > leaseEnd) break;
+        let moved = false;
+
+        if (isRentFreeDate(out, periods)) {
+            for (const rf of periods) {
+                if (!isRentFreeDate(out, [rf])) continue;
+                advancePastEnd(rf);
+                moved = true;
+                break;
+            }
+        } else {
+            for (const rf of periods) {
+                const rfStart = parseDateLocal(rf.start);
+                const rfEnd = parseDateLocal(rf.end);
+                if (out > rfEnd) continue;
+                const gapDays = getDaysDiff(out, rfStart);
+                if (gapDays > 0 && gapDays <= DEFER_IMMINENT_RENT_FREE_GAP_DAYS) {
+                    advancePastEnd(rf);
+                    moved = true;
+                    break;
+                }
+            }
+        }
+
+        if (!moved) break;
+    }
+    return out;
+};
+
+/**
  * 计算合同月结束日：从 start 的 day-of-month 到次月同日-1天。
  * 若 anchorDay 在次月不存在（如31日在2月），回退到次月最后一天。
  */
-const getContractMonthEnd = (start: Date, anchorDay: number): Date => {
+export const getContractMonthEnd = (start: Date, anchorDay: number): Date => {
     const y = start.getFullYear();
     const m = start.getMonth();
     const next = new Date(y, m + 1, anchorDay);
@@ -316,6 +393,71 @@ const getContractMonthEnd = (start: Date, anchorDay: number): Date => {
     }
     next.setDate(next.getDate() - 1);
     return next;
+};
+
+/** 合同月当期最后一天（含）：起租日在 anchorDay，或账期从非 anchor 日开始的当月段 */
+export const contractMonthEndInclusive = (cursor: Date, anchorDay: number): Date => {
+    const y = cursor.getFullYear();
+    const m = cursor.getMonth();
+    if (cursor.getDate() === anchorDay) {
+        return getContractMonthEnd(cursor, anchorDay);
+    }
+    const lastDay = new Date(y, m + 1, 0).getDate();
+    const endDay = Math.min(anchorDay, lastDay) - 1;
+    if (endDay >= 1) {
+        return new Date(y, m, endDay);
+    }
+    return new Date(y, m, lastDay);
+};
+
+const previousContractPeriodStart = (periodStart: Date, anchorDay: number): Date => {
+    const dayBefore = new Date(periodStart.getFullYear(), periodStart.getMonth(), periodStart.getDate());
+    dayBefore.setDate(dayBefore.getDate() - 1);
+    const y = dayBefore.getFullYear();
+    const m = dayBefore.getMonth();
+    const lastDay = new Date(y, m + 1, 0).getDate();
+    const endDay = Math.min(anchorDay, lastDay) - 1;
+    if (dayBefore.getDate() === endDay) {
+        if (anchorDay > lastDay || endDay < anchorDay - 1) {
+            return new Date(y, m, 1);
+        }
+        return new Date(y, m, Math.min(anchorDay, lastDay));
+    }
+    if (dayBefore.getDate() === lastDay) {
+        return new Date(y, m, 1);
+    }
+    const pm = m === 0 ? 11 : m - 1;
+    const py = m === 0 ? y - 1 : y;
+    const lastPrev = new Date(py, pm + 1, 0).getDate();
+    return new Date(py, pm, Math.min(anchorDay, lastPrev));
+};
+
+/**
+ * 从 start 起按合同月（锚定起租日）推进 months，返回下一段账期的首日（exclusive end）。
+ * 与 Deduct 模式 coverageEnd = addContractMonths(start, n) - 1 天 配套使用。
+ */
+export const addContractMonths = (start: Date, months: number, anchorDay?: number): Date => {
+    const anchor = anchorDay ?? start.getDate();
+    let cursor = new Date(start.getFullYear(), start.getMonth(), start.getDate());
+    const wholeMonths = Math.trunc(months);
+    const fractionalMonths = months - wholeMonths;
+
+    if (wholeMonths > 0) {
+        for (let i = 0; i < wholeMonths; i++) {
+            const end = contractMonthEndInclusive(cursor, anchor);
+            cursor = new Date(end);
+            cursor.setDate(cursor.getDate() + 1);
+        }
+    } else if (wholeMonths < 0) {
+        for (let i = 0; i < -wholeMonths; i++) {
+            cursor = previousContractPeriodStart(cursor, anchor);
+        }
+    }
+
+    if (fractionalMonths !== 0) {
+        cursor.setDate(cursor.getDate() + Math.round(fractionalMonths * 30));
+    }
+    return cursor;
 };
 
 export const calculateRentForDuration = (start: Date, end: Date, monthlyRent: number): number => {
@@ -815,6 +957,8 @@ export const generateBudgetedBills = (
         if (fractionalMonths !== 0) next.setDate(next.getDate() + Math.round(fractionalMonths * 30));
         return next;
     };
+    /** 起租日在 29–31 日时 setMonth 会溢出，覆盖期须按合同月锚定 */
+    const useContractMonthCoverage = leaseStart.getDate() >= 29;
 
     const regularCycleMonths = resolveCycleMonths();
     const firstCycleMonths =
@@ -873,6 +1017,9 @@ export const generateBudgetedBills = (
                 const existing = billsByDate.get(key);
                 if (existing) {
                     existing.amount += bill.amount;
+                    if (bill.grossAmount != null) {
+                        existing.grossAmount = round2((existing.grossAmount ?? existing.amount) + bill.grossAmount);
+                    }
                     if (bill.coverageStart && existing.coverageStart) {
                         if (bill.coverageStart.getTime() < existing.coverageStart.getTime()) {
                             existing.coverageStart = new Date(bill.coverageStart);
@@ -935,15 +1082,26 @@ export const generateBudgetedBills = (
 
                 if (cursor > effectiveLeaseEnd) break;
 
-                // 2. Determine Bill Date：默认覆盖期前 1 个月（上海/北京），深圳改为覆盖期当月（receivableMonthOffset=0）。
+                // 紧邻免租段：勿在免租开始前数日开新账期（首期有自定义支付日时不改锚点）
+                if (!(isFirstCycle && tenant.firstPaymentDate)) {
+                    const snapped = snapDeferCycleCursorPastImminentRentFree(
+                        cursor,
+                        tenant.rentFreePeriods,
+                        effectiveLeaseEnd,
+                    );
+                    cursor.setTime(snapped.getTime());
+                }
+                if (cursor > effectiveLeaseEnd) break;
+
+                // 2. Determine Bill Date：默认覆盖期前 1 个月；深圳 / 北京 28–31 日起租为覆盖期当月（offset=0）。
+                const coverageStartDefer = new Date(cursor);
                 let billDate = addCalendarMonths(
                     new Date(cursor.getFullYear(), cursor.getMonth(), cursor.getDate()),
                     receivableMonthOffset,
                 );
-                
-                if (isFirstCycle && tenant.firstPaymentDate) {
-                    billDate = parseDateLocal(tenant.firstPaymentDate);
-                }
+                billDate = resolveReceivableBillDate(coverageStartDefer, billDate, tenant, {
+                    isFirstCycle,
+                });
 
                 // 3. Collect Billable Months
                 const targetVirtualMonths = isFirstCycle ? firstCycleMonths : regularCycleMonths;
@@ -1022,9 +1180,14 @@ export const generateBudgetedBills = (
             // 免租期从当期账单中扣除，收款时间不变但金额减少
             // Use local date for billing logic
             const leaseStartDay = new Date(leaseStart.getFullYear(), leaseStart.getMonth(), leaseStart.getDate());
-            let currentBillDate = tenant.firstPaymentDate
-                ? parseDateLocal(tenant.firstPaymentDate)
-                : addCalendarMonths(leaseStartDay, receivableMonthOffset);
+            let currentBillDate = resolveReceivableBillDate(
+                leaseStart,
+                tenant.firstPaymentDate
+                    ? parseDateLocal(tenant.firstPaymentDate)
+                    : addCalendarMonths(leaseStartDay, receivableMonthOffset),
+                tenant,
+                { isFirstCycle: true },
+            );
 
             let coverageStart = new Date(leaseStart);
             let isFirstCycle = true;
@@ -1037,7 +1200,9 @@ export const generateBudgetedBills = (
                 safetyCounter++;
 
                 const durationMonths = isFirstCycle ? firstCycleMonths : regularCycleMonths;
-                const coverageEnd = addCycleMonths(coverageStart, durationMonths);
+                const coverageEnd = useContractMonthCoverage
+                    ? addContractMonths(coverageStart, durationMonths, leaseStart.getDate())
+                    : addCycleMonths(coverageStart, durationMonths);
                 coverageEnd.setDate(coverageEnd.getDate() - 1);
                 
                 const effectiveCoverageEnd = coverageEnd > effectiveLeaseEnd ? effectiveLeaseEnd : coverageEnd;
@@ -1086,7 +1251,12 @@ export const generateBudgetedBills = (
                 }
 
                 let finalAmount = Math.max(0, grossAmount - deduction);
-                let finalBillDate = new Date(currentBillDate);
+                let finalBillDate = resolveReceivableBillDate(
+                    coverageStart,
+                    new Date(currentBillDate),
+                    tenant,
+                    { isFirstCycle },
+                );
 
                 // Assumption Payment Shift
                 if (existingAssumption?.paymentShift?.isActive) {
@@ -1127,9 +1297,14 @@ export const generateBudgetedBills = (
 
                 coverageStart = new Date(effectiveCoverageEnd);
                 coverageStart.setDate(coverageStart.getDate() + 1);
-                currentBillDate = addCalendarMonths(
-                    new Date(coverageStart.getFullYear(), coverageStart.getMonth(), coverageStart.getDate()),
-                    receivableMonthOffset,
+                currentBillDate = resolveReceivableBillDate(
+                    coverageStart,
+                    addCalendarMonths(
+                        new Date(coverageStart.getFullYear(), coverageStart.getMonth(), coverageStart.getDate()),
+                        receivableMonthOffset,
+                    ),
+                    tenant,
+                    { isFirstCycle: false },
                 );
                 
                 isFirstCycle = false;

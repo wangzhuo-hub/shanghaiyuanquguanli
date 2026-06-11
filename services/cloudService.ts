@@ -13,6 +13,11 @@ export type {
     IncrementalApplied,
     IncrementalError,
 } from './pocketbaseService';
+export {
+    formatIncrementalSaveDetails,
+    formatIncrementalSaveAlertTitle,
+} from './pocketbaseService';
+export type { IncrementalSaveDisplayOptions } from './pocketbaseService';
 
 /** 仅 PocketBase：前端直连本地/内网后端，无中间云端服务层 */
 const PLACEHOLDER_PASSWORD = 'your-secure-password';
@@ -51,6 +56,17 @@ export const logoutCloudUser = () => {
 
 export const getCurrentCloudUser = (): AuthUser | null => {
     return pocketbaseService.getCurrentAuthUser();
+};
+
+export const refreshCloudAuthRecord = async () => {
+    return pocketbaseService.refreshAuthRecord();
+};
+
+export const changeOwnCloudPassword = async (
+    oldPassword: string,
+    newPassword: string
+): Promise<{ success: boolean; user?: AuthUser; message: string }> => {
+    return pocketbaseService.changeOwnPassword(oldPassword, newPassword);
 };
 
 export const isCloudUserAuthenticated = (): boolean => {
@@ -152,10 +168,11 @@ export const getCloudHistory = async (
 
 export const fetchCloudBackup = async (
     config: CloudConfig,
-    backupId: string
+    backupId: string,
+    options?: { year?: number }
 ): Promise<{ success: boolean; data?: DashboardData; message: string; recordMeta?: RecordMeta }> => {
     void backupId;
-    return pocketbaseService.fetchPocketBaseBackup(config.projectId);
+    return pocketbaseService.fetchPocketBaseBackup(config.projectId, options);
 };
 
 /**

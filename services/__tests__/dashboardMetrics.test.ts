@@ -5,6 +5,7 @@ import {
     calculateDashboardMetrics,
     normalizeScenarioForReceivable,
     resolveAnnualInitialBudget,
+    normalizeYearlyTargetsFromInitialization,
 } from '../dashboardMetrics';
 import { writeImportedBudgetTable, type BudgetTableSnapshot } from '../budgetTableImport';
 import {
@@ -687,6 +688,20 @@ describe('resolveAnnualInitialBudget（与预算执行表合计 / KPI 同源）'
         expect(
             resolveAnnualInitialBudget({ 2026: { revenue: 0, occupancy: 0, initialBudget: 99_999_999 } }, init, 2026)
         ).toBe(21_710_000);
+    });
+
+    it('normalizeYearlyTargetsFromInitialization 清零 revenue 并同步 initialBudget', () => {
+        const init = [
+            { year: 2026, month: 1, revenueTarget: 0, revenueCollected: 0, occupancyRate: 0, initialBudget: 5_000_000 },
+        ];
+        const out = normalizeYearlyTargetsFromInitialization(
+            { 2026: { revenue: 75_301_299, occupancy: 55, initialBudget: 1 } },
+            init,
+            'beijing_park'
+        );
+        expect(out![2026].revenue).toBe(0);
+        expect(out![2026].initialBudget).toBe(5_000_000);
+        expect(out![2026].occupancy).toBe(55);
     });
 
     it('buildKpiSummaryFromProcessedData 使用该口径', () => {

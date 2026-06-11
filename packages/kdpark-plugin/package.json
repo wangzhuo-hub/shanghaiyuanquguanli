@@ -12,7 +12,7 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.1",
-    "pocketbase": "^0.21.0",
+    "pocketbase": "^0.23.0",
     "zod": "^3.24.2"
   },
   "devDependencies": {

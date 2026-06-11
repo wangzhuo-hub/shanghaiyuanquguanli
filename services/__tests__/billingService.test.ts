@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   computeEarlyTerminationFreeRentClawbackAmount,
   generateBudgetedBills,
+  getReceivableMonthOffsetForTenant,
   resolveRentUnitPriceForDisplay,
 } from '../billingService';
 import { ContractStatus, DepositStatus, Tenant } from '../../types';
@@ -81,6 +82,80 @@ describe('generateBudgetedBills payment cycles', () => {
     ]);
   });
 
+  it('uses same-month bill dates for Beijing leases starting on 28-31 (合同约定当月收款)', () => {
+    expect(
+      getReceivableMonthOffsetForTenant({
+        projectId: 'beijing_park',
+        leaseStart: '2025-12-31',
+      }),
+    ).toBe(0);
+    expect(
+      getReceivableMonthOffsetForTenant({
+        projectId: 'beijing_park',
+        leaseStart: '2025-12-15',
+      }),
+    ).toBe(-1);
+
+    const bills = generateBudgetedBills(
+      tenant({
+        projectId: 'beijing_park',
+        leaseStart: '2025-12-31',
+        leaseEnd: '2028-12-30',
+        paymentCycle: 'Quarterly',
+        paymentCycleMonths: 3,
+        firstPaymentMonths: 3,
+        firstPaymentDate: '2025-12-31',
+        monthlyRent: 9818.5,
+      }),
+      [],
+      [],
+      new Date(2025, 0, 1),
+      new Date(2029, 11, 31),
+    );
+
+    expect(bills.map((bill) => formatLocalDate(bill.date))).toEqual([
+      '2025-12-31',
+      '2026-04-01',
+      '2026-07-01',
+      '2026-10-01',
+      '2027-01-01',
+      '2027-04-01',
+      '2027-07-01',
+      '2027-10-01',
+      '2028-01-01',
+      '2028-04-01',
+      '2028-07-01',
+      '2028-10-01',
+    ]);
+  });
+
+  it('generates coverage periods for lease starting on the 31st (我家云口径)', () => {
+    const bills = generateBudgetedBills(
+      tenant({
+        leaseStart: '2023-08-31',
+        leaseEnd: '2024-08-30',
+        paymentCycle: 'Custom',
+        paymentCycleMonths: 4,
+        firstPaymentMonths: 4,
+        firstPaymentDate: '2023-08-31',
+        monthlyRent: 10000,
+      }),
+      [],
+      [],
+      new Date(2023, 0, 1),
+      new Date(2025, 11, 31),
+    );
+
+    expect(bills.map((bill) => [
+      formatLocalDate(bill.coverageStart),
+      formatLocalDate(bill.coverageEnd),
+    ])).toEqual([
+      ['2023-08-31', '2023-12-30'],
+      ['2023-12-31', '2024-04-30'],
+      ['2024-05-01', '2024-08-30'],
+    ]);
+  });
+
   it('generates custom 1.5 month bills', () => {
     const bills = generateBudgetedBills(
       tenant({ leaseEnd: '2026-03-31', paymentCycle: 'Custom', paymentCycleMonths: 1.5, firstPaymentMonths: 1.5 }),
@@ -114,6 +189,7 @@ describe('generateBudgetedBills payment cycles', () => {
 
     expect(bills).toHaveLength(1);
     expect(bills[0].amount).toBe(120000);
+    expect(bills[0].grossAmount).toBe(135000);
   });
 
   it('applies contract-level rent-free when using unitTerms (merged with unit rows)', () => {
@@ -139,6 +215,7 @@ describe('generateBudgetedBills payment cycles', () => {
 
     expect(bills).toHaveLength(1);
     expect(bills[0].amount).toBe(90000);
+    expect(bills[0].grossAmount).toBe(135000);
   });
 
   it('applies firstReceivableAmount after merging unitTerms bills', () => {
@@ -208,6 +285,37 @@ describe('generateBudgetedBills payment cycles', () => {
     expect(amountForCoverageMonth(2026, 6)).toBeUndefined();
     expect(amountForCoverageMonth(2026, 7)).toBeUndefined();
     expect(amountForCoverageMonth(2026, 8)).toBe(42775);
+  });
+
+  it('Defer: snaps cycle anchor past imminent rent-free so post-free bill lands in expected month', () => {
+    const monthlyRent = 84903;
+    const bills = generateBudgetedBills(
+      tenant({
+        projectId: 'shanghai_park',
+        leaseStart: '2025-11-15',
+        leaseEnd: '2028-11-14',
+        firstPaymentDate: '2025-11-01',
+        firstPaymentMonths: 3,
+        paymentCycle: 'Quarterly',
+        paymentCycleMonths: 3,
+        paymentPeriodShiftMonths: 1,
+        freeRentHandling: 'Defer',
+        monthlyRent,
+        rentFreePeriods: [{ start: '2026-02-15', end: '2026-05-14', description: 'Y2免租' }],
+      }),
+      [],
+      [],
+      new Date(2025, 0, 1),
+      new Date(2027, 11, 31),
+    );
+
+    const in2026 = bills.filter((b) => b.date.getFullYear() === 2026);
+    expect(in2026).toHaveLength(3);
+    expect(bills.some((b) => b.date.getFullYear() === 2026 && b.date.getMonth() === 1)).toBe(false);
+    expect(formatLocalDate(in2026[0].coverageStart)).toBe('2026-05-15');
+    expect(in2026[0].date.getMonth()).toBe(4);
+    expect(in2026[0].amount).toBe(monthlyRent * 3);
+    expect(in2026.every((b) => b.amount === monthlyRent * 3)).toBe(true);
   });
 
   it('deducts rent-free periods by whole monthly rent for anniversary-month ranges', () => {

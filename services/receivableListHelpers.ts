@@ -6,6 +6,42 @@ import { roundMoney2 } from './numberFormat';
 /** 与 App.tsx / dashboardMetrics 缓缴 JSON 存储键前缀一致 */
 export const DEFER_BILLING_NOTE_PREFIX = '__defer__';
 
+/** 收款核销尾差容差（元）：待收余额在此范围内视为已结清 */
+export const RECEIVABLE_TAIL_TOLERANCE = 1;
+
+/** 将待收余额按尾差容差归零（≤1 元视为 0） */
+export function normalizeReceivableRemaining(rawRemaining: number): number {
+    const remaining = roundMoney2(rawRemaining);
+    return remaining <= RECEIVABLE_TAIL_TOLERANCE ? 0 : remaining;
+}
+
+/** 应收是否已在尾差容差内结清 */
+export function isReceivableTailSettled(amountDue: number, effectivePaid: number): boolean {
+    if (amountDue <= 0.005) return false;
+    return normalizeReceivableRemaining(amountDue - effectivePaid) <= 0;
+}
+
+/** 本次实收是否可核销：允许分次收款；仅限制超额收款不超过尾差容差 */
+export function isCollectAmountAcceptable(remaining: number, amount: number): boolean {
+    if (!Number.isFinite(amount) || amount <= 0) return false;
+    return amount <= remaining + RECEIVABLE_TAIL_TOLERANCE + 0.005;
+}
+
+/** 尾差自动核销金额（实收少于待收且在容差内时返回差额，否则 0） */
+export function receivableTailWaivedAmount(remaining: number, collectedAmount: number): number {
+    const shortfall = roundMoney2(remaining - collectedAmount);
+    if (shortfall > 0.005 && shortfall <= RECEIVABLE_TAIL_TOLERANCE) return shortfall;
+    return 0;
+}
+
+/** 统一账单状态：含 ≤1 元尾差自动视为 Paid */
+export function billingStatusFromAmounts(amountDue: number, amountPaid: number): BillingDetail['status'] {
+    if (amountDue === 0 && amountPaid > 0) return 'Paid';
+    if (amountDue > 0.005 && isReceivableTailSettled(amountDue, amountPaid)) return 'Paid';
+    if (amountPaid > 0 && amountPaid < amountDue) return 'Partial';
+    return 'Unpaid';
+}
+
 /**
  * 识别「应收核销」内单笔收款 / 批量核销生成的流水，便于一键撤回时不误删「收款明细」手工记账。
  * - id 含 `_col_`（Collect modal / batch）
@@ -395,10 +431,7 @@ function splitPeriodRentPaidForDeferInRows(base: BillingDetail, deferRows: Billi
 }
 
 function billingDetailStatusFromPaid(amountDue: number, amountPaid: number): BillingDetail['status'] {
-    if (amountPaid >= amountDue && amountDue > 0) return 'Paid';
-    if (amountPaid > 0 && amountPaid < amountDue) return 'Partial';
-    if (amountDue === 0 && amountPaid > 0) return 'Paid';
-    return 'Unpaid';
+    return billingStatusFromAmounts(amountDue, amountPaid);
 }
 
 /**
@@ -667,7 +700,7 @@ export function classifyReceivableRow(
     if ((d.deferredAmount ?? 0) > 0.005 && !!(d.deferredToPeriod && String(d.deferredToPeriod).trim())) {
         return 'deferred';
     }
-    const remaining = d.amountDue - d.amountPaid;
+    const remaining = normalizeReceivableRemaining(d.amountDue - d.amountPaid);
     if (d.status === 'Unpaid' || d.status === 'Partial' || d.status === 'Overdue' || remaining > 0) {
         return 'unsettled';
     }

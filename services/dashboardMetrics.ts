@@ -22,9 +22,11 @@ import {
     tenantImportedBudgetRowKey,
 } from './budgetTableImport';
 import { resolveInitMonthInitialBudget, resolveInitMonthRevenueTarget } from './initDataBudget';
+import { isNewSigningInYear, listNewSigningsInYear } from './newSigningMetrics';
 import { toFixedNumber, roundMoney2 } from './numberFormat';
 import {
     applyBillingPeriodDeferNotes,
+    billingStatusFromAmounts,
     parseSpecialBusinessReceivablesFromNotes,
     receivableBudgetMonthForBill,
     specialBusinessArDisplayTenantId,
@@ -33,6 +35,7 @@ import {
 } from './receivableListHelpers';
 import { generateManagementFeeBills, shouldGenerateManagementFeeBills } from './managementFeeBillingService';
 import { isManagementFeeBillingEnabled } from './parkBillingConfig';
+import { computeParkAreaMetrics } from './parkAreaMetrics';
 
 export type DashboardQuarter = 'All' | 'Q1' | 'Q2' | 'Q3' | 'Q4';
 
@@ -47,9 +50,13 @@ export type DashboardMetricOptions = {
     billingSelectedMonth: string;
     /** 轻量模式：跳过欠款循环、趋势计算等重运算（非仪表盘页面使用） */
     quickMode?: boolean;
+    /** 工作台首屏可跳过账单明细，等表格展开后再按需计算 */
+    includeCurrentMonthBilling?: boolean;
 };
 
 export const RECEIVABLE_DEDICATED_SCENARIO_ID_PREFIX = 'invoice_dedicated_';
+
+type ContractReceivableResult = { totalAmountDue: number; byTenantId: Map<string, number> };
 
 type BillingCache = {
     buildingById: Map<string, Building>;
@@ -61,6 +68,8 @@ type BillingCache = {
     detailsByKey: Map<string, BillingDetail[]>;
     contextSeq: WeakMap<object, number>;
     nextContextId: number;
+    /** buildContractOnlyReceivableForPeriod 结果缓存，按 BillingCache 实例隔离 */
+    contractReceivableByKey: Map<string, ContractReceivableResult>;
 };
 
 const createBillingCache = (
@@ -98,6 +107,7 @@ const createBillingCache = (
         detailsByKey: new Map(),
         contextSeq: new WeakMap(),
         nextContextId: 1,
+        contractReceivableByKey: new Map(),
     };
 };
 
@@ -368,10 +378,14 @@ export const syncInvoiceDedicatedSnapshotsFromLive = (
     if (!scenarios?.length || !liveTenants.length) return scenarios || [];
     return scenarios.map((s) => {
         if (!isReceivableDedicatedScenarioId(s.id)) return s;
+        const tenantsForSnapshot = liveTenants.map((t) => {
+            const { keyMoments, nameHistory, paymentCycleChanges, ...core } = t;
+            return core;
+        });
         return {
             ...s,
             baseDataSnapshot: {
-                tenants: structuredClone(liveTenants),
+                tenants: tenantsForSnapshot,
                 buildings: structuredClone(liveBuildings),
             },
         };
@@ -390,13 +404,6 @@ export const normalizeScenarioForReceivable = (
         fallbackBuildings,
     );
     return normalizeReceivableScenarioByYear(syncedDedicated);
-};
-
-const billingStatusFromAmounts = (amountDue: number, amountPaid: number): BillingDetail['status'] => {
-    if (amountPaid >= amountDue && amountDue > 0) return 'Paid';
-    if (amountPaid > 0 && amountPaid < amountDue) return 'Partial';
-    if (amountDue === 0 && amountPaid > 0) return 'Paid';
-    return 'Unpaid';
 };
 
 const applyImportedBudgetRowsToBillingDetails = (
@@ -630,10 +637,7 @@ const getBillingDetailsForPeriodInternal = (
         }
 
         if (amountDue > 0 || amountPaid > 0) {
-            let status: BillingDetail['status'] = 'Unpaid';
-            if (amountPaid >= amountDue && amountDue > 0) status = 'Paid';
-            else if (amountPaid > 0 && amountPaid < amountDue) status = 'Partial';
-            else if (amountDue === 0 && amountPaid > 0) status = 'Paid';
+            const status = billingStatusFromAmounts(amountDue, amountPaid);
             const earlyTerminationBreakdown = earlyTerminationBreakdownInPeriod(tenant, year, month);
             details.push({
                 tenantId: tenant.id,
@@ -660,10 +664,7 @@ const getBillingDetailsForPeriodInternal = (
                 if (mgmtDue <= 0.005 && mgmtPaid <= 0.005) {
                     /* skip */
                 } else {
-                    let mgmtStatus: BillingDetail['status'] = 'Unpaid';
-                    if (mgmtPaid >= mgmtDue && mgmtDue > 0) mgmtStatus = 'Paid';
-                    else if (mgmtPaid > 0 && mgmtPaid < mgmtDue) mgmtStatus = 'Partial';
-                    else if (mgmtDue === 0 && mgmtPaid > 0) mgmtStatus = 'Paid';
+                    const mgmtStatus = billingStatusFromAmounts(mgmtDue, mgmtPaid);
                     details.push({
                         tenantId: tenant.id,
                         tenantName: tenant.name,
@@ -676,10 +677,7 @@ const getBillingDetailsForPeriodInternal = (
                     });
                 }
             } else if (mgmtDue > 0 || mgmtPaid > 0) {
-                let mgmtStatus: BillingDetail['status'] = 'Unpaid';
-                if (mgmtPaid >= mgmtDue && mgmtDue > 0) mgmtStatus = 'Paid';
-                else if (mgmtPaid > 0 && mgmtPaid < mgmtDue) mgmtStatus = 'Partial';
-                else if (mgmtDue === 0 && mgmtPaid > 0) mgmtStatus = 'Paid';
+                const mgmtStatus = billingStatusFromAmounts(mgmtDue, mgmtPaid);
                 details.push({
                     tenantId: tenant.id,
                     tenantName: tenant.name,
@@ -905,11 +903,15 @@ export const buildContractOnlyReceivableForPeriod = (
         ctx.budgetAssumptions,
         ctx.budgetAdjustments,
     );
+    // 检查结果缓存（BillingCache 实例级隔离，不同调用方不串号）
+    const contextKey = `cr|${getContextId(localCache, receivableCtx.assumptions)}|${getContextId(localCache, receivableCtx.adjustments)}`;
+    const cacheKey = `${year}|${month}`;
+    const cached = localCache.contractReceivableByKey.get(cacheKey);
+    if (cached) return cached;
+
     const selfUseUnitIds = new Set<string>();
     (receivableCtx.buildings || []).forEach((b) => b.units.forEach((u) => u.isSelfUse && selfUseUnitIds.add(u.id)));
     const mergedForContractOnly = mergeTenantsForReceivablePeriod(year, month, ctx.tenants, receivableCtx.tenants || []);
-    // 与 buildBillingDetailsForPeriod 第一步共用 contextKey，便于命中同一套 getBillingDetailsForPeriodInternal 缓存。
-    const contextKey = `receivable|${getContextId(localCache, receivableCtx.assumptions)}|${getContextId(localCache, receivableCtx.adjustments)}`;
     const details = getBillingDetailsForPeriodInternal(
         year,
         month,
@@ -929,7 +931,9 @@ export const buildContractOnlyReceivableForPeriod = (
         byTenantId.set(d.tenantId, roundMoney2(d.amountDue));
         totalAmountDue += d.amountDue;
     }
-    return { totalAmountDue: roundMoney2(totalAmountDue), byTenantId };
+    const result: ContractReceivableResult = { totalAmountDue: roundMoney2(totalAmountDue), byTenantId };
+    localCache.contractReceivableByKey.set(cacheKey, result);
+    return result;
 };
 
 /** 物业费「合同应收」单月汇总（与财务报表物业费应收口径一致） */
@@ -1020,10 +1024,7 @@ const applySpecialBusinessReceivables = (
                 .filter((p) => (p.type === 'Rent' || p.type === 'DepositToRent') && matchesTenant(p.tenantId) && matchesPeriod(p))
                 .reduce((sum, p) => sum + (p.amount || 0), 0)
         );
-        let status: BillingDetail['status'] = 'Unpaid';
-        if (amountPaid >= amountDue && amountDue > 0) status = 'Paid';
-        else if (amountPaid > 0 && amountPaid < amountDue) status = 'Partial';
-        else if (amountDue === 0 && amountPaid > 0) status = 'Paid';
+        const status = billingStatusFromAmounts(amountDue, amountPaid);
 
         out.push({
             tenantId: displayTenantId,
@@ -1036,6 +1037,21 @@ const applySpecialBusinessReceivables = (
         });
     }
     return out;
+};
+
+/** 从全年趋势中按季度切片（避免重复计算 calculateTrends） */
+const sliceQuarterFromFullYear = (
+    fullYearTrends: MonthlyTrend[],
+    year: number,
+    quarter: DashboardQuarter,
+): MonthlyTrend[] => {
+    if (quarter === 'All') return fullYearTrends;
+    const startMonth = quarter === 'Q1' ? 0 : quarter === 'Q2' ? 3 : quarter === 'Q3' ? 6 : 9;
+    const months = [startMonth + 1, startMonth + 2, startMonth + 3];
+    return fullYearTrends.filter(t => {
+        const parts = t.month.split('-');
+        return parts.length === 2 && parseInt(parts[0], 10) === year && months.includes(parseInt(parts[1], 10));
+    });
 };
 
 const calculateTrends = (
@@ -1107,7 +1123,7 @@ const calculateTrends = (
             if (achievedDate <= endDate && effectiveEnd > endDate) leasedAreaInMonth += tenant.totalArea;
 
             const physicalLeaseStart = parseDateLocal(tenant.leaseStart);
-            if (physicalLeaseStart <= endDate && effectiveEnd >= startDate) {
+            if (!tenant.isSpecialBusiness && physicalLeaseStart <= endDate && effectiveEnd >= startDate) {
                 // 统一转为天单价用于均价展示
                 let price = tenant.unitPrice;
                 if (price && tenant.unitPriceMode === 'monthly') {
@@ -1215,7 +1231,13 @@ export const calculateDashboardMetrics = (
     currentData: DashboardData,
     options: DashboardMetricOptions
 ): DashboardMetricResult => {
-    const { year, quarter, billingSelectedMonth, quickMode = false } = options;
+    const {
+        year,
+        quarter,
+        billingSelectedMonth,
+        quickMode = false,
+        includeCurrentMonthBilling = true,
+    } = options;
     const tenants = currentData.tenants || [];
     const projectId = tenants[0]?.projectId || '';
     const buildings = currentData.buildings || [];
@@ -1340,24 +1362,11 @@ export const calculateDashboardMetrics = (
         contractReceivableCtxForYear,
         projectId,
     );
-    const monthlyTrends = quickMode ? [] : calculateTrends(
-        tenants,
-        virtualTenants,
-        payments,
-        totalLeasableArea,
-        selfUseUnitIds,
-        year,
-        quarter,
-        workingAssumptions,
-        workingAdjustments,
-        initData,
-        buildings,
-        budgetContextForYear,
-        cache,
-        currentData.billingPeriodNotes,
-        contractReceivableCtxForYear,
-        projectId,
-    );
+    const monthlyTrends = quickMode
+        ? []
+        : quarter === 'All'
+          ? fullYearMonthlyTrends
+          : sliceQuarterFromFullYear(fullYearMonthlyTrends, year, quarter);
     const prevYearMonthlyTrends = quickMode ? [] : calculateTrends(
         tenants,
         virtualTenants,
@@ -1389,23 +1398,8 @@ export const calculateDashboardMetrics = (
     const monthlyRevenueCollected = annualRevenueCollected;
 
     const now = new Date();
-    let snapshotTotalLeasable = 0;
-    let snapshotLeased = 0;
-    syncedBuildings.forEach((building) => {
-        if (building.type === 'Site') return;
-        building.units.forEach((unit) => {
-            if (!unit.isSelfUse) snapshotTotalLeasable += unit.area;
-        });
-    });
-    tenants.forEach((tenant) => {
-        if (tenant.status === 'Expired') return;
-        const building = cache.buildingById.get(tenant.buildingId);
-        if (building && building.type === 'Site') return;
-        const achievedDate = tenant.signingDate ? parseDateLocal(tenant.signingDate) : parseDateLocal(tenant.leaseStart);
-        const terminated = tenant.terminationDate ? parseDateLocal(tenant.terminationDate) : null;
-        if (achievedDate <= now && (!terminated || terminated > now)) snapshotLeased += tenant.totalArea;
-    });
-    const realTimeOccupancyRate = snapshotTotalLeasable > 0 ? toFixedNumber((snapshotLeased / snapshotTotalLeasable) * 100) : 0;
+    const currentAreaMetrics = computeParkAreaMetrics(syncedBuildings, tenants, { referenceDate: now });
+    const realTimeOccupancyRate = currentAreaMetrics.occupancyRate;
     const collectionRate = annualRevenueTarget > 0 ? Math.min(100, toFixedNumber((annualRevenueCollected / annualRevenueTarget) * 100)) : 0;
 
     const initDecEntries = initData
@@ -1444,16 +1438,7 @@ export const calculateDashboardMetrics = (
     }
     } // end if (!quickMode)
 
-    let leasedArea = 0;
-    tenants.forEach((tenant) => {
-        const building = cache.buildingById.get(tenant.buildingId);
-        if (building && building.type === 'Site') return;
-        const isSelfUse = tenant.unitIds.some((uid) => selfUseUnitIds.has(uid));
-        if (isSelfUse) return;
-        const achievedDate = tenant.signingDate ? parseDateLocal(tenant.signingDate) : parseDateLocal(tenant.leaseStart);
-        const terminated = tenant.terminationDate ? parseDateLocal(tenant.terminationDate) : null;
-        if (achievedDate <= periodEnd && (!terminated || terminated > periodEnd)) leasedArea += tenant.totalArea;
-    });
+    const leasedArea = currentAreaMetrics.leasedArea;
 
     const recentSigningsWindowEnd = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999);
     const recentSigningsWindowStart = new Date(now);
@@ -1477,15 +1462,13 @@ export const calculateDashboardMetrics = (
     });
 
     const newSigningsInMonth = tenants.filter(
-        (tenant) => tenant.status !== 'Expired' && tenant.status !== 'Terminated' && tenant.signingDate && tenant.signingDate.startsWith(billingSelectedMonth)
+        (tenant) =>
+            tenant.signingDate &&
+            tenant.signingDate.startsWith(billingSelectedMonth) &&
+            isNewSigningInYear(tenant, year, now),
     );
     const newContractsCount = newSigningsInMonth.length;
-    const newSigningsInYear = tenants.filter((tenant) => {
-        const signStr = tenant.signingDate || tenant.leaseStart;
-        if (!signStr) return false;
-        const signDate = parseDateLocal(signStr);
-        return !Number.isNaN(signDate.getTime()) && signDate.getFullYear() === year;
-    });
+    const newSigningsInYear = listNewSigningsInYear(tenants, year, now);
     const newContractsArea = newSigningsInYear.reduce((sum, tenant) => sum + (tenant.totalArea || 0), 0);
     const terminatedInMonth = tenants.filter(
         (tenant) => tenant.status === ContractStatus.Terminated && tenant.terminationDate && tenant.terminationDate.startsWith(billingSelectedMonth)
@@ -1511,7 +1494,8 @@ export const calculateDashboardMetrics = (
         }
     }
 
-    const currentMonthBilling = quickMode ? [] : buildBillingDetailsForPeriod(billingYear, billingMonth, {
+    const shouldBuildCurrentMonthBilling = !quickMode && includeCurrentMonthBilling;
+    const currentMonthBilling = shouldBuildCurrentMonthBilling ? buildBillingDetailsForPeriod(billingYear, billingMonth, {
         ...currentData,
         buildings: syncedBuildings,
         tenants,
@@ -1519,7 +1503,7 @@ export const calculateDashboardMetrics = (
         budgetAssumptions: workingAssumptions,
         budgetAdjustments: workingAdjustments,
         budgetScenarios: normalizedScenarios,
-    }, cache);
+    }, cache) : [];
 
     const parkingRevenueInPeriod = payments
         .filter((p) => {
@@ -1553,15 +1537,31 @@ export const calculateDashboardMetrics = (
     const resolvedAccumulatedArrears = quickMode ? (currentData.accumulatedArrears ?? 0) : accumulatedArrears;
     const resolvedCurrentMonthBilling = quickMode ? (currentData.currentMonthBilling ?? []) : currentMonthBilling;
 
+    const annualInitialBudgetResolved = resolveAnnualInitialBudget(
+        yearlyTargetsMap,
+        initData,
+        year,
+        projectId
+    );
+    /** 年初目标：优先初始化数据合计；废弃 pb_yearly_targets.revenue 手工/导入脏值 */
+    const annualRevenueTargetResolved =
+        annualInitialBudgetResolved > 0 ? annualInitialBudgetResolved : yearTargets.revenue || 0;
+
     const processedData: DashboardData = {
         ...currentData,
         buildings: syncedBuildings,
         tenants,
         payments,
-        totalArea: totalLeasableArea,
+        totalArea: currentAreaMetrics.leasableArea,
         leasedArea,
         occupancyRate: realTimeOccupancyRate,
-        annualRevenueTarget: yearTargets.revenue,
+        campusTotalArea: currentAreaMetrics.campusTotalArea,
+        selfUseArea: currentAreaMetrics.selfUseArea,
+        vacantArea: currentAreaMetrics.vacantArea,
+        leasableUnits: currentAreaMetrics.leasableUnits,
+        leasedUnits: currentAreaMetrics.leasedUnits,
+        vacantUnits: currentAreaMetrics.vacantUnits,
+        annualRevenueTarget: annualRevenueTargetResolved,
         annualOccupancyTarget: yearTargets.occupancy,
         annualRevenueCollected,
         annualManagementFeeCollected: annualManagementFeeCollected > 0.005 ? annualManagementFeeCollected : undefined,
@@ -1628,6 +1628,32 @@ export const resolveAnnualInitialBudget = (
 };
 
 /**
+ * 将 yearlyTargets 与初始化数据对齐：年初目标取自 initializationData，`revenue` 清零（历史手工/预算方案导入脏值）。
+ */
+export const normalizeYearlyTargetsFromInitialization = (
+    yearlyTargets: DashboardData['yearlyTargets'],
+    initializationData: MonthlyInitData[] | undefined,
+    projectId?: string
+): DashboardData['yearlyTargets'] => {
+    const out: NonNullable<DashboardData['yearlyTargets']> = { ...(yearlyTargets || {}) };
+    const years = new Set<number>([
+        ...Object.keys(out).map((y) => Number(y)),
+        ...(initializationData || []).map((d) => d.year),
+    ]);
+    for (const year of years) {
+        if (!Number.isFinite(year)) continue;
+        const existing = out[year] || { revenue: 0, occupancy: 0, initialBudget: 0 };
+        const initial = resolveAnnualInitialBudget(out, initializationData, year, projectId);
+        out[year] = {
+            ...existing,
+            revenue: 0,
+            initialBudget: initial > 0 ? initial : existing.initialBudget || 0,
+        };
+    }
+    return out;
+};
+
+/**
  * KPI 汇总：`annualRevenueTarget` 在仪表盘主流程里来自 yearlyTargets（手工年度指标），
  * `monthlyTrends` 汇总则是预算引擎滚动的应收目标。若未维护年度指标但月度预算存在，
  * 管理员「所有园区经营汇总」会出现财务列为 0、预算分母却含该园区的不一致。
@@ -1640,9 +1666,6 @@ export const buildKpiSummaryFromProcessedData = (processedData: DashboardData, s
     const annualBudgetTarget = trends.reduce((sum, trend) => sum + (trend.revenueTarget || 0), 0);
     // 实际合同应收 = 仅真实履约合同滚动汇总（与预算表「全年合同应收」、工作台「合同应收」列同口径）
     const annualContractReceivable = trends.reduce((sum, trend) => sum + (trend.contractReceivable || 0), 0);
-    const annualRevenueTarget = annualBudgetTarget > 0
-        ? annualBudgetTarget
-        : (processedData.annualRevenueTarget || processedData.monthlyRevenueTarget || 0);
     const annualRevenueCollected = processedData.annualRevenueCollected || 0;
     const year = statsYear || new Date().getFullYear();
     const annualInitialBudget = resolveAnnualInitialBudget(
@@ -1651,6 +1674,12 @@ export const buildKpiSummaryFromProcessedData = (processedData: DashboardData, s
         year,
         processedData.tenants?.[0]?.projectId
     );
+    const annualRevenueTarget =
+        annualInitialBudget > 0
+            ? annualInitialBudget
+            : annualBudgetTarget > 0
+              ? annualBudgetTarget
+              : processedData.annualRevenueTarget || processedData.monthlyRevenueTarget || 0;
     /** 与管理员汇总顶栏「完成率（实收/合同应收）」一致；无合同应收分母时回退为实收/年度应收目标 */
     const annualGoalCompletion =
         annualContractReceivable > 0.005
@@ -1674,6 +1703,9 @@ export const buildKpiSummaryFromProcessedData = (processedData: DashboardData, s
         annualOccupancyTarget: processedData.annualOccupancyTarget || 0,
         tenantCount: processedData.tenants?.length || 0,
         totalArea: processedData.totalArea || 0,
+        leasedArea: processedData.leasedArea || 0,
+        vacantArea: processedData.vacantArea || 0,
+        accumulatedArrears: processedData.accumulatedArrears || 0,
     };
 };
 
@@ -1687,12 +1719,13 @@ export const normalizeKpiSummaryWithMonthlyTrends = (
     const contractSumFromTrends = (monthlyTrends || []).reduce((sum, t) => sum + (t.contractReceivable || 0), 0);
     const annualContractReceivableResolved =
         contractSumFromTrends > 0 ? contractSumFromTrends : summary.annualContractReceivable || 0;
-    // 年度应收目标：保留快照中原有的值（可能是人工设定的 yearlyTargets），
-    // 仅在原有值为 0/空时回退到预算滚动的月度汇总。
-    const existingTarget = summary.annualRevenueTarget;
-    const annualRevenueTarget = (existingTarget != null && existingTarget > 0)
-        ? existingTarget
-        : annualBudgetTarget;
+    const annualInitialFromSummary = summary.annualInitialBudget || 0;
+    const annualRevenueTarget =
+        annualInitialFromSummary > 0
+            ? annualInitialFromSummary
+            : annualBudgetTarget > 0
+              ? annualBudgetTarget
+              : summary.annualRevenueTarget || 0;
     const collected = summary.annualRevenueCollected || 0;
     const revenueTargetDenom = annualRevenueTarget;
 

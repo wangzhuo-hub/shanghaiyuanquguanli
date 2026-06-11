@@ -31,10 +31,40 @@ export type RecordMeta = Record<string, Record<string, string>>;
 /** PocketBase 记录通用字段 */
 type PbRecord = { id: string; created?: string; updated?: string; [key: string]: unknown };
 
-/** 从 unknown 错误对象安全提取消息 */
+/** 从 unknown 错误对象安全提取消息（含 PocketBase 字段级校验） */
 const errMsg = (e: unknown): string => {
-    const err = e as { data?: { message?: string }; response?: { message?: string }; message?: string; status?: number };
-    return String(err?.data?.message || err?.response?.message || err?.message || '');
+    const err = e as {
+        data?: { message?: string; data?: Record<string, unknown> };
+        response?: { message?: string; data?: Record<string, unknown> };
+        message?: string;
+        status?: number;
+    };
+    const fieldBag = err?.response?.data ?? err?.data?.data ?? err?.data;
+    if (fieldBag && typeof fieldBag === 'object' && !Array.isArray(fieldBag)) {
+        const parts: string[] = [];
+        for (const [field, val] of Object.entries(fieldBag)) {
+            if (field === 'message' || field === 'data' || field === 'status') continue;
+            if (val && typeof val === 'object' && 'message' in val) {
+                const msg = String((val as { message?: string }).message || '').trim();
+                if (msg) parts.push(`${field}: ${msg}`);
+            } else if (typeof val === 'string' && val.trim()) {
+                parts.push(`${field}: ${val.trim()}`);
+            }
+        }
+        if (parts.length > 0) return parts.join('；');
+    }
+    const generic = String(err?.response?.message || err?.data?.message || err?.message || '').trim();
+    const status = err?.status ?? (err?.response as { status?: number } | undefined)?.status;
+    if (
+        generic === 'Something went wrong while processing your request.' ||
+        generic === 'Failed to create record.' ||
+        generic === 'Failed to update record.'
+    ) {
+        return status
+            ? `${generic.replace(/\.$/, '')}（HTTP ${status}）`
+            : generic;
+    }
+    return generic;
 };
 
 /** 从 unknown 错误对象安全提取 HTTP 状态码 */
@@ -43,20 +73,83 @@ const errStatus = (e: unknown): number | undefined => {
     return err?.status ?? err?.response?.status;
 };
 
+/** create 时 original_id 已存在（常见于基线未刷新后重复保存） */
+const isDuplicateKeyError = (e: unknown): boolean => {
+    const msg = errMsg(e).toLowerCase();
+    return msg.includes('unique') || msg.includes('not_unique');
+};
+
+const isGenericPbProcessingError = (e: unknown): boolean => {
+    const msg = errMsg(e);
+    return (
+        msg.includes('Something went wrong while processing your request') ||
+        msg.includes('Failed to update record') ||
+        msg.includes('Failed to create record')
+    );
+};
+
+/** 生产库未跑 migration 时，写入未知字段会触发 PB 泛化错误 */
+const stripTenantFieldsPendingMigration = (
+    fields: Record<string, unknown>,
+): Record<string, unknown> => {
+    if (!('source_agent_name' in fields)) return fields;
+    const next = { ...fields };
+    delete next.source_agent_name;
+    return next;
+};
+
+const jsonSafeClone = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
+
+const applyPbRecordUpdate = async (
+    client: PocketBase,
+    collection: string,
+    recordId: string,
+    fields: Record<string, unknown>,
+): Promise<PbRecord> => {
+    let payload = fields;
+    if (collection === 'pb_tenants') {
+        try {
+            return (await client.collection(collection).update(recordId, payload)) as PbRecord;
+        } catch (e: unknown) {
+            if (!isGenericPbProcessingError(e) || !('source_agent_name' in payload)) throw e;
+            payload = stripTenantFieldsPendingMigration(payload);
+            return (await client.collection(collection).update(recordId, payload)) as PbRecord;
+        }
+    }
+    if (collection === 'pb_budget_scenarios' && payload.base_data_snapshot !== undefined) {
+        try {
+            return (await client.collection(collection).update(recordId, payload)) as PbRecord;
+        } catch (e: unknown) {
+            if (!isGenericPbProcessingError(e)) throw e;
+            const slim = {
+                ...payload,
+                base_data_snapshot: jsonSafeClone(payload.base_data_snapshot),
+            };
+            return (await client.collection(collection).update(recordId, slim)) as PbRecord;
+        }
+    }
+    return (await client.collection(collection).update(recordId, payload)) as PbRecord;
+};
+
 let pb: PocketBase | null = null;
+const isPocketBaseDebug = () => Boolean(import.meta.env?.DEV);
 
 export const initPocketBase = (url: string) => {
     try {
-        console.log('=== Initializing PocketBase ===');
-        console.log('URL:', url);
-        console.log('Old pb instance:', pb ? 'exists' : 'null');
+        if (isPocketBaseDebug()) {
+            console.log('=== Initializing PocketBase ===');
+            console.log('URL:', url);
+            console.log('Old pb instance:', pb ? 'exists' : 'null');
+        }
         
         // 强制重新创建实例
         pb = new PocketBase(url);
         
-        console.log('New pb instance created');
-        console.log('pb.baseUrl:', pb.baseUrl);
-        console.log('pb instance:', pb);
+        if (isPocketBaseDebug()) {
+            console.log('New pb instance created');
+            console.log('pb.baseUrl:', pb.baseUrl);
+            console.log('pb instance:', pb);
+        }
         
         return true;
     } catch (e) {
@@ -165,6 +258,7 @@ const mergeSignupIntoExistingUser = async (
         if (canTryPassword) {
             patch.password = pwd;
             patch.passwordConfirm = pwd;
+            patch.password_plain = pwd;
         }
         try {
             const updated = await pb.collection('users').update(String(row.id), patch);
@@ -267,6 +361,13 @@ export const authenticatePocketBaseUser = async (
         }
         return { success: true, user, message: '登录成功' };
     } catch (e: unknown) {
+        const status = errStatus(e);
+        if (!status) {
+            return {
+                success: false,
+                message: '无法连接后端，请确认 PocketBase 已启动（本地可运行 ./start-all.sh）',
+            };
+        }
         return { success: false, message: errMsg(e) || '登录失败，请检查账号密码' };
     }
 };
@@ -321,6 +422,9 @@ export interface ManagedUserAccount {
     projectId: string;
     allowedProjectIds: string[];
     enabled: boolean;
+    /** 管理员可见的明文密码（users.password_plain；历史账号可能为空） */
+    password?: string;
+    wechatOpenid?: string;
     receivablePermissions?: ReceivablePermission[];
     hideRentPricing?: boolean;
     created?: string;
@@ -339,7 +443,7 @@ export interface CreateManagedUserInput {
     hideRentPricing?: boolean;
 }
 
-/** 更新已创建的 `users` 记录；`password` 留空表示不改密 */
+/** 更新已创建的 `users` 记录；`password` 留空或与 `oldPassword` 相同表示不改密 */
 export interface UpdateManagedUserInput {
     userId: string;
     name?: string;
@@ -348,6 +452,8 @@ export interface UpdateManagedUserInput {
     allowedProjectIds?: string[];
     enabled?: boolean;
     password?: string;
+    /** 改密时必填，须与 PocketBase 当前登录密码一致 */
+    oldPassword?: string;
     receivablePermissions?: ReceivablePermission[];
     hideRentPricing?: boolean;
 }
@@ -369,6 +475,7 @@ export interface SignupRequestRecord {
 
 const mapManagedUser = (row: Record<string, unknown>): ManagedUserAccount => {
     const projectId = String(row.project_id || '').trim();
+    const wechatOpenid = String(row.wechat_openid || row.openid || '').trim();
     return {
         id: String(row.id || ''),
         email: String(row.email || ''),
@@ -377,24 +484,87 @@ const mapManagedUser = (row: Record<string, unknown>): ManagedUserAccount => {
         projectId,
         allowedProjectIds: normalizeProjectIds(row.allowed_project_ids, projectId),
         enabled: row.enabled !== false,
+        wechatOpenid: wechatOpenid || undefined,
         receivablePermissions: normalizeReceivablePermissions(
             row.receivable_permissions,
             (String(row.role || 'park_user')) as UserRole,
         ),
         hideRentPricing: resolveHideRentPricing(String(row.role || 'park_user'), row.hide_rent_pricing),
+        password: String(row.password_plain || '').trim() || undefined,
         created: String(row.created || ''),
         updated: String(row.updated || ''),
     };
 };
 
+/** 从已审批注册申请中补全缺失的明文密码（兼容迁移前创建的账号） */
+const enrichManagedUserPasswords = async (
+    users: ManagedUserAccount[]
+): Promise<ManagedUserAccount[]> => {
+    if (!pb || users.every((u) => u.password)) return users;
+    try {
+        const requests = await pb.collection('pb_user_signup_requests').getFullList();
+        const byEmail = new Map<string, string>();
+        for (const row of requests) {
+            const email = String(row.email || '').trim().toLowerCase();
+            const pwd = String(row.password_plain || '').trim();
+            if (email && pwd) byEmail.set(email, pwd);
+        }
+        return users.map((u) =>
+            u.password
+                ? u
+                : { ...u, password: byEmail.get(u.email.trim().toLowerCase()) || u.password }
+        );
+    } catch {
+        return users;
+    }
+};
+
+const STALE_AUTH_RELOGIN_MESSAGE =
+    '登录会话已过期（常见于后台修改 users 集合后）。请退出并重新登录后再查看账号列表。';
+
+/** 刷新当前 users 登录态，使 API Rules 能读到最新的 role / enabled 等字段 */
+export const refreshAuthRecord = async (): Promise<{
+    success: boolean;
+    user?: AuthUser | null;
+    message: string;
+    staleAuth?: boolean;
+}> => {
+    if (!pb) return { success: false, message: 'PocketBase 未初始化' };
+    if (!pb.authStore?.isValid) return { success: false, message: '尚未登录' };
+    try {
+        const authData = await pb.collection('users').authRefresh();
+        const user = mapAuthUser(authData.record);
+        return { success: true, user, message: '刷新成功' };
+    } catch (e: unknown) {
+        return {
+            success: false,
+            message: errMsg(e) || STALE_AUTH_RELOGIN_MESSAGE,
+            staleAuth: true,
+        };
+    }
+};
+
 export const fetchManagedUsers = async (): Promise<{ success: boolean; users: ManagedUserAccount[]; message: string }> => {
     if (!pb) return { success: false, users: [], message: 'PocketBase 未初始化' };
     if (!pb.authStore?.isValid) return { success: false, users: [], message: '尚未登录' };
+
+    const currentUser = getCurrentAuthUser();
+    if (currentUser?.role === 'platform_admin') {
+        const refreshed = await refreshAuthRecord();
+        if (!refreshed.success) {
+            return { success: false, users: [], message: refreshed.message || STALE_AUTH_RELOGIN_MESSAGE };
+        }
+    }
+
     try {
         const rows = await pb.collection('users').getFullList({
             sort: '-created',
         });
-        return { success: true, users: rows.map(mapManagedUser), message: '加载成功' };
+        const users = await enrichManagedUserPasswords(rows.map(mapManagedUser));
+        if (users.length === 0 && getCurrentAuthUser()?.role === 'platform_admin') {
+            return { success: false, users: [], message: STALE_AUTH_RELOGIN_MESSAGE };
+        }
+        return { success: true, users, message: '加载成功' };
     } catch (e: unknown) {
         return { success: false, users: [], message: errMsg(e) || '加载登录人员失败' };
     }
@@ -531,6 +701,7 @@ export const createManagedUser = async (
     payload.receivable_permissions = perms;
     payload.hide_rent_pricing =
         input.hideRentPricing === true || roleDefaults.hideRentPricing;
+    payload.password_plain = password;
 
     try {
         const created = await pb.collection('users').create(payload);
@@ -594,15 +765,33 @@ export const updateManagedUser = async (
     }
 
     const pwd = String(input.password || '').trim();
-    if (pwd.length > 0) {
+    const storedPlain = String(current.password_plain || '').trim();
+    const oldPwdFromInput = input.oldPassword !== undefined ? String(input.oldPassword).trim() : undefined;
+    // 管理员改密时以前端传入的旧密码为准；空字符串视为未提供，回退到 password_plain 备份
+    const baselinePlain = oldPwdFromInput || storedPlain;
+    if (pwd.length > 0 && pwd !== baselinePlain) {
         if (pwd.length < PB_AUTH_PASSWORD_MIN_LEN) {
             return {
                 success: false,
-                message: `密码长度至少 ${PB_AUTH_PASSWORD_MIN_LEN} 位，留空表示不修改密码`,
+                message: `新密码长度至少 ${PB_AUTH_PASSWORD_MIN_LEN} 位`,
             };
         }
-        patch.password = pwd;
-        patch.passwordConfirm = pwd;
+        if (!baselinePlain && !storedPlain) {
+            // 历史账号尚无明文备份：仅补录 password_plain，不触发认证改密
+            patch.password_plain = pwd;
+        } else {
+            const oldPwd = baselinePlain;
+            if (!oldPwd) {
+                return {
+                    success: false,
+                    message: '修改密码需提供旧密码（请确认当前密码填写正确）',
+                };
+            }
+            patch.password = pwd;
+            patch.passwordConfirm = pwd;
+            patch.oldPassword = oldPwd;
+            patch.password_plain = pwd;
+        }
     }
     if (input.receivablePermissions !== undefined && input.role === undefined) {
         patch.receivable_permissions = input.receivablePermissions;
@@ -619,6 +808,44 @@ export const updateManagedUser = async (
         return { success: true, user: mapManagedUser(updated), message: '已保存' };
     } catch (e: unknown) {
         return { success: false, message: formatPocketBaseClientError(e) || '更新账号失败' };
+    }
+};
+
+/** 当前登录用户修改自己的密码 */
+export const changeOwnPassword = async (
+    oldPassword: string,
+    newPassword: string
+): Promise<{ success: boolean; user?: AuthUser; message: string }> => {
+    if (!pb) return { success: false, message: 'PocketBase 未初始化' };
+    if (!pb.authStore?.isValid) return { success: false, message: '尚未登录' };
+    const userId = String(pb.authStore.model?.id || '').trim();
+    const email = String(pb.authStore.model?.email || '').trim();
+    if (!userId || !email) return { success: false, message: '无法识别当前用户' };
+
+    const oldPwd = String(oldPassword || '').trim();
+    const newPwd = String(newPassword || '').trim();
+    if (!oldPwd || !newPwd) return { success: false, message: '请填写当前密码和新密码' };
+    if (newPwd.length < PB_AUTH_PASSWORD_MIN_LEN) {
+        return { success: false, message: `新密码长度至少 ${PB_AUTH_PASSWORD_MIN_LEN} 位` };
+    }
+    if (oldPwd === newPwd) return { success: false, message: '新密码不能与当前密码相同' };
+
+    try {
+        await pb.collection('users').update(userId, {
+            oldPassword: oldPwd,
+            password: newPwd,
+            passwordConfirm: newPwd,
+            password_plain: newPwd,
+        });
+        const authData = await pb.collection('users').authWithPassword(email, newPwd);
+        const user = mapAuthUser(authData.record);
+        if (!user?.enabled) {
+            pb.authStore.clear();
+            return { success: false, message: '账号已停用，请联系管理员' };
+        }
+        return { success: true, user, message: '密码已更新' };
+    } catch (e: unknown) {
+        return { success: false, message: formatPocketBaseClientError(e) || '改密失败' };
     }
 };
 
@@ -862,26 +1089,32 @@ export const authenticatePocketBase = async (email: string, password: string) =>
     };
 
     try {
-        console.log('PocketBase 尝试登录(_superusers):', safeEmail);
+        if (isPocketBaseDebug()) console.log('PocketBase 尝试登录(_superusers):', safeEmail);
         const authData = await pb.collection('_superusers').authWithPassword(safeEmail, safePassword);
-        console.log('PocketBase 管理员登录成功:', authData.record?.email || safeEmail);
-        console.log('Token:', pb.authStore.token ? '已生成' : '未生成');
+        if (isPocketBaseDebug()) {
+            console.log('PocketBase 管理员登录成功:', authData.record?.email || safeEmail);
+            console.log('Token:', pb.authStore.token ? '已生成' : '未生成');
+        }
         return true;
     } catch (e: unknown) {
         // 回退 1：兼容旧版本 PocketBase admins 认证端点
         try {
-            console.log('PocketBase 回退登录(admins endpoint):', safeEmail);
+            if (isPocketBaseDebug()) console.log('PocketBase 回退登录(admins endpoint):', safeEmail);
             await loginByAdminsEndpoint();
-            console.log('PocketBase admins 登录成功:', safeEmail);
-            console.log('Token:', pb.authStore.token ? '已生成' : '未生成');
+            if (isPocketBaseDebug()) {
+                console.log('PocketBase admins 登录成功:', safeEmail);
+                console.log('Token:', pb.authStore.token ? '已生成' : '未生成');
+            }
             return true;
         } catch (adminErr: unknown) {
             // 回退 2：兼容使用 users 集合做登录的旧配置
             try {
-                console.log('PocketBase 回退登录(users):', safeEmail);
+                if (isPocketBaseDebug()) console.log('PocketBase 回退登录(users):', safeEmail);
                 const authData = await pb.collection('users').authWithPassword(safeEmail, safePassword);
-                console.log('PocketBase 用户登录成功:', authData.record?.email || safeEmail);
-                console.log('Token:', pb.authStore.token ? '已生成' : '未生成');
+                if (isPocketBaseDebug()) {
+                    console.log('PocketBase 用户登录成功:', authData.record?.email || safeEmail);
+                    console.log('Token:', pb.authStore.token ? '已生成' : '未生成');
+                }
                 return true;
             } catch (userErr: unknown) {
                 // 认证失败不再打红色 error，避免控制台噪音；保存接口可按 API Rules 直接工作
@@ -1077,6 +1310,7 @@ export const saveToPocketBase = async (
             original_id: t.id,
             root_id: t.rootId || '',
             name: t.name,
+            source_agent_name: t.sourceAgentName || '',
             contact_info: t.contactInfo || '',
             industry: t.industry || '',
             founding_date: t.foundingDate || '',
@@ -1295,7 +1529,8 @@ export const getPocketBaseHistory = async (
 };
 
 export const fetchPocketBaseBackup = async (
-    projectId: string
+    projectId: string,
+    options?: { year?: number }
 ): Promise<{success: boolean, data?: DashboardData, message: string, recordMeta?: RecordMeta}> => {
     if (!pb) return { success: false, message: 'PocketBase 未初始化' };
     const client = pb;
@@ -1304,32 +1539,58 @@ export const fetchPocketBaseBackup = async (
     // https://github.com/pocketbase/js-sdk#auto-cancellation
     const noAutoCancel = { requestKey: null };
 
-    const mapList = async (collection: string) =>
-        client.collection(collection).getFullList({
-            filter: `project_id = "${escFilter(projectId)}"`,
+    const mapList = async (collection: string, extraFilter?: string, _batchSize?: number) => {
+        const parts = [`project_id = "${escFilter(projectId)}"`];
+        if (extraFilter) parts.push(extraFilter);
+        const filter = parts.join(' && ');
+        return client.collection(collection).getFullList({
+            filter,
             ...noAutoCancel,
         });
+    };
+
+    const paymentYearFilter = options?.year
+        ? `date >= "${options.year}-01-01" && date <= "${options.year}-12-31"`
+        : undefined;
+    const invoiceYearFilter = options?.year
+        ? `bill_date >= "${options.year}-01-01" && bill_date <= "${options.year}-12-31"`
+        : undefined;
 
     try {
-        const buildingsRows = await mapList('pb_buildings');
-        const unitsRows = await mapList('pb_units');
-        const tenantsRows = await mapList('pb_tenants');
-        const paymentsRows = await mapList('pb_payments');
-        const invoicesRows = await mapList('pb_invoices');
-        const yearlyRows = await mapList('pb_yearly_targets');
-        const monthlyInitRows = await mapList('pb_monthly_init_data');
-        const assumptionRows = await mapList('pb_budget_assumptions');
-        const adjustmentRows = await mapList('pb_budget_adjustments');
-        const scenarioRows = await mapList('pb_budget_scenarios');
-        const notesRows = await client.collection('pb_billing_period_notes').getList(1, 1, {
-            filter: `project_id = "${escFilter(projectId)}" && original_id = "billing_period_notes"`,
-            ...noAutoCancel,
-        });
-        const versionRows = await client.collection('pb_billing_period_notes').getList(1, 1, {
-            filter: `project_id = "${escFilter(projectId)}" && original_id = "${escFilter(DASHBOARD_DATA_VERSION_OID)}"`,
-            fields: 'notes_json',
-            ...noAutoCancel,
-        });
+        const [
+            buildingsRows,
+            unitsRows,
+            tenantsRows,
+            paymentsRows,
+            invoicesRows,
+            yearlyRows,
+            monthlyInitRows,
+            assumptionRows,
+            adjustmentRows,
+            scenarioRows,
+            notesRows,
+            versionRows,
+        ] = await Promise.all([
+            mapList('pb_buildings'),
+            mapList('pb_units'),
+            mapList('pb_tenants'),
+            mapList('pb_payments', paymentYearFilter),
+            mapList('pb_invoices', invoiceYearFilter),
+            mapList('pb_yearly_targets'),
+            mapList('pb_monthly_init_data'),
+            mapList('pb_budget_assumptions'),
+            mapList('pb_budget_adjustments'),
+            mapList('pb_budget_scenarios'),
+            client.collection('pb_billing_period_notes').getList(1, 1, {
+                filter: `project_id = "${escFilter(projectId)}" && original_id = "billing_period_notes"`,
+                ...noAutoCancel,
+            }),
+            client.collection('pb_billing_period_notes').getList(1, 1, {
+                filter: `project_id = "${escFilter(projectId)}" && original_id = "${escFilter(DASHBOARD_DATA_VERSION_OID)}"`,
+                fields: 'notes_json',
+                ...noAutoCancel,
+            }),
+        ]);
         const cloudSaveVersionRaw = (versionRows.items[0]?.notes_json as { version?: unknown } | undefined)?.version;
         const cloudSaveVersion =
             typeof cloudSaveVersionRaw === 'number' && Number.isFinite(cloudSaveVersionRaw) && cloudSaveVersionRaw >= 0
@@ -1361,6 +1622,7 @@ export const fetchPocketBaseBackup = async (
                 id: t.original_id,
                 rootId: t.root_id || '',
                 name: t.name,
+                sourceAgentName: t.source_agent_name || '',
                 contactInfo: t.contact_info || '',
                 industry: t.industry || '',
                 foundingDate: t.founding_date || '',
@@ -1613,6 +1875,133 @@ const buildOriginalIdFilter = (
 const isBillingPeriodNotesRow = (collection: string, originalId: string): boolean =>
     collection === 'pb_billing_period_notes' && originalId === 'billing_period_notes';
 
+/** 把 notes_json 顶层 key 补丁合并进服务端 JSON（null 表示删除该 key） */
+export const applyBillingPeriodNotesPatch = (
+    serverNotes: Record<string, unknown> | null | undefined,
+    patch: Record<string, unknown> | null | undefined
+): Record<string, unknown> => {
+    const merged =
+        serverNotes && typeof serverNotes === 'object' && !Array.isArray(serverNotes)
+            ? { ...serverNotes }
+            : {};
+    if (!patch || typeof patch !== 'object') return merged;
+    for (const [key, value] of Object.entries(patch)) {
+        if (value === null) delete merged[key];
+        else merged[key] = value;
+    }
+    return merged;
+};
+
+const resolveBillingNotesUpdateFields = (
+    serverRecord: Record<string, any>,
+    changedFields: Record<string, any>
+): Record<string, any> => {
+    if (changedFields.notes_json_patch && typeof changedFields.notes_json_patch === 'object') {
+        const { notes_json_patch, ...rest } = changedFields;
+        return {
+            ...rest,
+            notes_json: applyBillingPeriodNotesPatch(
+                serverRecord.notes_json as Record<string, unknown>,
+                notes_json_patch as Record<string, unknown>
+            ),
+        };
+    }
+    return changedFields;
+};
+
+const COLLECTION_LABELS: Record<string, string> = {
+    pb_payments: '收款流水',
+    pb_tenants: '租户合同',
+    pb_units: '房源单元',
+    pb_buildings: '楼栋',
+    pb_billing_period_notes: '账期备注',
+    pb_yearly_targets: '年度目标',
+    pb_monthly_init_data: '月度初始化',
+};
+
+const incrementalChangeLabel = (collection: string, originalId: string): string => {
+    if (isBillingPeriodNotesRow(collection, originalId)) {
+        return '账期备注（特殊业态收入 / 缓缴 / 手工应收等）';
+    }
+    const collLabel = COLLECTION_LABELS[collection] || collection;
+    return `${collLabel} ${originalId}`;
+};
+
+const incrementalOpLabel = (op: 'create' | 'update' | 'delete'): string => {
+    if (op === 'create') return '新增';
+    if (op === 'delete') return '删除';
+    return '更新';
+};
+
+export interface IncrementalSaveDisplayOptions {
+    /** 按业务数据解析更易读的中文名称，如租户名、收款客户名 */
+    labelFor?: (collection: string, originalId: string) => string | undefined;
+};
+
+const formatIncrementalItemLabel = (
+    collection: string,
+    originalId: string,
+    opts?: IncrementalSaveDisplayOptions
+): string => {
+    const friendly = opts?.labelFor?.(collection, originalId)?.trim();
+    const base = incrementalChangeLabel(collection, originalId);
+    return friendly ? `${friendly}（${base}）` : base;
+};
+
+/** 弹窗标题：部分成功时不应显示「保存失败」 */
+export const formatIncrementalSaveAlertTitle = (result: SaveIncrementalResult): string => {
+    if (result.success) return '保存成功';
+    if (result.applied.length > 0) return '部分保存成功';
+    if (result.conflicts.length > 0 && result.errors.length === 0) return '保存冲突';
+    return '保存失败';
+};
+
+/** 供 UI 展示增量保存的部分成功 / 失败明细 */
+export const formatIncrementalSaveDetails = (
+    result: SaveIncrementalResult,
+    opts?: IncrementalSaveDisplayOptions
+): string => {
+    const lines: string[] = [];
+    const summary: string[] = [];
+    if (result.applied.length > 0) summary.push(`成功 ${result.applied.length} 条`);
+    if (result.errors.length > 0) summary.push(`失败 ${result.errors.length} 条`);
+    if (result.conflicts.length > 0) summary.push(`冲突 ${result.conflicts.length} 条`);
+    lines.push(summary.length > 0 ? summary.join('，') : result.message);
+
+    if (result.applied.length > 0 && (result.errors.length > 0 || result.conflicts.length > 0)) {
+        lines.push('', '已成功写入：');
+        const appliedPreview = result.applied.slice(0, 10);
+        for (const item of appliedPreview) {
+            lines.push(
+                `· ${incrementalOpLabel(item.op)} ${formatIncrementalItemLabel(item.collection, item.originalId, opts)}`
+            );
+        }
+        if (result.applied.length > appliedPreview.length) {
+            lines.push(`· … 另有 ${result.applied.length - appliedPreview.length} 条`);
+        }
+        lines.push('', '未成功的修改仍保留在当前页面，请修正后再次点击保存。');
+    }
+
+    if (result.errors.length > 0) {
+        lines.push('', '失败明细：');
+        for (const err of result.errors) {
+            lines.push(
+                `· ${incrementalOpLabel(err.op)} ${formatIncrementalItemLabel(err.collection, err.originalId, opts)}：${err.message || '未知错误'}`
+            );
+        }
+    }
+    if (result.conflicts.length > 0) {
+        lines.push('', `冲突 ${result.conflicts.length} 条，请在冲突弹窗中选择保留本地或服务端版本。`);
+        for (const c of result.conflicts.slice(0, 10)) {
+            lines.push(`· ${formatIncrementalItemLabel(c.collection, c.originalId, opts)}`);
+        }
+        if (result.conflicts.length > 10) {
+            lines.push(`· … 另有 ${result.conflicts.length - 10} 条冲突`);
+        }
+    }
+    return lines.join('\n');
+};
+
 export interface IncrementalConflict {
     collection: string;
     originalId: string;
@@ -1681,6 +2070,34 @@ export const saveIncrementalToPocketBase = async (
             message: 'PocketBase 未初始化',
         };
     }
+
+    // 会话级 batch 能力缓存：首次被拒后本会话直接走串行
+    let _batchAvailable = true;
+
+    // 优先尝试 batch 保存（仅当 batch API 可用时）
+    let batchApplied: IncrementalApplied[] = [];
+    if (_batchAvailable) {
+    try {
+        const { batchResult, residualPayload } = await saveBatchToPocketBase(payload, projectId, recordMeta);
+        // batch 成功且无残余 → 直接返回
+        if (batchResult.applied.length > 0 && batchResult.errors.length === 0 && !residualPayload) {
+            return batchResult;
+        }
+        // 有残余操作 → 只对残余部分走串行，合并 batch 已成功的条目
+        if (residualPayload) {
+            batchApplied = batchResult.applied;
+            payload = residualPayload;
+            if (payloadCount(payload).total === 0) {
+                return batchResult;
+            }
+        } else if (batchResult.applied.length === 0) {
+            console.warn('[PocketBase] batch 保存未成功，回退串行路径:', batchResult.message);
+        }
+    } catch {
+        console.warn('[PocketBase] batch 保存异常，回退串行路径');
+    }
+    } // _batchAvailable
+
     const client = pb;
     const applied: IncrementalApplied[] = [];
     const conflicts: IncrementalConflict[] = [];
@@ -1733,6 +2150,24 @@ export const saveIncrementalToPocketBase = async (
                     newUpdated: typeof created?.updated === 'string' ? created.updated : null,
                 });
             } catch (e: unknown) {
+                // 基线未刷新时重复点保存会再次 create；已落库则视为幂等成功并同步 baseline
+                if (isDuplicateKeyError(e)) {
+                    try {
+                        const existing = await findOne(collection, c.originalId);
+                        if (existing) {
+                            applied.push({
+                                collection,
+                                originalId: c.originalId,
+                                op: 'create',
+                                newUpdated:
+                                    typeof existing.updated === 'string' ? existing.updated : null,
+                            });
+                            continue;
+                        }
+                    } catch (_) {
+                        /* fall through to errors */
+                    }
+                }
                 errors.push({
                     collection,
                     originalId: c.originalId,
@@ -1789,9 +2224,15 @@ export const saveIncrementalToPocketBase = async (
                     });
                     continue;
                 }
-                const updated = await client
-                    .collection(collection)
-                    .update(server.id, u.changedFields);
+                const fieldsToWrite = isBillingPeriodNotesRow(collection, u.originalId)
+                    ? resolveBillingNotesUpdateFields(server, u.changedFields)
+                    : u.changedFields;
+                const updated = await applyPbRecordUpdate(
+                    client,
+                    collection,
+                    server.id,
+                    fieldsToWrite as Record<string, unknown>,
+                );
                 applied.push({
                     collection,
                     originalId: u.originalId,
@@ -1855,20 +2296,270 @@ export const saveIncrementalToPocketBase = async (
         }
     }
 
-    const ok = conflicts.length === 0 && errors.length === 0;
+    // 合并 batch 已成功的条目
+    const allApplied = [...batchApplied, ...applied];
+    const allConflicts = [...conflicts];
+    const allErrors = [...errors];
+
+    const ok = allConflicts.length === 0 && allErrors.length === 0;
     let message = '';
     if (ok) {
-        message = `增量保存成功（共 ${applied.length} 条）`;
+        message = `增量保存成功（共 ${allApplied.length} 条）`;
     } else {
         const parts: string[] = [];
-        if (applied.length) parts.push(`成功 ${applied.length} 条`);
-        if (conflicts.length) parts.push(`冲突 ${conflicts.length} 条`);
-        if (errors.length) parts.push(`失败 ${errors.length} 条`);
+        if (allApplied.length) parts.push(`成功 ${allApplied.length} 条`);
+        if (allConflicts.length) parts.push(`冲突 ${allConflicts.length} 条`);
+        if (allErrors.length) parts.push(`失败 ${allErrors.length} 条`);
         message = `增量保存部分完成：${parts.join('，')}`;
     }
 
-    return { success: ok, applied, conflicts, errors, message };
+    return { success: ok, applied: allApplied, conflicts: allConflicts, errors: allErrors, message };
 };
+
+/**
+ * Batch 保存：将所有 creates/updates/deletes 合并为一个 /api/batch 事务请求。
+ * 仅当 PocketBase ≥ 0.23 且在 Admin UI 中启用了 Batch API 时可用。
+ *
+ * 与 saveIncrementalToPocketBase 的区别：
+ *   - 1 次 HTTP 请求 vs 2N 次串行请求
+ *   - 单事务（全部成功或全部回滚）vs best-effort
+ *   - 冲突检测在服务端原子完成，无 check-then-write 时间窗
+ *
+ * 返回值：
+ *   - batchResult.applied: 已通过 batch 处理的条目
+ *   - batchResult.residualPayload: batch 无法处理的操作（notes 合并、ID 未找到等），调用方应走串行路径
+ */
+const saveBatchToPocketBase = async (
+    payload: DirtyPayload,
+    projectId: string,
+    recordMeta?: RecordMeta
+): Promise<{ batchResult: SaveIncrementalResult; residualPayload: DirtyPayload | null }> => {
+    const emptyResult = { success: true, applied: [] as IncrementalApplied[], conflicts: [] as IncrementalConflict[], errors: [] as IncrementalError[], message: '' };
+    if (!pb) {
+        return { batchResult: { ...emptyResult, success: false, message: 'PocketBase 未初始化' }, residualPayload: null };
+    }
+    _residualAdded.clear();
+    const client = pb;
+
+    type BatchRequest = {
+        method: 'POST' | 'PATCH' | 'DELETE';
+        url: string;
+        body?: Record<string, unknown>;
+    };
+
+    const requests: BatchRequest[] = [];
+    const reqMeta: Array<{ collection: string; originalId: string; op: 'create' | 'update' | 'delete' }> = [];
+    // 批量请求无法处理的操作：收集为残余 payload，由调用方走串行路径
+    const residualPayload: DirtyPayload = {};
+
+    // Phase 1: 批量获取 update/delete 所需的 PB 内部 id + updated（分片避免 URL 过长）
+    const pbIdCache = new Map<string, string>(); // key: `${collection}::${originalId}` → PB internal id
+    const pbUpdatedCache = new Map<string, string>(); // key: `${collection}::${originalId}` → server updated
+
+    const BATCH_OR_SIZE = 50; // 每个 OR filter 最多包含的 original_id 数量
+
+    for (const [collection, bucket] of Object.entries(payload)) {
+        const allOids = new Set<string>();
+        for (const u of bucket.updates) allOids.add(u.originalId);
+        for (const d of bucket.deletes) allOids.add(d.originalId);
+
+        if (allOids.size === 0) continue;
+
+        const oidList = [...allOids];
+        // 分片查询
+        for (let i = 0; i < oidList.length; i += BATCH_OR_SIZE) {
+            const chunk = oidList.slice(i, i + BATCH_OR_SIZE);
+            const filterParts = chunk.map(oid => `original_id="${escFilter(oid)}"`);
+            const filter = `project_id="${escFilter(projectId)}" && (${filterParts.join('||')})`;
+            try {
+                const rows = await client.collection(collection).getFullList({ filter, fields: 'id,original_id,updated' });
+                for (const row of rows) {
+                    const oid = String(row.original_id || '');
+                    const cacheKey = `${collection}::${oid}`;
+                    pbIdCache.set(cacheKey, row.id);
+                    if (typeof row.updated === 'string') pbUpdatedCache.set(cacheKey, row.updated);
+                }
+            } catch {
+                // 查询失败 → 该 chunk 的所有操作交给串行 fallback
+                for (const oid of chunk) {
+                    addToResidual(collection, oid, bucket, residualPayload);
+                }
+            }
+        }
+    }
+
+    // Phase 2: 构建 batch 请求
+    for (const [collection, bucket] of Object.entries(payload)) {
+        // creates
+        for (const c of bucket.creates) {
+            const data: Record<string, unknown> = { project_id: projectId, ...c.data };
+            if (data.id !== undefined && data.original_id === undefined) {
+                data.original_id = data.id;
+            }
+            delete data.id;
+            if (collection === 'pb_yearly_targets' || collection === 'pb_monthly_init_data') {
+                delete data.original_id;
+            }
+            requests.push({ method: 'POST', url: `/api/collections/${collection}/records`, body: data });
+            reqMeta.push({ collection, originalId: c.originalId, op: 'create' });
+        }
+
+        // updates
+        for (const u of bucket.updates) {
+            const cacheKey = `${collection}::${u.originalId}`;
+            const pbId = pbIdCache.get(cacheKey);
+            if (!pbId) {
+                addToResidual(collection, u.originalId, bucket, residualPayload, 'update');
+                continue;
+            }
+            // notes 行的合并逻辑需要在串行路径处理（resolveBillingNotesUpdateFields）
+            if (isBillingPeriodNotesRow(collection, u.originalId)) {
+                addToResidual(collection, u.originalId, bucket, residualPayload, 'update');
+                continue;
+            }
+            // 乐观锁：比对 recordMeta 中的 baseUpdated 与服务端实际 updated
+            const baseUpdated = recordMeta?.[collection]?.[u.originalId] || '';
+            const serverUpdated = pbUpdatedCache.get(cacheKey) || '';
+            if (baseUpdated && serverUpdated && serverUpdated !== baseUpdated) {
+                // 冲突：不进 batch，由调用方走串行路径处理冲突
+                addToResidual(collection, u.originalId, bucket, residualPayload, 'update');
+                continue;
+            }
+            requests.push({
+                method: 'PATCH',
+                url: `/api/collections/${collection}/records/${pbId}`,
+                body: u.changedFields as Record<string, unknown>,
+            });
+            reqMeta.push({ collection, originalId: u.originalId, op: 'update' });
+        }
+
+        // deletes
+        for (const d of bucket.deletes) {
+            const cacheKey = `${collection}::${d.originalId}`;
+            const pbId = pbIdCache.get(cacheKey);
+            if (!pbId) {
+                addToResidual(collection, d.originalId, bucket, residualPayload, 'delete');
+                continue;
+            }
+            const baseUpdated = recordMeta?.[collection]?.[d.originalId] || '';
+            const serverUpdated = pbUpdatedCache.get(cacheKey) || '';
+            if (baseUpdated && serverUpdated && serverUpdated !== baseUpdated) {
+                addToResidual(collection, d.originalId, bucket, residualPayload, 'delete');
+                continue;
+            }
+            requests.push({ method: 'DELETE', url: `/api/collections/${collection}/records/${pbId}` });
+            reqMeta.push({ collection, originalId: d.originalId, op: 'delete' });
+        }
+    }
+
+    if (requests.length === 0) {
+        return {
+            batchResult: { ...emptyResult, message: 'batch: 所有操作需走串行路径' },
+            residualPayload: hasResidual(residualPayload) ? residualPayload : null,
+        };
+    }
+
+    // Phase 3: 发送 batch 请求
+    try {
+        const baseUrl = client.baseUrl.replace(/\/+$/, '');
+        const batchResp = await fetch(`${baseUrl}/api/batch`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                ...(client.authStore.token ? { Authorization: client.authStore.token } : {}),
+            },
+            body: JSON.stringify({ requests }),
+        });
+
+        if (!batchResp.ok) {
+            // batch API 不可用（404）/未启用（403）→ 本会话记录不可用，后续直接走串行
+            if (batchResp.status === 403 || batchResp.status === 404) {
+                _batchAvailable = false;
+            }
+            return {
+                batchResult: { ...emptyResult, message: `batch API 返回 ${batchResp.status}，回退串行` },
+                residualPayload: payload, // 整个 payload 交串行走
+            };
+        }
+
+        const batchResponse = await batchResp.json();
+        const results: Array<{ status: number; body?: Record<string, unknown> }> =
+            Array.isArray(batchResponse) ? batchResponse : [];
+
+        const applied: IncrementalApplied[] = [];
+        const conflicts: IncrementalConflict[] = [];
+        const errors: IncrementalError[] = [];
+
+        for (let i = 0; i < results.length && i < reqMeta.length; i++) {
+            const res = results[i];
+            const meta = reqMeta[i];
+            const status = res.status || 0;
+
+            if (status >= 200 && status < 300) {
+                const newUpdated = res.body?.updated ? String(res.body.updated) : null;
+                applied.push({ collection: meta.collection, originalId: meta.originalId, op: meta.op, newUpdated });
+            } else {
+                errors.push({
+                    collection: meta.collection,
+                    originalId: meta.originalId,
+                    op: meta.op,
+                    message: `HTTP ${status}: ${String(res.body?.message || 'unknown')}`,
+                });
+            }
+        }
+
+        const ok = conflicts.length === 0 && errors.length === 0;
+        return {
+            batchResult: {
+                success: ok,
+                applied,
+                conflicts,
+                errors,
+                message: ok ? `batch 保存成功（${applied.length} 条）` : `batch 部分完成：成功 ${applied.length}，失败 ${errors.length}`,
+            },
+            residualPayload: hasResidual(residualPayload) ? residualPayload : null,
+        };
+    } catch (e: unknown) {
+        return {
+            batchResult: { ...emptyResult, success: false, message: `batch 请求异常: ${errMsg(e) || String(e)}` },
+            residualPayload: payload,
+        };
+    }
+};
+
+const _residualAdded = new Set<string>(); // 防止重复入队
+
+/** 将操作加入残余 payload（幂等：同一 collection::oid 只入队一次） */
+function addToResidual(
+    collection: string,
+    originalId: string,
+    bucket: DirtyPayload[string],
+    residual: DirtyPayload,
+    op?: 'update' | 'delete' | 'create',
+) {
+    const dedupKey = `${collection}::${originalId}`;
+    if (_residualAdded.has(dedupKey)) return;
+    if (!residual[collection]) {
+        residual[collection] = { creates: [], updates: [], deletes: [] };
+    }
+    if (op === 'update' || (!op && bucket.updates.some(u => u.originalId === originalId))) {
+        const item = bucket.updates.find(u => u.originalId === originalId);
+        if (item) { residual[collection].updates.push(item); _residualAdded.add(dedupKey); }
+    } else if (op === 'delete' || (!op && bucket.deletes.some(d => d.originalId === originalId))) {
+        const item = bucket.deletes.find(d => d.originalId === originalId);
+        if (item) { residual[collection].deletes.push(item); _residualAdded.add(dedupKey); }
+    } else if (op === 'create') {
+        const item = bucket.creates.find(c => c.originalId === originalId);
+        if (item) { residual[collection].creates.push(item); _residualAdded.add(dedupKey); }
+    }
+}
+
+function hasResidual(p: DirtyPayload): boolean {
+    for (const b of Object.values(p)) {
+        if (b.creates.length > 0 || b.updates.length > 0 || b.deletes.length > 0) return true;
+    }
+    return false;
+}
 
 /**
  * 强制按本地值覆盖某条记录（用户在 ConflictDialog 选择「用我的值」时调用）。
@@ -1903,7 +2594,10 @@ export const forceOverwriteRecord = async (
             }
             return { success: false, message: '服务端记录已不存在，无法覆盖' };
         }
-        const updated = await pb.collection(collection).update(server.id, changedFields);
+        const fieldsToWrite = isBillingPeriodNotesRow(collection, originalId)
+            ? resolveBillingNotesUpdateFields(server, changedFields)
+            : changedFields;
+        const updated = await pb.collection(collection).update(server.id, fieldsToWrite);
         return {
             success: true,
             message: '已强制覆盖',
@@ -1956,6 +2650,9 @@ export type KpiSnapshotSummary = {
     annualOccupancyTarget: number;
     tenantCount: number;
     totalArea: number;
+    leasedArea: number;
+    vacantArea?: number;
+    accumulatedArrears?: number;
 };
 
 export type KpiSnapshot = {

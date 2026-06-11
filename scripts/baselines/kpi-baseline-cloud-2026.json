@@ -1,0 +1,24 @@
+{
+  "projectId": "shanghai_park",
+  "year": 2026,
+  "ok": true,
+  "computedAt": "2026-06-11T02:06:43.048Z",
+  "elapsedSec": 1.68,
+  "dataVersion": 283,
+  "summary": {
+    "annualRevenueTarget": 15648987,
+    "annualRevenueCollected": 6689251.49,
+    "annualInitialBudget": 15648987,
+    "annualBudgetTarget": 15648987,
+    "annualContractReceivable": 15480456.41,
+    "annualGoalCompletion": 43.21094490262514,
+    "annualBudgetCompletion": 42.74558787734951,
+    "occupancyRate": 90.53,
+    "annualOccupancyTarget": 95,
+    "tenantCount": 47,
+    "totalArea": 21406.91,
+    "leasedArea": 19380.24,
+    "vacantArea": 2026.67,
+    "accumulatedArrears": 37475.69
+  }
+}

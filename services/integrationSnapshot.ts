@@ -8,6 +8,8 @@ export const INTEGRATION_FULL_SNAPSHOT_SCHEMA_VERSION = 1 as const;
 
 /**
  * 全量集成快照 v1：含与界面一致的 dashboard、全年趋势、以及原 OpenClaw KPI 结构（payload.kpi）。
+ * 面积口径：payload.dashboard.leasedArea / totalArea / occupancyRate 与前端资产管理、看板完全一致；
+ * OpenClaw 亦可通过 payload.kpi.leased_area_sqm / leasable_area_sqm 读取同值。
  */
 export type IntegrationFullSnapshotV1 = {
     schema_version: typeof INTEGRATION_FULL_SNAPSHOT_SCHEMA_VERSION;

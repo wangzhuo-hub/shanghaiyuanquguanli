@@ -107,6 +107,7 @@ async function main() {
       ...user,
       password: DEFAULT_PASSWORD,
       passwordConfirm: DEFAULT_PASSWORD,
+      password_plain: DEFAULT_PASSWORD,
       emailVisibility: true,
       verified: true,
     };

@@ -1,0 +1,24 @@
+{
+  "projectId": "shenzhen_park",
+  "year": 2026,
+  "ok": true,
+  "computedAt": "2026-06-11T03:18:06.234Z",
+  "elapsedSec": 0.21,
+  "dataVersion": 141,
+  "summary": {
+    "annualRevenueTarget": 52948584.65,
+    "annualRevenueCollected": 21661688.440000005,
+    "annualInitialBudget": 52948584.65,
+    "annualBudgetTarget": 53740574.92,
+    "annualContractReceivable": 53740574.919999994,
+    "annualGoalCompletion": 40.30788370285639,
+    "annualBudgetCompletion": 40.30788370285639,
+    "occupancyRate": 83.22,
+    "annualOccupancyTarget": 85,
+    "tenantCount": 50,
+    "totalArea": 61643.54,
+    "leasedArea": 51300.11,
+    "vacantArea": 10343.43,
+    "accumulatedArrears": 312829.97
+  }
+}

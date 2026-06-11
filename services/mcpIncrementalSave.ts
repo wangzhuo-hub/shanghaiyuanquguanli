@@ -2,7 +2,7 @@
  * MCP / Agent 写入 —— 与 App.tsx `runCloudSave` 相同增量保存路径。
  */
 import type PocketBase from 'pocketbase';
-import type { AuthUser, DashboardData, PaymentRecord, Tenant } from '../types';
+import type { AuthUser, CloudConfig, DashboardData, PaymentRecord, Tenant } from '../types';
 import { saveIncrementalToCloud, bumpCloudSaveVersion } from './cloudService';
 import {
   dashboardDataToPbRecords,
@@ -138,7 +138,14 @@ async function runIncrementalSaveFromDashboardData(
     };
   }
 
-  const res = await saveIncrementalToCloud(payload, { projectId, pocketbaseUrl: ctx.pbUrl }, recordMeta);
+  const cloudConfig: CloudConfig = {
+    provider: 'pocketbase',
+    autoSync: false,
+    projectId,
+    pocketbaseUrl: ctx.pbUrl,
+  };
+
+  const res = await saveIncrementalToCloud(payload, cloudConfig, recordMeta);
 
   if (res.conflicts.length > 0) {
     return {
@@ -156,7 +163,7 @@ async function runIncrementalSaveFromDashboardData(
   }
 
   try {
-    await bumpCloudSaveVersion({ projectId, pocketbaseUrl: ctx.pbUrl });
+    await bumpCloudSaveVersion(cloudConfig);
   } catch {
     /* 非关键 */
   }
@@ -241,6 +248,108 @@ export async function savePaymentLikeFrontend(
   };
 }
 
+function validatePaymentPatch(patch: Partial<PaymentRecord>): string | null {
+  if (patch.date !== undefined && !/^\d{4}-\d{2}-\d{2}$/.test(String(patch.date))) {
+    return 'date 格式应为 YYYY-MM-DD';
+  }
+  if (patch.period !== undefined && patch.period && !/^\d{4}-\d{2}(,\s*\d{4}-\d{2})*$/.test(String(patch.period))) {
+    return 'period 格式应为 YYYY-MM，多个账期用英文逗号分隔';
+  }
+  if (patch.amount !== undefined && !Number.isFinite(Number(patch.amount))) {
+    return 'amount 必须为有效数字';
+  }
+  return null;
+}
+
+export async function updatePaymentLikeFrontend(
+  params: {
+    original_id?: string;
+    payment_id?: string;
+    project_id?: string;
+    patch: Partial<PaymentRecord>;
+  },
+  ctx: McpSaveContext,
+) {
+  const projectId = resolveAuthorizedProjectId(ctx.user, params.project_id);
+  const paymentId = String(params.original_id || params.payment_id || '').trim();
+  if (!paymentId) return { ok: false, message: '缺少 original_id / payment_id' };
+
+  const validationMessage = validatePaymentPatch(params.patch);
+  if (validationMessage) return { ok: false, message: validationMessage };
+
+  restorePocketBaseUserSession(
+    ctx.pbUrl,
+    ctx.userPb.authStore.token,
+    ctx.userPb.authStore.model as Record<string, unknown> | null,
+  );
+  const backupRes = await fetchPocketBaseBackup(projectId);
+  if (!backupRes.success || !backupRes.data) {
+    return { ok: false, message: backupRes.message || '无法加载云端数据' };
+  }
+
+  const data: DashboardData = { ...generateInitialData(), ...backupRes.data };
+  const idx = (data.payments || []).findIndex((p) => p.id === paymentId);
+  if (idx < 0) return { ok: false, message: `收款记录不存在：${paymentId}` };
+
+  const existing = data.payments![idx];
+  assertPaymentWriteAllowed(ctx.user, existing.type);
+  if (params.patch.type) assertPaymentWriteAllowed(ctx.user, params.patch.type);
+
+  data.payments![idx] = {
+    ...existing,
+    ...params.patch,
+    amount: params.patch.amount !== undefined ? Number(params.patch.amount) : existing.amount,
+  };
+
+  const save = await runIncrementalSaveFromDashboardData(data, { ...ctx, projectId });
+  return {
+    ok: save.ok,
+    message: save.message,
+    payment_id: paymentId,
+    save_path: 'frontend_incremental',
+    applied: save.result.applied,
+  };
+}
+
+export async function deletePaymentLikeFrontend(
+  params: {
+    original_id?: string;
+    payment_id?: string;
+    project_id?: string;
+  },
+  ctx: McpSaveContext,
+) {
+  const projectId = resolveAuthorizedProjectId(ctx.user, params.project_id);
+  const paymentId = String(params.original_id || params.payment_id || '').trim();
+  if (!paymentId) return { ok: false, message: '缺少 original_id / payment_id' };
+
+  restorePocketBaseUserSession(
+    ctx.pbUrl,
+    ctx.userPb.authStore.token,
+    ctx.userPb.authStore.model as Record<string, unknown> | null,
+  );
+  const backupRes = await fetchPocketBaseBackup(projectId);
+  if (!backupRes.success || !backupRes.data) {
+    return { ok: false, message: backupRes.message || '无法加载云端数据' };
+  }
+
+  const data: DashboardData = { ...generateInitialData(), ...backupRes.data };
+  const existing = (data.payments || []).find((p) => p.id === paymentId);
+  if (!existing) return { ok: false, message: `收款记录不存在：${paymentId}` };
+  assertPaymentWriteAllowed(ctx.user, existing.type);
+
+  data.payments = (data.payments || []).filter((p) => p.id !== paymentId);
+
+  const save = await runIncrementalSaveFromDashboardData(data, { ...ctx, projectId });
+  return {
+    ok: save.ok,
+    message: save.message,
+    payment_id: paymentId,
+    save_path: 'frontend_incremental',
+    applied: save.result.applied,
+  };
+}
+
 export async function saveTenantLikeFrontend(
   params: {
     original_id?: string;
@@ -286,6 +395,91 @@ export async function saveTenantLikeFrontend(
     ok: save.ok,
     message: save.message,
     tenant_id: oid,
+    save_path: 'frontend_incremental',
+    applied: save.result.applied,
+  };
+}
+
+export async function archiveTenantLikeFrontend(
+  params: {
+    original_id?: string;
+    tenant_id?: string;
+    project_id?: string;
+    termination_date?: string;
+    termination_reason?: string;
+  },
+  ctx: McpSaveContext,
+) {
+  const projectId = resolveAuthorizedProjectId(ctx.user, params.project_id);
+  const tenantId = String(params.original_id || params.tenant_id || '').trim();
+  if (!tenantId) return { ok: false, message: '缺少 original_id / tenant_id' };
+  assertPaymentWriteAllowed(ctx.user, 'Rent');
+
+  restorePocketBaseUserSession(
+    ctx.pbUrl,
+    ctx.userPb.authStore.token,
+    ctx.userPb.authStore.model as Record<string, unknown> | null,
+  );
+  const backupRes = await fetchPocketBaseBackup(projectId);
+  if (!backupRes.success || !backupRes.data) {
+    return { ok: false, message: backupRes.message || '无法加载云端数据' };
+  }
+
+  const dashboard: DashboardData = { ...generateInitialData(), ...backupRes.data };
+  const idx = (dashboard.tenants || []).findIndex((t) => t.id === tenantId);
+  if (idx < 0) return { ok: false, message: `租户不存在：${tenantId}` };
+
+  dashboard.tenants![idx] = {
+    ...dashboard.tenants![idx],
+    status: 'Terminated' as Tenant['status'],
+    terminationDate: params.termination_date || new Date().toISOString().slice(0, 10),
+    terminationReason: params.termination_reason || 'Agent 作废/退租',
+  };
+
+  const save = await runIncrementalSaveFromDashboardData(dashboard, { ...ctx, projectId });
+  return {
+    ok: save.ok,
+    message: save.message,
+    tenant_id: tenantId,
+    save_path: 'frontend_incremental',
+    applied: save.result.applied,
+  };
+}
+
+export async function deleteTenantLikeFrontend(
+  params: {
+    original_id?: string;
+    tenant_id?: string;
+    project_id?: string;
+  },
+  ctx: McpSaveContext,
+) {
+  const projectId = resolveAuthorizedProjectId(ctx.user, params.project_id);
+  const tenantId = String(params.original_id || params.tenant_id || '').trim();
+  if (!tenantId) return { ok: false, message: '缺少 original_id / tenant_id' };
+  assertPaymentWriteAllowed(ctx.user, 'Rent');
+
+  restorePocketBaseUserSession(
+    ctx.pbUrl,
+    ctx.userPb.authStore.token,
+    ctx.userPb.authStore.model as Record<string, unknown> | null,
+  );
+  const backupRes = await fetchPocketBaseBackup(projectId);
+  if (!backupRes.success || !backupRes.data) {
+    return { ok: false, message: backupRes.message || '无法加载云端数据' };
+  }
+
+  const dashboard: DashboardData = { ...generateInitialData(), ...backupRes.data };
+  const existing = (dashboard.tenants || []).find((t) => t.id === tenantId);
+  if (!existing) return { ok: false, message: `租户不存在：${tenantId}` };
+
+  dashboard.tenants = (dashboard.tenants || []).filter((t) => t.id !== tenantId);
+
+  const save = await runIncrementalSaveFromDashboardData(dashboard, { ...ctx, projectId });
+  return {
+    ok: save.ok,
+    message: save.message,
+    tenant_id: tenantId,
     save_path: 'frontend_incremental',
     applied: save.result.applied,
   };

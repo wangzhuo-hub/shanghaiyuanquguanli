@@ -5,10 +5,13 @@ import { Plus, Trash2, Edit2, Home, Info, X, Users, Scissors, Coffee, Car, Maxim
 import * as XLSX from 'xlsx';
 import { formatArea, formatNumber, formatPercent } from '../services/numberFormat';
 import { buildingImportReadmeRows, syncTenantFromBuildingImportRow } from '../services/buildingImportContractSync';
+import { computeParkAreaMetrics, type ParkAreaMetrics } from '../services/parkAreaMetrics';
 
 interface BuildingManagerProps {
   buildings: Building[];
   tenants: Tenant[];
+  /** 与看板 / OpenClaw 快照同源，由 App 传入 processedData 指标 */
+  parkAreaMetrics: ParkAreaMetrics;
   onUpdateBuildings: (buildings: Building[]) => void;
   onCommitBuildingsTenants: (buildings: Building[], tenants: Tenant[]) => void;
 }
@@ -47,7 +50,7 @@ function allocUnitId(buildingId: string, name: string, ids: Set<string>): string
   return `${buildingId}-${name}-${i}`;
 }
 
-export const BuildingManager: React.FC<BuildingManagerProps> = ({ buildings, tenants, onUpdateBuildings, onCommitBuildingsTenants }) => {
+export const BuildingManager: React.FC<BuildingManagerProps> = ({ buildings, tenants, parkAreaMetrics, onUpdateBuildings, onCommitBuildingsTenants }) => {
   const [activeBuildingId, setActiveBuildingId] = useState<string>(buildings[0]?.id || '');
 
   const [unitDrawerOpen, setUnitDrawerOpen] = useState(false);
@@ -73,86 +76,20 @@ export const BuildingManager: React.FC<BuildingManagerProps> = ({ buildings, ten
 
   const activeBuilding = buildings.find(b => b.id === activeBuildingId);
 
-  const globalStats = useMemo(() => {
-    let totalArea = 0;
-    let selfUseArea = 0;
-
-    buildings.forEach(b => {
-      if (b.type === 'Site') return;
-
-      b.units.forEach(u => {
-        totalArea += u.area;
-        if (u.isSelfUse) selfUseArea += u.area;
-      });
-    });
-
-    const leasableArea = totalArea - selfUseArea;
-
-    let leasedArea = 0;
-    tenants.forEach(t => {
-        if (t.status !== ContractStatus.Active && t.status !== ContractStatus.Expiring) return;
-
-        const building = buildings.find(b => b.id === t.buildingId);
-        if (building && building.type === 'Site') return;
-
-        leasedArea += t.totalArea;
-    });
-
-    const vacantArea = Math.max(0, leasableArea - leasedArea);
-    const rate = leasableArea > 0 ? (leasedArea / leasableArea) * 100 : 0;
-
-    /** 户数：非 Site 楼宇中非自用单元；已租/待租与单元状态一致（与平面图、计费引擎同步的 Occupied） */
-    let leasableUnits = 0;
-    let leasedUnits = 0;
-    let vacantUnits = 0;
-    buildings.forEach((b) => {
-        if (b.type === 'Site') return;
-        b.units.forEach((u) => {
-            if (u.isSelfUse) return;
-            leasableUnits += 1;
-            if (u.status === UnitStatus.Occupied) leasedUnits += 1;
-            else vacantUnits += 1;
-        });
-    });
-
-    return {
-        totalArea: Number(totalArea.toFixed(2)),
-        selfUseArea: Number(selfUseArea.toFixed(2)),
-        leasableArea: Number(leasableArea.toFixed(2)),
-        leasedArea: Number(leasedArea.toFixed(2)),
-        vacantArea: Number(vacantArea.toFixed(2)),
-        rate,
-        leasableUnits,
-        leasedUnits,
-        vacantUnits,
-    };
-  }, [buildings, tenants]);
+  const globalStats = parkAreaMetrics;
 
   const buildingStats = activeBuilding ? (() => {
+      const perBuilding = computeParkAreaMetrics(buildings, tenants, { buildingId: activeBuilding.id });
       const totalUnits = activeBuilding.units.length;
-      const totalArea = activeBuilding.units.reduce((s, u) => s + u.area, 0);
-      const selfUseArea = activeBuilding.units.filter(u => u.isSelfUse).reduce((s, u) => s + u.area, 0);
-      const leasableArea = totalArea - selfUseArea;
-
-      let occupiedArea = 0;
-      tenants.forEach(t => {
-          if (t.buildingId !== activeBuilding.id) return;
-          if (t.status !== ContractStatus.Active && t.status !== ContractStatus.Expiring) return;
-          occupiedArea += t.totalArea;
-      });
-
-      const rate = leasableArea > 0 ? (occupiedArea / leasableArea) * 100 : 0;
-      const leasableUnits = activeBuilding.units.filter((u) => !u.isSelfUse).length;
-      const leasedUnits = activeBuilding.units.filter((u) => !u.isSelfUse && u.status === UnitStatus.Occupied).length;
       return {
           totalUnits,
-          totalArea: Number(totalArea.toFixed(2)),
-          leasableArea: Number(leasableArea.toFixed(2)),
-          occupiedArea: Number(occupiedArea.toFixed(2)),
-          rate,
-          selfUseArea: Number(selfUseArea.toFixed(2)),
-          leasableUnits,
-          leasedUnits,
+          totalArea: perBuilding.campusTotalArea,
+          leasableArea: perBuilding.leasableArea,
+          occupiedArea: perBuilding.leasedArea,
+          rate: perBuilding.occupancyRate,
+          selfUseArea: perBuilding.selfUseArea,
+          leasableUnits: perBuilding.leasableUnits,
+          leasedUnits: perBuilding.leasedUnits,
       };
   })() : null;
 
@@ -783,7 +720,7 @@ export const BuildingManager: React.FC<BuildingManagerProps> = ({ buildings, ten
     <div className="space-y-6">
       <div className="mb-6 grid grid-cols-2 items-stretch gap-3 md:grid-cols-3 lg:grid-cols-6">
         {[
-          { label: '园区总面积', value: globalStats.totalArea, unit: '㎡', icon: <Maximize size={18}/>, color: 'bg-slate-50 text-slate-600' },
+          { label: '园区总面积', value: globalStats.campusTotalArea, unit: '㎡', icon: <Maximize size={18}/>, color: 'bg-slate-50 text-slate-600' },
           { label: '自用面积', value: globalStats.selfUseArea, unit: '㎡', icon: <Coffee size={18}/>, color: 'bg-slate-50 text-slate-500' },
           {
               label: '可出租面积',
@@ -812,7 +749,7 @@ export const BuildingManager: React.FC<BuildingManagerProps> = ({ buildings, ten
               household: globalStats.vacantUnits,
               householdHint: '空置 + 预留等非「已租」可招商单元数',
           },
-          { label: '当前出租率', value: globalStats.rate, unit: '%', icon: <Percent size={18}/>, color: 'bg-sky-600 text-white shadow-md' },
+          { label: '当前出租率', value: globalStats.occupancyRate, unit: '%', icon: <Percent size={18}/>, color: 'bg-sky-600 text-white shadow-md' },
         ].map((stat, i) => (
           <div
               key={i}
@@ -889,26 +826,13 @@ export const BuildingManager: React.FC<BuildingManagerProps> = ({ buildings, ten
 
       <div className="flex gap-2 overflow-x-auto pb-2 border-b border-slate-200 scrollbar-hide">
         {buildings.map(b => {
-             const bTotal = b.units.reduce((s,u) => s+u.area, 0);
-             const bSelfUse = b.units.filter(u => u.isSelfUse).reduce((s, u) => s + u.area, 0);
-             const bLeasable = bTotal - bSelfUse;
-
-             let bSignedArea = 0;
-             const now = new Date();
-             tenants.forEach(t => {
-                 if (t.buildingId === b.id && t.status !== ContractStatus.Expired) {
-                    const achievedDate = t.signingDate ? new Date(t.signingDate) : new Date(t.leaseStart);
-                    const terminated = t.terminationDate ? new Date(t.terminationDate) : null;
-                    if (achievedDate <= now && (!terminated || terminated > now)) {
-                        bSignedArea += t.totalArea;
-                    }
-                 }
-             });
-
-             const rate = bLeasable > 0 ? (bSignedArea / bLeasable) * 100 : 0;
+             const perBuilding = computeParkAreaMetrics(buildings, tenants, { buildingId: b.id });
+             const bLeasable = perBuilding.leasableArea;
+             const bSignedArea = perBuilding.leasedArea;
+             const rate = perBuilding.occupancyRate;
              const isSite = b.type === 'Site';
-             const bLeasableUnits = b.units.filter((u) => !u.isSelfUse).length;
-             const bLeasedUnits = b.units.filter((u) => !u.isSelfUse && u.status === UnitStatus.Occupied).length;
+             const bLeasableUnits = perBuilding.leasableUnits;
+             const bLeasedUnits = perBuilding.leasedUnits;
 
              return (
                 <button
@@ -1067,7 +991,7 @@ export const BuildingManager: React.FC<BuildingManagerProps> = ({ buildings, ten
                     <div key={floor} className="space-y-2">
                       <div className="text-[11px] font-extrabold tracking-wider text-slate-400">{floor}F</div>
                       <div className="flex min-h-[88px] min-w-0 flex-wrap content-start items-stretch gap-1.5 rounded-xl border border-dashed border-slate-300 bg-slate-100/90 p-2 [background-image:repeating-linear-gradient(90deg,transparent,transparent_11px,rgba(148,163,184,0.25)_11px,rgba(148,163,184,0.25)_12px)]">
-                        {unitsByFloor[Number(floor)].map(unit => {
+                        {(unitsByFloor[Number(floor)] ?? []).map((unit: Unit) => {
                           const tenant = tenants.find(t => t.unitIds.includes(unit.id) && t.status === ContractStatus.Active);
                           const isSelfUse = unit.isSelfUse;
                           const flexGrow = Math.max(unit.area || 0, 8);
@@ -1137,7 +1061,7 @@ export const BuildingManager: React.FC<BuildingManagerProps> = ({ buildings, ten
                       {Object.keys(unitsByFloor)
                         .sort((a, b) => Number(b) - Number(a))
                         .flatMap(floorKey =>
-                          unitsByFloor[Number(floorKey)].map(unit => {
+                          (unitsByFloor[Number(floorKey)] ?? []).map((unit: Unit) => {
                             const tenant = tenants.find(t => t.unitIds.includes(unit.id) && t.status === ContractStatus.Active);
                             const isSelfUse = unit.isSelfUse;
                             let statusLabel = '待租';

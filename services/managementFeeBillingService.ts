@@ -3,6 +3,7 @@ import {
     BILLING_LOOP_LIMIT,
     BudgetedBill,
     addCalendarMonths,
+    addContractMonths,
     calculateRentForDuration,
     farFutureDate,
     getReceivableMonthOffsetForTenant,
@@ -67,15 +68,6 @@ const resolveCycleMonths = (tenant: Tenant): number => {
     if (tenant.paymentCycle === 'Annual') return 12;
     if (tenant.paymentCycleMonths && tenant.paymentCycleMonths > 0) return tenant.paymentCycleMonths;
     return 3;
-};
-
-const addCycleMonths = (date: Date, months: number): Date => {
-    const next = new Date(date);
-    const wholeMonths = Math.trunc(months);
-    const fractionalMonths = months - wholeMonths;
-    if (wholeMonths !== 0) next.setMonth(next.getMonth() + wholeMonths);
-    if (fractionalMonths !== 0) next.setDate(next.getDate() + Math.round(fractionalMonths * 30));
-    return next;
 };
 
 /** 招商合同入驻日：实际入驻日优先，未填则起租日 */
@@ -167,6 +159,7 @@ export function generateManagementFeeBills(
     if (monthlyFee <= 0) return [];
 
     const feeAccrualStart = parseDateLocal(accrualStartStr);
+    const useContractMonthCoverage = feeAccrualStart.getDate() >= 29;
     const leaseEnd = tenant.leaseEnd ? parseDateLocal(tenant.leaseEnd) : farFutureDate();
     const terminationDate = tenant.terminationDate ? parseDateLocal(tenant.terminationDate) : null;
     const effectiveLeaseEnd = terminationDate && terminationDate < leaseEnd ? terminationDate : leaseEnd;
@@ -200,7 +193,16 @@ export function generateManagementFeeBills(
     while (coverageStart <= effectiveLeaseEnd && safetyCounter < BILLING_LOOP_LIMIT) {
         safetyCounter++;
         const durationMonths = isFirstCycle ? firstCycleMonths : regularCycleMonths;
-        const coverageEnd = addCycleMonths(coverageStart, durationMonths);
+        const coverageEnd = useContractMonthCoverage
+            ? addContractMonths(coverageStart, durationMonths, feeAccrualStart.getDate())
+            : (() => {
+                const next = new Date(coverageStart);
+                const wholeMonths = Math.trunc(durationMonths);
+                const fractionalMonths = durationMonths - wholeMonths;
+                if (wholeMonths !== 0) next.setMonth(next.getMonth() + wholeMonths);
+                if (fractionalMonths !== 0) next.setDate(next.getDate() + Math.round(fractionalMonths * 30));
+                return next;
+            })();
         coverageEnd.setDate(coverageEnd.getDate() - 1);
         const effectiveCoverageEnd = coverageEnd > effectiveLeaseEnd ? effectiveLeaseEnd : coverageEnd;
 

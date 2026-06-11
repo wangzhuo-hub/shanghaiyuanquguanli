@@ -40,6 +40,12 @@ import {
     isDeferInDisplayTenantId,
     deferBillingNoteKeyFromDeferInDisplayTenantId,
     paymentTenantMatchesBillingTenant,
+    normalizeReceivableRemaining,
+    isReceivableTailSettled,
+    isCollectAmountAcceptable,
+    receivableTailWaivedAmount,
+    billingStatusFromAmounts,
+    RECEIVABLE_TAIL_TOLERANCE,
 } from '../services/receivableListHelpers';
 import { formatCurrency, roundMoney2 } from '../services/numberFormat';
 import { ContractSummaryModal, type ContractSummaryContent, resolveTenantAssetLabels } from './ContractSummaryModal';
@@ -636,10 +642,7 @@ export const FinanceManager: React.FC<FinanceManagerProps> = ({
                   if (periods.length > 0) return s + (periods.includes(receivableMonth) ? p.amount : 0);
                   return s + (p.date.startsWith(receivableMonth) ? p.amount : 0);
               }, 0);
-          let status: BillingDetail['status'] = 'Unpaid';
-          if (paid >= amountDue && amountDue > 0) status = 'Paid';
-          else if (paid > 0 && paid < amountDue) status = 'Partial';
-          else if (amountDue === 0 && paid > 0) status = 'Paid';
+          let status: BillingDetail['status'] = billingStatusFromAmounts(amountDue, paid);
           return {
               tenantId,
               tenantName: label,
@@ -692,10 +695,10 @@ export const FinanceManager: React.FC<FinanceManagerProps> = ({
       roundMoney2(detail.amountPaid + getDeferredTargetCollection(detail));
 
   const getRemainingReceivable = (detail: BillingDetail) =>
-      Math.max(0, roundMoney2(receivableBudgetDisplay(detail) - getEffectivePaidAmount(detail)));
+      normalizeReceivableRemaining(receivableBudgetDisplay(detail) - getEffectivePaidAmount(detail));
 
   const isReceivableSettled = (detail: BillingDetail) =>
-      receivableBudgetDisplay(detail) > 0.005 && getRemainingReceivable(detail) <= 0.005;
+      isReceivableTailSettled(receivableBudgetDisplay(detail), getEffectivePaidAmount(detail));
 
   const receivableSections = useMemo(() => {
       const unsettled: { item: BillingDetail; i: number }[] = [];
@@ -940,10 +943,11 @@ export const FinanceManager: React.FC<FinanceManagerProps> = ({
           alert('请输入有效实收金额');
           return;
       }
-      if (amt > remaining + 0.005) {
-          alert(`金额不能超过待收余额 ${formatCurrency(remaining)}`);
+      if (!isCollectAmountAcceptable(remaining, amt)) {
+          alert(`实收金额不能超过待收 ${formatCurrency(remaining)} 超过 ${RECEIVABLE_TAIL_TOLERANCE} 元`);
           return;
       }
+      const tailWaived = receivableTailWaivedAmount(remaining, amt);
       const paymentDate = new Date().toISOString().split('T')[0];
       const { period: paymentPeriod, error: periodErr } = resolveRentWriteOffPaymentPeriod(
           collectModalDetail,
@@ -965,7 +969,9 @@ export const FinanceManager: React.FC<FinanceManagerProps> = ({
           date: paymentDate,
           period: paymentPeriod,
           status: 'Received',
-          remarks: isMgmt ? `[${paymentPeriod}] 物业费月度账单` : `[${paymentPeriod}] 月度账单`,
+          remarks: isMgmt
+              ? `[${paymentPeriod}] 物业费月度账单${tailWaived > 0 ? `（尾差${tailWaived.toFixed(2)}元自动核销）` : ''}`
+              : `[${paymentPeriod}] 月度账单${tailWaived > 0 ? `（尾差${tailWaived.toFixed(2)}元自动核销）` : ''}`,
           invoiceStatus: 'Pending',
       };
       try {
@@ -1003,10 +1009,11 @@ export const FinanceManager: React.FC<FinanceManagerProps> = ({
           const raw = (batchAmountInputs[tid] ?? String(remaining)).replace(/,/g, '').trim();
           const amt = roundMoney2(Number(raw));
           if (!Number.isFinite(amt) || amt <= 0) continue;
-          if (amt > remaining + 0.005) {
-              alert(`${detail.tenantName}: 金额不能超过待收 ${formatCurrency(remaining)}`);
+          if (!isCollectAmountAcceptable(remaining, amt)) {
+              alert(`${detail.tenantName}: 实收不能超过待收 ${formatCurrency(remaining)} 超过 ${RECEIVABLE_TAIL_TOLERANCE} 元`);
               return;
           }
+          const tailWaived = receivableTailWaivedAmount(remaining, amt);
           const { period: payPeriod, error: periodErr } = resolveRentWriteOffPaymentPeriod(detail, receivableMonth, amt);
           if (periodErr) {
               alert(`${detail.tenantName}: ${periodErr}`);
@@ -1023,7 +1030,9 @@ export const FinanceManager: React.FC<FinanceManagerProps> = ({
               date: paymentDate,
               period: payPeriod,
               status: 'Received',
-              remarks: isMgmt ? `[${payPeriod}] 物业费批量核销` : `[${payPeriod}] 批量核销`,
+              remarks: isMgmt
+                  ? `[${payPeriod}] 物业费批量核销${tailWaived > 0 ? `（尾差${tailWaived.toFixed(2)}元自动核销）` : ''}`
+                  : `[${payPeriod}] 批量核销${tailWaived > 0 ? `（尾差${tailWaived.toFixed(2)}元自动核销）` : ''}`,
               invoiceStatus: 'Pending',
           });
       }
@@ -2293,6 +2302,9 @@ export const FinanceManager: React.FC<FinanceManagerProps> = ({
                           <span className="text-slate-500">待收余额</span>{' '}
                           <span className="font-mono font-bold text-amber-700">{formatCurrency(getRemainingReceivable(collectModalDetail))}</span>
                       </p>
+                      <p className="text-xs text-slate-500 bg-slate-50 border border-slate-100 rounded-lg px-3 py-2">
+                          可分次核销；最后一笔若与待收相差 ≤ {RECEIVABLE_TAIL_TOLERANCE} 元，自动视为结清（备注会标注自动核销尾差）。
+                      </p>
                       <div>
                           <label className="block text-xs font-medium text-slate-600 mb-1">本次实收金额（可分次核销）</label>
                           <input
@@ -2320,7 +2332,7 @@ export const FinanceManager: React.FC<FinanceManagerProps> = ({
                       <button type="button" onClick={() => setBatchPartialOpen(false)} className="p-1.5 rounded-lg hover:bg-slate-200 text-slate-500"><X size={22} /></button>
                   </div>
                   <div className="p-5 overflow-y-auto flex-1 space-y-3 text-sm">
-                      <p className="text-slate-500 text-xs">账期 <span className="font-mono font-semibold text-slate-800">{receivableMonth}</span>，请确认每笔实收金额（默认可改）。</p>
+                      <p className="text-slate-500 text-xs">账期 <span className="font-mono font-semibold text-slate-800">{receivableMonth}</span>，请确认每笔实收金额（默认可改）。可分次核销；最后一笔尾差 ≤ {RECEIVABLE_TAIL_TOLERANCE} 元视为结清。</p>
                       {Array.from(batchSelectedIds).map((tid) => {
                           const row = receivableFiltered.find((r) => receivableRowKey(r) === tid);
                           if (!row) return null;

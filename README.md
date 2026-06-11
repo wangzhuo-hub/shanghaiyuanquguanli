@@ -113,6 +113,21 @@ npm run dev
 - 服务管理：`systemctl start/stop/restart kingdee-park`
 - Caddy 配置：`/etc/caddy/Caddyfile`
 
+建议在 `kdpark.fun` 站点块内开启静态资源压缩和 hash 资源长缓存，减少工作台首屏下载体积：
+
+```caddyfile
+kdpark.fun {
+    encode zstd gzip
+
+    @assets path /assets/*
+    header @assets Cache-Control "public, max-age=31536000, immutable"
+
+    reverse_proxy 127.0.0.1:1001
+}
+```
+
+修改后执行 `systemctl reload caddy`。`/assets/*` 文件名带构建 hash，可安全长缓存；入口 HTML 不建议长缓存。
+
 ### 后续部署新应用
 
 在 DNS 添加子域名 A 记录指向 `47.92.35.188`，然后在 `/etc/caddy/Caddyfile` 添加：

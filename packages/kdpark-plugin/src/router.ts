@@ -125,8 +125,8 @@ export async function runSubmit(action: string, params: Record<string, unknown>)
           remarks: params.remarks as string | undefined,
           tenant_name: params.tenant_name as string | undefined,
           original_id: params.original_id as string | undefined,
-          status: params.status as 'Received' | 'Pending' | 'Overdue' | undefined,
-          invoice_status: params.invoice_status as 'Issued' | 'Pending' | 'NotRequired' | undefined,
+          status: params.status as 'Received' | 'Pending' | 'Overdue' | undefined as never,
+          invoice_status: params.invoice_status as 'Issued' | 'Pending' | 'NotRequired' | undefined as never,
         },
         ctx,
       );

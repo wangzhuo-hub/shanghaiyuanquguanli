@@ -1,0 +1,24 @@
+{
+  "projectId": "beijing_park",
+  "year": 2026,
+  "ok": true,
+  "computedAt": "2026-06-11T03:18:10.610Z",
+  "elapsedSec": 3.91,
+  "dataVersion": 278,
+  "summary": {
+    "annualRevenueTarget": 24305343.5,
+    "annualRevenueCollected": 9700411.03,
+    "annualInitialBudget": 24305343.5,
+    "annualBudgetTarget": 17741032.450000003,
+    "annualContractReceivable": 17741032.450000003,
+    "annualGoalCompletion": 54.6778269942232,
+    "annualBudgetCompletion": 54.6778269942232,
+    "occupancyRate": 47.55,
+    "annualOccupancyTarget": 55,
+    "tenantCount": 270,
+    "totalArea": 98522.39,
+    "leasedArea": 46847,
+    "vacantArea": 51675.39,
+    "accumulatedArrears": 991678.1799999999
+  }
+}

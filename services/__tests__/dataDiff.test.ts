@@ -146,7 +146,7 @@ describe('dataDiff', () => {
         });
     });
 
-    it('billing_period_notes 当作单条 update 处理', () => {
+    it('billing_period_notes 当作单条 update 处理，并按顶层 key 打补丁', () => {
         const baseline = dashboardDataToPbRecords(baseData(), 'p1');
         const modified = baseData();
         modified.billingPeriodNotes = { 't1###2026-04': '已催收' };
@@ -155,6 +155,9 @@ describe('dataDiff', () => {
         expect(payload.pb_billing_period_notes.updates[0].originalId).toBe('billing_period_notes');
         expect(
             payload.pb_billing_period_notes.updates[0].changedFields.notes_json
+        ).toBeUndefined();
+        expect(
+            payload.pb_billing_period_notes.updates[0].changedFields.notes_json_patch
         ).toEqual({ 't1###2026-04': '已催收' });
     });
 

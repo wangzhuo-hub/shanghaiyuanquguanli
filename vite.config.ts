@@ -56,13 +56,24 @@ export default defineConfig(({ mode }) => {
         },
         build: {
             outDir: 'dist',
+            modulePreload: false,
             rollupOptions: {
                 output: {
-                    manualChunks: {
-                        react: ['react', 'react-dom'],
-                        charts: ['recharts'],
-                        excel: ['exceljs'],
-                        pdf: ['jspdf', 'html2canvas'],
+                    manualChunks(id) {
+                        if (id.includes('vite/preload-helper')) return 'react';
+                        if (!id.includes('node_modules')) return undefined;
+                        if (
+                            id.includes('/react/') ||
+                            id.includes('/react-dom/') ||
+                            id.includes('/scheduler/')
+                        ) {
+                            return 'react';
+                        }
+                        if (id.includes('/recharts/') || id.includes('/d3-')) return 'charts';
+                        if (id.includes('/jspdf/') || id.includes('/html2canvas/')) return 'pdf';
+                        if (id.includes('/exceljs/')) return 'excel';
+                        if (id.includes('/xlsx/')) return 'xlsx';
+                        return undefined;
                     },
                 },
             },

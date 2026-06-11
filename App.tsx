@@ -1,5 +1,5 @@
 
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, Suspense } from 'react';
 import { LayoutDashboard, Building2, Users, PieChart, Settings, Bell, Search, Menu, Sparkles, UserCircle, Download, Upload, X, Check, Filter, Save, RotateCcw, Trash2, Calculator, Database, Lightbulb, Cloud, CloudCog, RefreshCw, AlertCircle, ExternalLink, Link, Info, Loader2, CheckCircle2, XCircle, History, FileClock, ChevronRight, ChevronDown, CloudUpload, LogOut, User, Calendar, ChevronLeft, FileInput, Table as TableIcon, FileText, Pencil, UserCog } from 'lucide-react';
 import { generateInitialData } from './services/mockData';
 import { DashboardData, Building, Tenant, PaymentRecord, UnitStatus, MonthlyTrend, PaymentCycle, RentFreePeriod, BillingDetail, ParkingStatDetail, BudgetAssumption, BudgetAdjustment, BudgetAnalysisData, CloudConfig, AIConfig, CloudBackupMetadata, BudgetScenario, MonthlyInitData, ContractStatus, DepositStatus, InvoiceRecord, AuthUser, ParkInfo, UserRole } from './types';
@@ -7,15 +7,10 @@ import { StatsCards } from './components/StatsCards';
 import { RecentActivityTable, AnnualMetricComparisonTable, AnnualComparisonData } from './components/Tables';
 import { BillingTable } from './components/BillingTable';
 import { AssistantPanel } from './components/AssistantPanel';
-import { AIAssistantDialog } from './components/AIAssistantDialog';
-import { BuildingManager } from './components/BuildingManager';
-import { ContractManager } from './components/ContractManager';
-import { FinanceManager } from './components/FinanceManager';
-import { BudgetManager } from './components/BudgetManager';
 import { TenantBudgetNameLinkTool } from './components/TenantMergeTool';
 import { TenantInsights } from './components/TenantInsights';
 import { DashboardAlerts } from './components/DashboardAlerts';
-import { SystemSettingsPanel, type NewManagedUserForm } from './components/SystemSettingsPanel';
+import type { NewManagedUserForm } from './components/SystemSettingsPanel';
 import { ConflictDialog } from './components/ConflictDialog';
 import {
     checkConnection,
@@ -30,6 +25,8 @@ import {
     loginCloudUser,
     logoutCloudUser,
     getCurrentCloudUser,
+    refreshCloudAuthRecord,
+    changeOwnCloudPassword,
     fetchAuthorizedParks,
     fetchManagedCloudUsers,
     createManagedCloudUser,
@@ -44,7 +41,8 @@ import {
     fetchCloudKpiSnapshot,
     upsertCloudKpiSnapshot,
 } from './services/cloudService';
-import type { KpiSnapshotSummary, RecordMeta, IncrementalConflict } from './services/cloudService';
+import type { KpiSnapshotSummary, RecordMeta, IncrementalConflict, IncrementalApplied } from './services/cloudService';
+import { formatIncrementalSaveDetails, formatIncrementalSaveAlertTitle, type IncrementalSaveDisplayOptions } from './services/cloudService';
 import type { ManagedUserAccount } from './services/cloudService';
 import type { SignupRequestRecord } from './services/cloudService';
 import { buildIntegrationFullSnapshotV1 } from './services/integrationSnapshot';
@@ -67,6 +65,7 @@ import {
     buildKpiSummaryFromProcessedData,
     normalizeKpiSummaryWithMonthlyTrends,
     resolveAnnualInitialBudget,
+    normalizeYearlyTargetsFromInitialization,
     type DashboardQuarter,
 } from './services/dashboardMetrics';
 import { formatCurrency } from './services/numberFormat';
@@ -100,12 +99,55 @@ import {
     filterDirtyPayloadForRentMaskedUser,
 } from './services/tenantRentFieldGuard';
 import { scopeCachedDashboardData } from './services/dataScopeFilter';
+import { mergeLocalDashboardCacheIntoCloud } from './services/localCloudMerge';
 import { migrateShanghaiInitRow, SHANGHAI_PARK_ID } from './services/initDataBudget';
+import { parkAreaMetricsFromDashboard } from './services/parkAreaMetrics';
+import { cachePut, cacheGet } from './services/storageCache';
+
+const AIAssistantDialog = React.lazy(() =>
+    import('./components/AIAssistantDialog').then((m) => ({ default: m.AIAssistantDialog }))
+);
+const BuildingManager = React.lazy(() =>
+    import('./components/BuildingManager').then((m) => ({ default: m.BuildingManager }))
+);
+const ContractManager = React.lazy(() =>
+    import('./components/ContractManager').then((m) => ({ default: m.ContractManager }))
+);
+const FinanceManager = React.lazy(() =>
+    import('./components/FinanceManager').then((m) => ({ default: m.FinanceManager }))
+);
+const BudgetManager = React.lazy(() =>
+    import('./components/BudgetManager').then((m) => ({ default: m.BudgetManager }))
+);
+const SystemSettingsPanel = React.lazy(() =>
+    import('./components/SystemSettingsPanel').then((m) => ({ default: m.SystemSettingsPanel }))
+);
 
 const STORAGE_KEY = 'kingdee_park_data_v1';
 // 标准化交付：升级存储 key，避免历史环境把旧的内网 URL 自动带入新部署
 const CLOUD_CONFIG_KEY = 'kingdee_park_cloud_config_v2';
 const getParkStorageKey = (projectId: string) => `${STORAGE_KEY}:${projectId || 'unknown'}`;
+type DashboardBillingLazyState = {
+    key: string;
+    rows: BillingDetail[];
+    loading: boolean;
+    error?: string;
+};
+const runWhenBrowserIdle = <T,>(task: () => T, timeout = 350): Promise<T> =>
+    new Promise((resolve, reject) => {
+        const run = () => {
+            try {
+                resolve(task());
+            } catch (e) {
+                reject(e);
+            }
+        };
+        if (typeof window !== 'undefined' && typeof window.requestIdleCallback === 'function') {
+            window.requestIdleCallback(run, { timeout });
+        } else {
+            window.setTimeout(run, 0);
+        }
+    });
 const hasMeaningfulDashboardPayload = (d: DashboardData): boolean =>
     (d.buildings?.length ?? 0) > 0 ||
     (d.tenants?.length ?? 0) > 0 ||
@@ -202,6 +244,24 @@ const SidebarItem: React.FC<SidebarItemProps> = ({ icon, label, isOpen, active, 
   </button>
 );
 
+const LazyPanelFallback = () => (
+  <div className="flex min-h-[240px] items-center justify-center rounded-xl border border-slate-100 bg-white text-slate-500">
+    <div className="flex items-center gap-2 text-sm">
+      <Loader2 size={18} className="animate-spin text-sky-500" />
+      正在加载模块...
+    </div>
+  </div>
+);
+
+const waitForNextPaint = () =>
+  new Promise<void>((resolve) => {
+    if (typeof window === 'undefined' || typeof window.requestAnimationFrame !== 'function') {
+      setTimeout(resolve, 0);
+      return;
+    }
+    window.requestAnimationFrame(() => window.requestAnimationFrame(() => resolve()));
+  });
+
 /** 与侧栏 `lg:` 断点一致：窄屏仅保留工作台 / 合同录入 / 收款核销 */
 function useMobileNavLayout(): boolean {
   const [narrow, setNarrow] = useState(() =>
@@ -217,6 +277,133 @@ function useMobileNavLayout(): boolean {
   return narrow;
 }
 
+const buildIncrementalSaveDisplayOptions = (
+    currentData?: DashboardData | null
+): IncrementalSaveDisplayOptions | undefined => {
+    if (!currentData) return undefined;
+    return {
+        labelFor: (collection, originalId) => {
+            if (collection === 'pb_payments') {
+                const payment = currentData.payments.find((item) => item.id === originalId);
+                if (payment) {
+                    const period = payment.period ? ` · 账期 ${payment.period}` : '';
+                    return `${payment.tenantName} · ${payment.date}${period}`;
+                }
+            }
+            if (collection === 'pb_tenants') {
+                return currentData.tenants.find((item) => item.id === originalId)?.name;
+            }
+            return undefined;
+        },
+    };
+};
+
+type CloudSaveAlertResult = {
+    ok: boolean;
+    conflict?: boolean;
+    conflictCount?: number;
+    message?: string;
+    partial?: boolean;
+    alertTitle?: string;
+};
+
+const alertCloudSaveResult = (res: CloudSaveAlertResult) => {
+    if (res.conflict && (res.conflictCount || 0) > 0) {
+        alert(
+            `检测到 ${res.conflictCount} 条冲突，请在冲突弹窗中处理。${
+                res.message ? `\n\n${res.message}` : ''
+            }`
+        );
+        return;
+    }
+    const title =
+        res.alertTitle || (res.ok ? '保存成功' : res.partial ? '部分保存成功' : '保存失败');
+    alert(`${title}\n\n${res.message || '未知错误'}`);
+};
+
+// ── 保存互斥锁（模块级）──────────────────────────────────────────────
+// 防止自动保存与手动保存并发执行，消除双写和 baseline 竞态。
+// - acquireSaveLock() 返回 release 函数（闭包持有真实 holder ID）
+// - tryAcquireSaveLock() 返回 release 函数或 null（获取失败）
+// - 最长持有时间 30 秒，超时自动释放（防止死锁）
+
+let _saveLock = false;
+let _saveLockHolder: string | null = null;
+let _saveLockSeq = 0;
+const _saveWaiters: Array<{ resolve: (release: () => void) => void }> = [];
+
+const _takeLock = (holderId: string): (() => void) => {
+    _saveLock = true;
+    _saveLockHolder = holderId;
+    const timeout = setTimeout(() => {
+        if (_saveLock && _saveLockHolder === holderId) {
+            console.warn(`[save-mutex] ${holderId} 超时（30s），强制释放锁`);
+            _releaseLock(holderId);
+        }
+    }, 30000);
+    return () => {
+        clearTimeout(timeout);
+        _releaseLock(holderId);
+    };
+};
+
+const _releaseLock = (holderId: string) => {
+    if (_saveLockHolder !== holderId) return;
+    _saveLock = false;
+    _saveLockHolder = null;
+    // 通知下一个等待者
+    if (_saveWaiters.length > 0) {
+        const waiter = _saveWaiters.shift()!;
+        waiter.resolve(_takeLock(`waiter:${++_saveLockSeq}`));
+    }
+};
+
+/** 获取保存锁（等待式）。返回 release 函数，调用方在 finally 中调用它。 */
+const acquireSaveLock = (): Promise<() => void> => {
+    if (!_saveLock) {
+        return Promise.resolve(_takeLock(`direct:${++_saveLockSeq}`));
+    }
+    return new Promise((resolve) => {
+        _saveWaiters.push({ resolve });
+    });
+};
+
+/** 尝试获取保存锁（非等待）。返回 release 函数或 null。 */
+const tryAcquireSaveLock = (): (() => void) | null => {
+    if (!_saveLock) {
+        return _takeLock(`auto:${++_saveLockSeq}`);
+    }
+    return null;
+};
+
+// ── 持久化缓存双写辅助（IndexedDB 主，localStorage 兜底）────────────────
+const parkDataPut = (key: string, jsonStr: string) => {
+    // IndexedDB 异步主路径（不阻塞）
+    cachePut(key, jsonStr).then(ok => {
+        if (!ok) console.warn('[cache] IndexedDB write failed for', key);
+    });
+    // localStorage 同步兜底（容量不够时静默失败，下次从 IndexedDB 读）
+    try {
+        localStorage.setItem(key, jsonStr);
+    } catch {
+        // QuotaExceeded — 不能依赖 localStorage，IndexedDB 是主路径
+    }
+};
+
+const parkDataGet = async (key: string): Promise<string | null> => {
+    // 优先 IndexedDB
+    const cached = await cacheGet<string>(key);
+    if (cached) return cached;
+    // 回退到 localStorage，并迁移到 IndexedDB
+    try {
+        const legacy = localStorage.getItem(key);
+        if (legacy) {
+            cachePut(key, legacy); // 异步迁移
+            return legacy;
+        }
+    } catch { /* ignore */ }
+    return null;
+};
 const App: React.FC = () => {
   const [data, setData] = useState<DashboardData | null>(null);
   const [cloudConfig, setCloudConfig] = useState<CloudConfig>(() => ({
@@ -237,6 +424,7 @@ const App: React.FC = () => {
   const [isTestingCloud, setIsTestingCloud] = useState(false);
   const [cloudConnectionMsg, setCloudConnectionMsg] = useState<{type: 'success' | 'error', text: string} | null>(null);
   const [authUser, setAuthUser] = useState<AuthUser | null>(null);
+  const [bootReady, setBootReady] = useState(false);
   const [authorizedParks, setAuthorizedParks] = useState<ParkInfo[]>([]);
   const [loginForm, setLoginForm] = useState({
       email: '',
@@ -264,6 +452,14 @@ const App: React.FC = () => {
   const [isSidebarOpen, setSidebarOpen] = useState(false);
   const [isAssistantOpen, setAssistantOpen] = useState(false);
   const [isAIDialogOpen, setAIDialogOpen] = useState(false);
+  const [isChangePasswordOpen, setIsChangePasswordOpen] = useState(false);
+  const [changePasswordForm, setChangePasswordForm] = useState({
+      oldPassword: '',
+      newPassword: '',
+      confirmPassword: '',
+  });
+  const [changePasswordSaving, setChangePasswordSaving] = useState(false);
+  const [changePasswordError, setChangePasswordError] = useState<string | null>(null);
   const [isTargetModalOpen, setIsTargetModalOpen] = useState(false);
   const [targetModalType, setTargetModalType] = useState<'revenue' | 'occupancy'>('revenue');
   const [activeTab, setActiveTab] = useState<'dashboard' | 'buildings' | 'contracts' | 'finance' | 'budget' | 'initData' | 'settings'>('dashboard');
@@ -273,7 +469,12 @@ const App: React.FC = () => {
   const [selectedYear, setSelectedYear] = useState(currentYear);
   const [selectedQuarter, setSelectedQuarter] = useState<'All' | 'Q1' | 'Q2' | 'Q3' | 'Q4'>('All');
   const [billingSelectedMonth, setBillingSelectedMonth] = useState<string>(new Date().toISOString().slice(0, 7));
-  const [targetForm, setTargetForm] = useState({ revenue: 0, occupancy: 0, initialBudget: 0 });
+  const [dashboardBillingState, setDashboardBillingState] = useState<DashboardBillingLazyState>({
+      key: '',
+      rows: [],
+      loading: false,
+  });
+  const [targetForm, setTargetForm] = useState({ occupancy: 0 });
 
   const [isInitDataModalOpen, setIsInitDataModalOpen] = useState(false);
   const [initDataYear, setInitDataYear] = useState<number>(2024);
@@ -318,6 +519,10 @@ const App: React.FC = () => {
   // ---- 增量保存相关 state ----
   // recordMeta：行级乐观锁基准，由 fetchCloudBackup 返回。每次保存成功后需重新拉取刷新。
   const [recordMeta, setRecordMeta] = useState<RecordMeta>({});
+  const recordMetaRef = React.useRef<RecordMeta>({});
+  React.useEffect(() => {
+      recordMetaRef.current = recordMeta;
+  }, [recordMeta]);
   // 单例 DirtyTracker：业务组件可以通过 Context 拿到它登记 create/update/delete
   // （目前业务组件还没主动登记；保存时通过 baselineSnapshotRef 自动 diff 兜底）
   const dirtyTrackerRef = React.useRef<DirtyTracker>(new DirtyTracker());
@@ -354,8 +559,12 @@ const App: React.FC = () => {
         }
         // 启动时自动连接后端；连通时始终从 PocketBase 拉取一次结构化数据（后端优先），保证局域网各端一致
         await initCloud(configToUse);
-        const currentUser = getCurrentCloudUser();
+        let currentUser = getCurrentCloudUser();
         if (currentUser?.enabled && currentUser.projectId) {
+            const refreshed = await refreshCloudAuthRecord();
+            if (refreshed.success && refreshed.user) {
+                currentUser = refreshed.user;
+            }
             setAuthUser(currentUser);
             let parks: ParkInfo[] = [];
             try {
@@ -375,7 +584,7 @@ const App: React.FC = () => {
         const connected = await checkConnection(configToUse);
         setIsCloudConnected(connected);
 
-        const savedData = localStorage.getItem(getParkStorageKey(configToUse.projectId));
+        const savedData = await parkDataGet(getParkStorageKey(configToUse.projectId));
         let parsedData: DashboardData | null = null;
         if (savedData) parsedData = JSON.parse(savedData);
 
@@ -385,22 +594,47 @@ const App: React.FC = () => {
 
         if (connected) {
           try {
-            const snapshotRes = await fetchCloudKpiSnapshot(configToUse, bootstrapYear);
-            if (snapshotRes.success && snapshotRes.snapshot && !parsedData) {
+            const snapshotPromise = fetchCloudKpiSnapshot(configToUse, bootstrapYear).catch(() => null);
+            const backupPromise = fetchCloudBackup(configToUse, configToUse.projectId || '');
+            const snapshotRes = await snapshotPromise;
+            if (currentUser?.enabled && snapshotRes?.success && snapshotRes.snapshot) {
               isKpiPreviewRef.current = true;
               hasKpiPreview = true;
+              // 快照仅作备份拉取失败时的兜底，不在全量数据就绪前展示（避免 161万→971万 闪烁）
               setData(buildDashboardDataFromKpiSnapshot(snapshotRes.snapshot));
+            } else if (currentUser?.enabled && parsedData) {
+              const cachedPreview = scopeCachedDashboardData(
+                { ...generateInitialData(), ...parsedData },
+                currentUser,
+                configToUse.projectId,
+              );
+              isKpiPreviewRef.current = true;
+              hasKpiPreview = true;
+              setData(cachedPreview);
             }
-            const latestRes = await fetchCloudBackup(configToUse, configToUse.projectId || '');
+            const latestRes = await backupPromise;
             if (latestRes.success && latestRes.data) {
               const safeCloudData = { ...generateInitialData(), ...latestRes.data };
               cloudBaselineData = safeCloudData;
               cloudBaselineMeta = latestRes.recordMeta;
               if (hasMeaningfulDashboardPayload(safeCloudData)) {
-                recalculateMetrics(safeCloudData, bootstrapYear, 'All');
+                const localSafe = parsedData
+                  ? { ...generateInitialData(), ...parsedData }
+                  : null;
+                const { data: displayData, recovered } = localSafe
+                  ? mergeLocalDashboardCacheIntoCloud(safeCloudData, localSafe)
+                  : { data: safeCloudData, recovered: false };
+                const processed = hasKpiPreview
+                  ? await runWhenBrowserIdle(() => recalculateMetrics(displayData, bootstrapYear, 'All'))
+                  : recalculateMetrics(displayData, bootstrapYear, 'All');
                 captureBaselineFromCloud(safeCloudData, latestRes.recordMeta, configToUse.projectId);
-                localStorage.setItem(getParkStorageKey(configToUse.projectId), JSON.stringify(safeCloudData));
+                parkDataPut(getParkStorageKey(configToUse.projectId), JSON.stringify(processed));
                 setLastSaved(new Date().toLocaleTimeString());
+                if (recovered) {
+                  console.warn(
+                    '[App] 已从本地缓存恢复尚未同步至云端的财务修改（特殊业态/收款等），请核对后点击保存。'
+                  );
+                }
                 try {
                   const historyRes = await getCloudHistory(configToUse);
                   if (historyRes.success && historyRes.data && historyRes.data.length > 0) {
@@ -431,6 +665,8 @@ const App: React.FC = () => {
         console.error("Failed to load data", e);
         const initialData = generateInitialData();
         recalculateMetrics(initialData, bootstrapYear, 'All');
+      } finally {
+        setBootReady(true);
       }
     };
     loadData();
@@ -461,38 +697,53 @@ const App: React.FC = () => {
           if (!baselineSnapshotRef.current) return;
           // 园区在 2 秒间被切走了（setCloudConfig 触发 effect 但 data 还没刷到目标园区）。
           if (currentProjectIdRef.current !== projectIdAtEffectStart) return;
-          localStorage.setItem(getParkStorageKey(projectIdAtEffectStart), JSON.stringify(data));
+          parkDataPut(getParkStorageKey(projectIdAtEffectStart), JSON.stringify(data));
           setLastSaved(new Date().toLocaleTimeString());
           if (isCloudConnected && cloudConfig.autoSync) {
-              const consistencyCheck = validateDataProjectConsistency(data, projectIdAtEffectStart || '');
-              if (!consistencyCheck.consistent) {
-                  console.error("[auto-save] 数据一致性校验失败:", consistencyCheck, "期望园区:", projectIdAtEffectStart);
+              // 保存互斥：手动保存进行中则跳过本次自动同步（下次 timer 会再试）
+              const autoRelease = tryAcquireSaveLock();
+              if (!autoRelease) {
+                  console.log('[auto-save] 手动保存进行中，跳过本次自动同步');
                   return;
               }
-              const nextSnapshot = dashboardDataToPbRecords(data, projectIdAtEffectStart || '');
-              const scopedSnapshot = preserveRentFieldsInTenantPbMap(
-                  nextSnapshot,
-                  baselineSnapshotRef.current,
-                  authUser,
-              );
-              let payload = diffPbRecords(baselineSnapshotRef.current, scopedSnapshot, recordMeta);
-              payload = filterDirtyPayloadForRentMaskedUser(payload, authUser);
-              const summary = payloadCount(payload);
-              if (summary.total > 0) {
-                  // 二次防御：写云之前再核对一次 projectId，避开 await 期间被切走的极端情况。
-                  if (currentProjectIdRef.current !== projectIdAtEffectStart) return;
-                  const res = await saveIncrementalToCloud(payload, cloudConfig, recordMeta);
-                  if (res.errors.length > 0) console.warn('[auto-save] 部分失败:', res.errors);
-                  if (res.conflicts.length > 0) {
-                      console.warn('[auto-save] 冲突，已暂停自动写云:', res.conflicts.length);
-                      setPendingConflicts(res.conflicts);
+              try {
+                  const consistencyCheck = validateDataProjectConsistency(data, projectIdAtEffectStart || '');
+                  if (!consistencyCheck.consistent) {
+                      console.error("[auto-save] 数据一致性校验失败:", consistencyCheck, "期望园区:", projectIdAtEffectStart);
+                      return;
                   }
-                  if (res.errors.length === 0 && res.conflicts.length === 0) {
-                      // 三次防御：刷新基线之前再确认 projectId 没变，防止把当前园区基线刷成上一园区。
-                      if (currentProjectIdRef.current === projectIdAtEffectStart) {
-                          await refreshAfterSave(data);
+                  const nextSnapshot = dashboardDataToPbRecords(data, projectIdAtEffectStart || '');
+                  const scopedSnapshot = preserveRentFieldsInTenantPbMap(
+                      nextSnapshot,
+                      baselineSnapshotRef.current,
+                      authUser,
+                  );
+                  let payload = diffPbRecords(baselineSnapshotRef.current, scopedSnapshot, recordMetaRef.current);
+                  payload = filterDirtyPayloadForRentMaskedUser(payload, authUser);
+                  const summary = payloadCount(payload);
+                  if (summary.total > 0) {
+                      // 二次防御：写云之前再核对一次 projectId，避开 await 期间被切走的极端情况。
+                      if (currentProjectIdRef.current !== projectIdAtEffectStart) return;
+                      const res = await saveIncrementalToCloud(payload, cloudConfig, recordMetaRef.current);
+                      if (res.errors.length > 0) console.warn('[auto-save] 部分失败:', res.errors);
+                      if (res.conflicts.length > 0) {
+                          console.warn('[auto-save] 冲突，已暂停自动写云:', res.conflicts.length);
+                          setPendingConflicts(res.conflicts);
+                      }
+                      if (res.applied.length > 0 && (res.errors.length > 0 || res.conflicts.length > 0)) {
+                          if (currentProjectIdRef.current === projectIdAtEffectStart) {
+                              applyPartialIncrementalSave(res.applied, data, projectIdAtEffectStart || '');
+                          }
+                      }
+                      if (res.errors.length === 0 && res.conflicts.length === 0) {
+                          // 三次防御：刷新基线之前再确认 projectId 没变，防止把当前园区基线刷成上一园区。
+                          if (currentProjectIdRef.current === projectIdAtEffectStart) {
+                              await refreshAfterSave(data, res.applied);
+                          }
                       }
                   }
+              } finally {
+                  autoRelease();
               }
           }
       } catch (e) {
@@ -504,10 +755,110 @@ const App: React.FC = () => {
 
   const dataRef = React.useRef(data);
   dataRef.current = data;
+  /** 启动/bootstrap 已算过指标时，跳过 effect 首次重复计算 */
+  const metricsFilterEffectReadyRef = React.useRef(false);
   useEffect(() => {
       if (!dataRef.current) return;
+      if (!metricsFilterEffectReadyRef.current) {
+          metricsFilterEffectReadyRef.current = true;
+          return;
+      }
       recalculateMetrics(dataRef.current, selectedYear, selectedQuarter);
-  }, [billingSelectedMonth, activeTab, selectedYear, selectedQuarter]);
+  }, [activeTab, selectedYear, selectedQuarter]);
+
+  /** 账单明细 DOM 最重，空闲后再挂载，让 KPI 区先可交互 */
+  const [showDashboardBillingTable, setShowDashboardBillingTable] = useState(false);
+  useEffect(() => {
+      if (activeTab !== 'dashboard') {
+          setShowDashboardBillingTable(false);
+          return;
+      }
+      let cancelled = false;
+      const reveal = () => {
+          if (!cancelled) setShowDashboardBillingTable(true);
+      };
+      const idleId =
+          typeof window.requestIdleCallback === 'function'
+              ? window.requestIdleCallback(reveal, { timeout: 120 })
+              : window.setTimeout(reveal, 0);
+      return () => {
+          cancelled = true;
+          if (typeof window.cancelIdleCallback === 'function') {
+              window.cancelIdleCallback(idleId as number);
+          } else {
+              window.clearTimeout(idleId as number);
+          }
+      };
+  }, [activeTab, cloudConfig.projectId, billingSelectedMonth, selectedYear]);
+
+  const dashboardBillingKey = useMemo(() => {
+      if (!data) return '';
+      const projectId = cloudConfig.projectId || data.tenants?.[0]?.projectId || '';
+      return [
+          projectId,
+          billingSelectedMonth,
+          selectedYear,
+          data.cloudSaveVersion ?? 0,
+          data.tenants?.length ?? 0,
+          data.payments?.length ?? 0,
+          data.buildings?.length ?? 0,
+          data.budgetAssumptions?.length ?? 0,
+          data.budgetAdjustments?.length ?? 0,
+          data.budgetScenarios?.length ?? 0,
+          Object.keys(data.billingPeriodNotes || {}).length,
+      ].join('|');
+  }, [data, cloudConfig.projectId, billingSelectedMonth, selectedYear]);
+
+  useEffect(() => {
+      if (activeTab !== 'dashboard' || !showDashboardBillingTable || !data) return;
+      let cancelled = false;
+      const key = dashboardBillingKey;
+      setDashboardBillingState((prev) => ({
+          key,
+          rows: prev.key === key ? prev.rows : [],
+          loading: true,
+      }));
+      const compute = () => {
+          try {
+              const [yearPart, monthPart] = billingSelectedMonth.split('-');
+              const year = Number.parseInt(yearPart, 10) || selectedYear;
+              const month = Math.max(0, (Number.parseInt(monthPart, 10) || 1) - 1);
+              const rows = buildBillingDetailsForPeriodService(year, month, data);
+              if (!cancelled) {
+                  setDashboardBillingState({ key, rows, loading: false });
+              }
+          } catch (e) {
+              console.error('[dashboard billing] lazy build failed:', e);
+              if (!cancelled) {
+                  setDashboardBillingState({
+                      key,
+                      rows: [],
+                      loading: false,
+                      error: e instanceof Error ? e.message : '账单明细计算失败',
+                  });
+              }
+          }
+      };
+      const idleId =
+          typeof window.requestIdleCallback === 'function'
+              ? window.requestIdleCallback(compute, { timeout: 300 })
+              : window.setTimeout(compute, 0);
+      return () => {
+          cancelled = true;
+          if (typeof window.cancelIdleCallback === 'function') {
+              window.cancelIdleCallback(idleId as number);
+          } else {
+              window.clearTimeout(idleId as number);
+          }
+      };
+  }, [
+      activeTab,
+      showDashboardBillingTable,
+      data,
+      dashboardBillingKey,
+      billingSelectedMonth,
+      selectedYear,
+  ]);
 
   const persistCloudConfig = (next: CloudConfig) => {
       localStorage.setItem(CLOUD_CONFIG_KEY, JSON.stringify(cloudConfigForStorage(next)));
@@ -575,22 +926,50 @@ const App: React.FC = () => {
       setPendingConflicts([]);
       try {
           const cached = localStorage.getItem(getParkStorageKey(targetProjectId));
-          const res = await fetchCloudBackup(nextConfig, targetProjectId);
+          const snapshotPromise = fetchCloudKpiSnapshot(nextConfig, selectedYear).catch(() => null);
+          const backupPromise = fetchCloudBackup(nextConfig, targetProjectId);
+          const snapshotRes = await snapshotPromise;
+          const hasSnapshotPreview = !!(snapshotRes?.success && snapshotRes.snapshot);
+          if (snapshotRes?.success && snapshotRes.snapshot) {
+              isKpiPreviewRef.current = true;
+              setData(buildDashboardDataFromKpiSnapshot(snapshotRes.snapshot));
+          }
+          const res = await backupPromise;
           if (res.success && res.data) {
-              const safeData = { ...generateInitialData(), ...res.data };
-              captureBaselineFromCloud(safeData, res.recordMeta, targetProjectId);
-              if (hasMeaningfulDashboardPayload(safeData)) {
-                  recalculateMetrics(safeData, selectedYear, selectedQuarter);
-                  localStorage.setItem(getParkStorageKey(targetProjectId), JSON.stringify(safeData));
+              const safeCloudData = { ...generateInitialData(), ...res.data };
+              const cachedData = cached
+                  ? scopeCachedDashboardData(
+                        { ...generateInitialData(), ...JSON.parse(cached) },
+                        authUser,
+                        targetProjectId,
+                    )
+                  : null;
+              const displayData = cachedData
+                  ? mergeLocalDashboardCacheIntoCloud(safeCloudData, cachedData).data
+                  : safeCloudData;
+              captureBaselineFromCloud(safeCloudData, res.recordMeta, targetProjectId);
+              if (hasMeaningfulDashboardPayload(safeCloudData)) {
+                  const processed = hasSnapshotPreview
+                      ? await runWhenBrowserIdle(() => recalculateMetrics(displayData, selectedYear, selectedQuarter))
+                      : recalculateMetrics(displayData, selectedYear, selectedQuarter);
+                  parkDataPut(getParkStorageKey(targetProjectId), JSON.stringify(processed));
               } else if (cached) {
                   const cachedData = scopeCachedDashboardData(
                       { ...generateInitialData(), ...JSON.parse(cached) },
                       authUser,
                       targetProjectId,
                   );
-                  recalculateMetrics(cachedData, selectedYear, selectedQuarter);
+                  if (hasSnapshotPreview) {
+                      await runWhenBrowserIdle(() => recalculateMetrics(cachedData, selectedYear, selectedQuarter));
+                  } else {
+                      recalculateMetrics(cachedData, selectedYear, selectedQuarter);
+                  }
               } else {
-                  recalculateMetrics(safeData, selectedYear, selectedQuarter);
+                  if (hasSnapshotPreview) {
+                      await runWhenBrowserIdle(() => recalculateMetrics(displayData, selectedYear, selectedQuarter));
+                  } else {
+                      recalculateMetrics(displayData, selectedYear, selectedQuarter);
+                  }
               }
           } else if (cached) {
               const cachedData = scopeCachedDashboardData(
@@ -680,24 +1059,52 @@ const App: React.FC = () => {
       setIsLoggingIn(false);
       setIsSyncing(true);
       try {
-          const backupRes = await fetchCloudBackup(authedConfig, projectId);
+          const snapshotPromise = fetchCloudKpiSnapshot(authedConfig, selectedYear).catch(() => null);
+          const backupPromise = fetchCloudBackup(authedConfig, projectId);
+          const snapshotRes = await snapshotPromise;
+          const hasSnapshotPreview = !!(snapshotRes?.success && snapshotRes.snapshot);
+          if (snapshotRes?.success && snapshotRes.snapshot) {
+              isKpiPreviewRef.current = true;
+              setData(buildDashboardDataFromKpiSnapshot(snapshotRes.snapshot));
+          }
+          const backupRes = await backupPromise;
           if (backupRes.success && backupRes.data) {
-              const safeData = { ...generateInitialData(), ...backupRes.data };
-              captureBaselineFromCloud(safeData, backupRes.recordMeta, projectId);
-              if (hasMeaningfulDashboardPayload(safeData)) {
-                  recalculateMetrics(safeData, selectedYear, selectedQuarter);
-                  localStorage.setItem(getParkStorageKey(projectId), JSON.stringify(safeData));
+              const safeCloudData = { ...generateInitialData(), ...backupRes.data };
+              const cachedRaw = localStorage.getItem(getParkStorageKey(projectId));
+              const cachedData = cachedRaw
+                  ? scopeCachedDashboardData(
+                        { ...generateInitialData(), ...JSON.parse(cachedRaw) },
+                        loginUser,
+                        projectId,
+                    )
+                  : null;
+              const displayData = cachedData
+                  ? mergeLocalDashboardCacheIntoCloud(safeCloudData, cachedData).data
+                  : safeCloudData;
+              captureBaselineFromCloud(safeCloudData, backupRes.recordMeta, projectId);
+              if (hasMeaningfulDashboardPayload(safeCloudData)) {
+                  const processed = hasSnapshotPreview
+                      ? await runWhenBrowserIdle(() => recalculateMetrics(displayData, selectedYear, selectedQuarter))
+                      : recalculateMetrics(displayData, selectedYear, selectedQuarter);
+                  parkDataPut(getParkStorageKey(projectId), JSON.stringify(processed));
               } else {
-                  const cached = localStorage.getItem(getParkStorageKey(projectId));
-                  if (cached) {
-                      const cachedData = scopeCachedDashboardData(
-                          { ...generateInitialData(), ...JSON.parse(cached) },
+                  if (cachedRaw) {
+                      const cachedOnly = scopeCachedDashboardData(
+                          { ...generateInitialData(), ...JSON.parse(cachedRaw) },
                           loginUser,
                           projectId,
                       );
-                      recalculateMetrics(cachedData, selectedYear, selectedQuarter);
+                      if (hasSnapshotPreview) {
+                          await runWhenBrowserIdle(() => recalculateMetrics(cachedOnly, selectedYear, selectedQuarter));
+                      } else {
+                          recalculateMetrics(cachedOnly, selectedYear, selectedQuarter);
+                      }
                   } else {
-                      recalculateMetrics(safeData, selectedYear, selectedQuarter);
+                      if (hasSnapshotPreview) {
+                          await runWhenBrowserIdle(() => recalculateMetrics(displayData, selectedYear, selectedQuarter));
+                      } else {
+                          recalculateMetrics(displayData, selectedYear, selectedQuarter);
+                      }
                   }
               }
               await fetchCloudHistory(authedConfig);
@@ -772,6 +1179,51 @@ const App: React.FC = () => {
       setPendingConflicts([]);
   };
 
+  const openChangePasswordModal = () => {
+      setChangePasswordForm({ oldPassword: '', newPassword: '', confirmPassword: '' });
+      setChangePasswordError(null);
+      setIsChangePasswordOpen(true);
+  };
+
+  const closeChangePasswordModal = () => {
+      if (changePasswordSaving) return;
+      setIsChangePasswordOpen(false);
+      setChangePasswordError(null);
+  };
+
+  const handleChangePasswordSubmit = async (e: React.FormEvent) => {
+      e.preventDefault();
+      const oldPassword = changePasswordForm.oldPassword.trim();
+      const newPassword = changePasswordForm.newPassword.trim();
+      const confirmPassword = changePasswordForm.confirmPassword.trim();
+      if (!oldPassword || !newPassword) {
+          setChangePasswordError('请填写当前密码和新密码');
+          return;
+      }
+      if (newPassword.length < 8) {
+          setChangePasswordError('新密码长度至少 8 位');
+          return;
+      }
+      if (newPassword !== confirmPassword) {
+          setChangePasswordError('两次输入的新密码不一致');
+          return;
+      }
+      setChangePasswordSaving(true);
+      setChangePasswordError(null);
+      const res = await changeOwnCloudPassword(oldPassword, newPassword);
+      setChangePasswordSaving(false);
+      if (!res.success) {
+          setChangePasswordError(res.message || '改密失败');
+          return;
+      }
+      if (res.user) setAuthUser(res.user);
+      setIsChangePasswordOpen(false);
+      setChangePasswordForm({ oldPassword: '', newPassword: '', confirmPassword: '' });
+      alert('密码已更新');
+  };
+
+  const displayUserName = authUser?.name?.trim() || authUser?.email || '用户';
+
   const fetchCloudHistory = async (config = cloudConfig) => {
       setIsLoadingHistory(true);
       const res = await getCloudHistory(config);
@@ -838,16 +1290,61 @@ const App: React.FC = () => {
   };
 
   /**
-   * 保存成功后：拉取最新云端数据 → 刷新 baseline 快照 + recordMeta；触发集成快照同步。
-   * 重新拉取的目的是拿到「服务端权威」的最新值（包括他人在我们保存期间又写入的字段），
-   * 这样下一次 diff 不会把别人的改动当成我们的 dirty。
+   * 增量保存部分成功时，仅把已落库的行同步进 baseline / recordMeta。
+   * 避免 refreshAfterSave 用「不含失败项」的云端快照覆盖基线，导致刷新页面后本地修改丢失。
    */
-  const refreshAfterSave = async (currentData: DashboardData | null) => {
-      // 保存后重新计算完整指标（确保 quickMode 场景下快照数据完整）
+  const applyPartialIncrementalSave = (
+      applied: IncrementalApplied[],
+      currentData: DashboardData,
+      projectId: string
+  ) => {
+      if (!applied.length) return;
+      const baseline = baselineSnapshotRef.current;
+      if (!baseline) return;
+      const nextSnapshot = dashboardDataToPbRecords(currentData, projectId);
+      const nextMeta: RecordMeta = { ...recordMetaRef.current };
+      for (const row of applied) {
+          if (row.newUpdated) {
+              if (!nextMeta[row.collection]) nextMeta[row.collection] = {};
+              nextMeta[row.collection][row.originalId] = row.newUpdated;
+          }
+          if (row.op === 'delete') {
+              if (baseline[row.collection]) delete baseline[row.collection][row.originalId];
+              continue;
+          }
+          const pbRow = nextSnapshot[row.collection]?.[row.originalId];
+          if (!pbRow) continue;
+          if (!baseline[row.collection]) baseline[row.collection] = {};
+          baseline[row.collection][row.originalId] = pbRow;
+      }
+      setRecordMeta(nextMeta);
+  };
+
+  /**
+   * 保存成功后刷新基线。
+   *
+   * - 自动保存路径：增量更新 baselineSnapshot + recordMeta（不拉全量）
+   * - 手动/全量路径：拉取云端最新数据重建基线
+   * - KPI 快照：每 10 次保存或手动保存时才上传
+   */
+  const fullRefreshCounterRef = React.useRef(0);
+  const kpiSnapshotDebounceRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const refreshAfterSave = async (currentData: DashboardData | null, applied?: IncrementalApplied[]) => {
       const snapshotProjectId = (cloudConfig.projectId || '').trim();
-      if (snapshotProjectId && currentData) {
+
+      // 增量路径：用 applied 更新 baseline/recordMeta（无需全量拉取）
+      if (applied && applied.length > 0) {
+          applyPartialIncrementalSave(applied, currentData || data!, snapshotProjectId);
+      }
+
+      // KPI 快照：debounce 上传（仅手动保存或每 10 次自动保存触发）
+      const isManualSave = !applied && currentData;
+      fullRefreshCounterRef.current++;
+      const shouldUploadSnapshot = isManualSave || fullRefreshCounterRef.current % 10 === 0;
+
+      if (snapshotProjectId && currentData && shouldUploadSnapshot) {
           try {
-              // 始终用完整模式重算，避免 quickMode 导致 monthlyTrends 为空
               const { processedData: fullMetrics, fullYearMonthlyTrends: fullTrends } =
                   calculateDashboardMetricsService(currentData, {
                       year: selectedYear,
@@ -873,21 +1370,25 @@ const App: React.FC = () => {
           }
       }
 
-      // 异步拉取服务端最新数据更新 baseline（不阻塞 UI）
-      fetchCloudBackup(cloudConfig, cloudConfig.projectId || '').then(res => {
-          if (res.success && res.data) {
-              const safeData = { ...generateInitialData(), ...res.data };
-              captureBaselineFromCloud(safeData, res.recordMeta);
-          } else if (res.recordMeta) {
-              setRecordMeta(res.recordMeta);
-              dirtyTrackerRef.current.reset();
-          }
-      }).catch(e => {
-          console.warn('[refreshAfterSave] 后台拉取最新数据失败（可忽略）', e);
-      });
+      // 全量拉取校准：仅手动保存或每 10 次自动保存
+      if (shouldUploadSnapshot) {
+          fetchCloudBackup(cloudConfig, cloudConfig.projectId || '').then(res => {
+              if (res.success && res.data) {
+                  const safeData = { ...generateInitialData(), ...res.data };
+                  captureBaselineFromCloud(safeData, res.recordMeta);
+              } else if (res.recordMeta) {
+                  setRecordMeta(res.recordMeta);
+                  dirtyTrackerRef.current.reset();
+              }
+          }).catch(e => {
+              console.warn('[refreshAfterSave] 后台拉取最新数据失败（可忽略）', e);
+          });
+      }
 
-      // 通知服务端重算 KPI 快照（Gateway compute/refresh），使 OpenClaw 等外部系统看到与前端一致的数据
-      triggerServerComputeRefresh(cloudConfig, selectedYear);
+      // 通知服务端重算 KPI 快照
+      if (shouldUploadSnapshot) {
+          triggerServerComputeRefresh(cloudConfig, selectedYear);
+      }
   };
 
   /** 通知集成网关重新计算并回写 KPI 快照（fire-and-forget，不阻塞保存流程） */
@@ -929,7 +1430,10 @@ const App: React.FC = () => {
   const runCloudSave = async (
       currentData: DashboardData,
       note: string
-  ): Promise<{ ok: boolean; conflict?: boolean; conflictCount?: number; message?: string; newVersion?: number }> => {
+  ): Promise<{ ok: boolean; conflict?: boolean; conflictCount?: number; message?: string; newVersion?: number; partial?: boolean; alertTitle?: string }> => {
+      // 保存互斥：等待获取锁（自动保存会先释放）
+      const manualRelease = await acquireSaveLock();
+      try {
       let baseline = baselineSnapshotRef.current;
       let baseRecordMeta = recordMeta;
 
@@ -1017,18 +1521,31 @@ const App: React.FC = () => {
       );
 
       const res = await saveIncrementalToCloud(payload, cloudConfig, baseRecordMeta);
+      const projectId = cloudConfig.projectId || '';
+      const saveDisplayOpts = buildIncrementalSaveDisplayOptions(currentData);
       if (res.errors.length > 0) {
           console.warn('[runCloudSave] 增量保存出现 errors（不阻塞 conflicts 流程）', res.errors);
       }
+      if (res.applied.length > 0 && (res.errors.length > 0 || res.conflicts.length > 0)) {
+          applyPartialIncrementalSave(res.applied, currentData, projectId);
+      }
       if (res.conflicts.length > 0) {
           setPendingConflicts(res.conflicts);
-          // 即便有冲突，已成功落库的部分也要把 baseline 刷新
           await refreshAfterSave(currentData);
           return {
               ok: false,
               conflict: true,
               conflictCount: res.conflicts.length,
-              message: res.message,
+              message: formatIncrementalSaveDetails(res, saveDisplayOpts),
+              alertTitle: formatIncrementalSaveAlertTitle(res),
+          };
+      }
+      if (res.errors.length > 0) {
+          return {
+              ok: false,
+              partial: res.applied.length > 0,
+              message: formatIncrementalSaveDetails(res, saveDisplayOpts),
+              alertTitle: formatIncrementalSaveAlertTitle(res),
           };
       }
       // 全部成功 —— bump 一下 dashboard_data_version 用于审计
@@ -1041,7 +1558,10 @@ const App: React.FC = () => {
           console.warn('[App] 版本号递增失败（非关键）:', e);
       }
       await refreshAfterSave(currentData);
-      return { ok: res.errors.length === 0, message: res.message };
+      return { ok: true, message: res.message };
+      } finally {
+          manualRelease();
+      }
   };
 
   const confirmCloudSave = async () => {
@@ -1068,7 +1588,7 @@ const App: React.FC = () => {
               alert(`检测到 ${res.conflictCount} 条冲突，请在冲突弹窗中处理。`);
           }
       } else {
-          alert("保存失败: " + (res.message || '未知错误'));
+          alertCloudSaveResult(res);
       }
   };
 
@@ -1088,7 +1608,7 @@ const App: React.FC = () => {
               alert(`检测到 ${res.conflictCount} 条冲突，请在冲突弹窗中处理。`);
           }
       } else {
-          alert("保存失败: " + (res.message || '未知错误'));
+          alertCloudSaveResult(res);
       }
   };
 
@@ -1122,9 +1642,9 @@ const App: React.FC = () => {
                   await handleCloudSaveConflict();
               }
               // pendingConflicts 已设置时由 ConflictDialog（步骤 4）接管
-          } else {
-              alert('保存失败：' + (res.message || '未知错误'));
-          }
+      } else {
+          alertCloudSaveResult(res);
+      }
       } finally {
           setIsSyncing(false);
       }
@@ -1196,7 +1716,7 @@ const App: React.FC = () => {
               const safeData = { ...generateInitialData(), ...res.data };
               recalculateMetrics(safeData, selectedYear, selectedQuarter);
               captureBaselineFromCloud(safeData, res.recordMeta);
-              localStorage.setItem(getParkStorageKey(cloudConfig.projectId), JSON.stringify(safeData));
+              parkDataPut(getParkStorageKey(cloudConfig.projectId), JSON.stringify(safeData));
               setShowRestorePrompt(false);
               // alert("✅ 系统已同步至最新云端版本");
           } else {
@@ -1246,7 +1766,7 @@ const App: React.FC = () => {
           const res = await fetchCloudBackup(cloudConfig, backupId);
           if (res.success && res.data) {
               const safeData = { ...generateInitialData(), ...res.data };
-              localStorage.setItem(getParkStorageKey(cloudConfig.projectId), JSON.stringify(safeData));
+              parkDataPut(getParkStorageKey(cloudConfig.projectId), JSON.stringify(safeData));
               alert("✅ 恢复成功！系统正在刷新...");
               window.location.reload();
           } else alert("恢复失败: " + res.message);
@@ -1266,11 +1786,21 @@ const App: React.FC = () => {
   const recalculateMetrics = (currentData: DashboardData, year: number = selectedYear, quarter: DashboardQuarter = selectedQuarter) => {
     const startedAt = typeof performance !== 'undefined' ? performance.now() : Date.now();
     const isDashboard = activeTab === 'dashboard';
-    const { processedData } = calculateDashboardMetricsService(currentData, {
+    const projectId = currentData.tenants?.[0]?.projectId || cloudConfig.projectId || '';
+    const metricsInput: DashboardData = {
+        ...currentData,
+        yearlyTargets: normalizeYearlyTargetsFromInitialization(
+            currentData.yearlyTargets,
+            currentData.initializationData,
+            projectId
+        ),
+    };
+    const { processedData } = calculateDashboardMetricsService(metricsInput, {
         year,
         quarter,
         billingSelectedMonth,
         quickMode: !isDashboard,
+        includeCurrentMonthBilling: false,
     });
     const elapsed = (typeof performance !== 'undefined' ? performance.now() : Date.now()) - startedAt;
     if (elapsed > 80) {
@@ -1317,14 +1847,23 @@ const App: React.FC = () => {
       recalculateMetrics(mergedData);
   };
 
-  /** 租金账期跟进备注（工作台账单明细 + 财务报表应收核销共用） */
+  /** 租金账期跟进备注（纯展示字段，不参与 KPI/应收重算） */
+  const remarkSaveTimersRef = React.useRef<Record<string, ReturnType<typeof setTimeout>>>({});
   const updateRentCollectionRemark = (tenantId: string, periodYYYYMM: string, text: string) => {
-      if (!data) return;
       const key = rentCollectionRemarkKey(tenantId, periodYYYYMM);
-      const next = { ...(data.billingPeriodNotes || {}) };
-      if (!text.trim()) delete next[key];
-      else next[key] = text;
-      recalculateMetrics({ ...data, billingPeriodNotes: next });
+      const timerKey = `${tenantId}|${periodYYYYMM}`;
+      const existing = remarkSaveTimersRef.current[timerKey];
+      if (existing) clearTimeout(existing);
+      remarkSaveTimersRef.current[timerKey] = setTimeout(() => {
+          delete remarkSaveTimersRef.current[timerKey];
+          setData((prev) => {
+              if (!prev) return prev;
+              const next = { ...(prev.billingPeriodNotes || {}) };
+              if (!text.trim()) delete next[key];
+              else next[key] = text;
+              return { ...prev, billingPeriodNotes: next };
+          });
+      }, 400);
   };
 
   const handleDeferPayment = (tenantId: string, fromYear: number, fromMonth: number, toYear: number, toMonth: number) => {
@@ -1464,17 +2003,26 @@ const App: React.FC = () => {
       setTargetModalType(type);
       const existingTarget = (data.yearlyTargets || {})[selectedYear] || { revenue: 0, occupancy: 0, initialBudget: 0 };
       setTargetForm({
-          revenue: existingTarget.revenue || data.annualRevenueTarget,
           occupancy: existingTarget.occupancy || data.annualOccupancyTarget,
-          initialBudget: existingTarget.initialBudget || 0,
       });
       setIsTargetModalOpen(true);
   };
 
   const saveTargets = () => {
       if (!data) return;
+      const projectId = data.tenants?.[0]?.projectId || cloudConfig.projectId || '';
+      const initialFromInit = resolveAnnualInitialBudget(
+          data.yearlyTargets,
+          data.initializationData,
+          selectedYear,
+          projectId
+      );
       const newTargets = { ...data.yearlyTargets };
-      newTargets[selectedYear] = { revenue: Number(targetForm.revenue), occupancy: Number(targetForm.occupancy), initialBudget: Number(targetForm.initialBudget) };
+      newTargets[selectedYear] = {
+          revenue: 0,
+          occupancy: Number(targetForm.occupancy),
+          initialBudget: initialFromInit,
+      };
       recalculateMetrics({ ...data, yearlyTargets: newTargets }); 
       setIsTargetModalOpen(false); 
   };
@@ -1581,7 +2129,7 @@ const App: React.FC = () => {
               baselineSnapshotRef.current = null;
               dirtyTrackerRef.current.reset();
               setPendingConflicts([]);
-              localStorage.setItem(getParkStorageKey(targetProjectId), JSON.stringify(mergedData));
+              parkDataPut(getParkStorageKey(targetProjectId), JSON.stringify(mergedData));
               let canSaveIncrementally = false;
               try {
                   const baselineRes = await fetchCloudBackup({ ...cloudConfig, projectId: targetProjectId }, targetProjectId);
@@ -1658,7 +2206,7 @@ const App: React.FC = () => {
       const monthInitialTotal = yearRows.reduce((sum, r) => sum + (r.initialBudget || 0), 0);
       const newTargets = { ...data.yearlyTargets };
       const existing = newTargets[initDataYear] || { revenue: 0, occupancy: 0 };
-      newTargets[initDataYear] = { ...existing, initialBudget: monthInitialTotal };
+      newTargets[initDataYear] = { ...existing, revenue: 0, initialBudget: monthInitialTotal };
       const updatedData = { ...data, initializationData: newData, yearlyTargets: newTargets };
       setData(updatedData);
       recalculateMetrics(updatedData);
@@ -1760,6 +2308,7 @@ const App: React.FC = () => {
       }
       setUserManageSaving(true);
       const allowed = Array.from(new Set([pid, ...userManageForm.allowedParkIds.map((x) => x.trim()).filter(Boolean)]));
+      const nextPassword = userManageForm.password.trim();
       const res = await updateManagedCloudUser({
           userId: userManageTarget.id,
           name: userManageForm.name.trim() || undefined,
@@ -1767,7 +2316,7 @@ const App: React.FC = () => {
           projectId: pid,
           allowedProjectIds: allowed,
           enabled: userManageForm.enabled,
-          password: userManageForm.password.trim() || undefined,
+          password: nextPassword || undefined,
       });
       setUserManageSaving(false);
       if (!res.success) {
@@ -1820,6 +2369,8 @@ const App: React.FC = () => {
           annualOccupancyTarget: summary.annualOccupancyTarget,
           occupancyRate: summary.occupancyRate,
           totalArea: summary.totalArea,
+          leasedArea: summary.leasedArea ?? 0,
+          vacantArea: summary.vacantArea ?? Math.max(0, (summary.totalArea || 0) - (summary.leasedArea || 0)),
           monthlyRevenueTarget: summary.annualBudgetTarget,
           monthlyRevenueCollected: summary.annualRevenueCollected,
           collectionRate: summary.annualBudgetCompletion,
@@ -1962,7 +2513,30 @@ const App: React.FC = () => {
       return result;
   }, [data, selectedYear, cloudConfig.projectId]);
 
-  if (!data) return <div className="min-h-screen flex items-center justify-center bg-slate-50"><div className="flex flex-col items-center gap-2"><Loader2 size={32} className="text-blue-500 animate-spin"/><div className="text-slate-400">Loading Dashboard...</div></div></div>;
+  const dashboardBillingError =
+      dashboardBillingState.key === dashboardBillingKey ? dashboardBillingState.error : undefined;
+  const dashboardBillingReady =
+      dashboardBillingState.key === dashboardBillingKey &&
+      !dashboardBillingState.loading &&
+      !dashboardBillingError;
+  const dashboardBillingData = useMemo(() => {
+      if (!data) return null;
+      return {
+          ...data,
+          currentMonthBilling: dashboardBillingReady ? dashboardBillingState.rows : [],
+      };
+  }, [data, dashboardBillingReady, dashboardBillingState.rows]);
+
+  if (!bootReady) {
+      return (
+          <div className="min-h-screen flex items-center justify-center bg-slate-50">
+              <div className="flex flex-col items-center gap-2">
+                  <Loader2 size={32} className="text-blue-500 animate-spin" />
+                  <div className="text-slate-400">正在连接后端…</div>
+              </div>
+          </div>
+      );
+  }
 
   if (!authUser) {
       return (
@@ -1986,6 +2560,7 @@ const App: React.FC = () => {
                               value={authMode === 'login' ? loginForm.email : signupForm.email}
                               onChange={e => authMode === 'login' ? setLoginForm({ ...loginForm, email: e.target.value }) : setSignupForm(prev => ({ ...prev, email: e.target.value }))}
                               placeholder="user@example.com"
+                              autoComplete={authMode === 'login' ? 'username' : 'email'}
                           />
                       </div>
                       {authMode === 'register' && (
@@ -2009,6 +2584,7 @@ const App: React.FC = () => {
                               value={authMode === 'login' ? loginForm.password : signupForm.password}
                               onChange={e => authMode === 'login' ? setLoginForm({ ...loginForm, password: e.target.value }) : setSignupForm(prev => ({ ...prev, password: e.target.value }))}
                               placeholder="请输入密码"
+                              autoComplete={authMode === 'login' ? 'current-password' : 'new-password'}
                           />
                       </div>
                       {authMode === 'register' && (
@@ -2068,6 +2644,17 @@ const App: React.FC = () => {
       );
   }
 
+  if (!data) {
+      return (
+          <div className="min-h-screen flex items-center justify-center bg-slate-50">
+              <div className="flex flex-col items-center gap-2">
+                  <Loader2 size={32} className="text-blue-500 animate-spin" />
+                  <div className="text-slate-400">Loading Dashboard...</div>
+              </div>
+          </div>
+      );
+  }
+
   return (
     <DirtyTrackerProvider recordMeta={recordMeta} tracker={dirtyTrackerRef.current}>
     <div className="min-h-screen bg-slate-50 flex font-sans text-slate-900">
@@ -2117,10 +2704,15 @@ const App: React.FC = () => {
             <h1 className="text-sm sm:text-base lg:text-xl font-bold text-slate-800 truncate min-w-0">{activeTab === 'dashboard' ? '金蝶地产——招商管理系统' : activeTab === 'buildings' ? '楼宇资产管理' : activeTab === 'contracts' ? (mobileNavLayout ? '合同录入' : '客户合同中心') : activeTab === 'finance' ? (mobileNavLayout ? '收款核销' : '财务收款报表') : activeTab === 'budget' ? '招商预算管理' : activeTab === 'initData' ? '初始化数据' : '系统设置'}</h1>
           </div>
           <div className="flex items-center gap-1.5 sm:gap-2 flex-shrink-0 flex-wrap justify-end">
-             <div className="hidden md:flex items-center gap-2 text-xs bg-slate-50 border border-slate-200 rounded-lg px-2 py-1.5">
+             <button
+               type="button"
+               onClick={openChangePasswordModal}
+               className="hidden md:flex items-center gap-2 text-xs bg-slate-50 border border-slate-200 rounded-lg px-2 py-1.5 hover:bg-slate-100 hover:border-slate-300 transition-colors cursor-pointer"
+               title={`${displayUserName}${authUser.email ? ` · ${authUser.email}` : ''} · 点击修改密码`}
+             >
                  <User size={14} className="text-slate-400" />
-                 <span className="text-slate-600 max-w-[120px] truncate">{authUser.email}</span>
-             </div>
+                 <span className="text-slate-600 max-w-[120px] truncate">{displayUserName}</span>
+             </button>
              {isGlobalAdmin() && authorizedParks.length > 1 ? (
                <div className="hidden sm:flex items-center gap-1 rounded-xl border border-slate-200 bg-slate-50 p-1" title="切换授权园区">
                  {authorizedParks.map(park => (
@@ -2180,7 +2772,7 @@ const App: React.FC = () => {
 
         <div className="p-3 md:p-6 max-w-7xl mx-auto w-full min-w-0">
           {activeTab === 'dashboard' && (
-            <div className="space-y-4 md:space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
+            <div className="space-y-4 md:space-y-6">
                <DashboardAlerts tenants={data.tenants} invoices={data.invoices} />
                <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between bg-white p-3 rounded-xl border border-slate-100 shadow-sm min-w-0">
                    <div className="flex items-center gap-2 min-w-0">
@@ -2207,20 +2799,39 @@ const App: React.FC = () => {
                   showManagementFee={isManagementFeeBillingEnabled(cloudConfig.projectId || data.tenants?.[0]?.projectId)}
                />
                <RecentActivityTable data={data} />
-               <BillingTable
-                  data={data}
-                  selectedMonth={billingSelectedMonth}
-                  onMonthChange={setBillingSelectedMonth}
-                  onUpdateRentRemark={updateRentCollectionRemark}
-                  projectId={cloudConfig.projectId}
-                  authUser={authUser}
-               />
+               {showDashboardBillingTable && dashboardBillingReady && dashboardBillingData ? (
+                   <BillingTable
+                      data={dashboardBillingData}
+                      selectedMonth={billingSelectedMonth}
+                      onMonthChange={setBillingSelectedMonth}
+                      onUpdateRentRemark={updateRentCollectionRemark}
+                      projectId={cloudConfig.projectId}
+                      authUser={authUser}
+                   />
+               ) : dashboardBillingError ? (
+                   <div className="bg-white rounded-xl shadow-sm border border-rose-100 p-8 text-center text-sm text-rose-500">
+                       账单明细计算失败：{dashboardBillingError}
+                   </div>
+               ) : (
+                   <div className="bg-white rounded-xl shadow-sm border border-slate-100 p-8 text-center text-sm text-slate-400">
+                       账单明细加载中…
+                   </div>
+               )}
             </div>
           )}
 
-          {activeTab === 'buildings' && (<div className="animate-in fade-in zoom-in-50 duration-300"><BuildingManager buildings={data.buildings} tenants={data.tenants} onUpdateBuildings={updateBuildings} onCommitBuildingsTenants={commitBuildingsTenants} /></div>)}
-          {activeTab === 'contracts' && (<div className="animate-in fade-in zoom-in-50 duration-300"><ContractManager tenants={data.tenants} buildings={data.buildings} onUpdateTenants={updateTenants} dashboardData={data} payments={data.payments} onUpdatePayments={updatePayments} budgetAdjustments={data.budgetAdjustments} onUpdateAdjustments={updateBudgetAdjustments} mobileEntryMode={mobileNavLayout} authUser={authUser} projectId={cloudConfig.projectId} /></div>)}
+          {activeTab === 'buildings' && (
+            <Suspense fallback={<LazyPanelFallback />}>
+              <div className="animate-in fade-in zoom-in-50 duration-300"><BuildingManager buildings={data.buildings} tenants={data.tenants} parkAreaMetrics={parkAreaMetricsFromDashboard(data)} onUpdateBuildings={updateBuildings} onCommitBuildingsTenants={commitBuildingsTenants} /></div>
+            </Suspense>
+          )}
+          {activeTab === 'contracts' && (
+            <Suspense fallback={<LazyPanelFallback />}>
+              <div className="animate-in fade-in zoom-in-50 duration-300"><ContractManager tenants={data.tenants} buildings={data.buildings} onUpdateTenants={updateTenants} dashboardData={data} payments={data.payments} onUpdatePayments={updatePayments} budgetAdjustments={data.budgetAdjustments} onUpdateAdjustments={updateBudgetAdjustments} mobileEntryMode={mobileNavLayout} authUser={authUser} projectId={cloudConfig.projectId} /></div>
+            </Suspense>
+          )}
           {activeTab === 'finance' && (
+            <Suspense fallback={<LazyPanelFallback />}>
               <div className="animate-in fade-in zoom-in-50 duration-300">
                   <FinanceManager
                       payments={data.payments}
@@ -2244,8 +2855,13 @@ const App: React.FC = () => {
                       projectId={cloudConfig.projectId}
                   />
               </div>
+            </Suspense>
           )}
-          {activeTab === 'budget' && (<div className="animate-in fade-in zoom-in-50 duration-300"><BudgetManager buildings={data.buildings} tenants={data.tenants} budgetAssumptions={data.budgetAssumptions} onUpdateAssumptions={updateBudgetAssumptions} budgetAdjustments={data.budgetAdjustments} onUpdateAdjustments={updateBudgetAdjustments} budgetAnalysis={data.budgetAnalysis} onUpdateAnalysis={updateBudgetAnalysis} payments={data.payments} scenarios={data.budgetScenarios || []} onUpdateScenarios={updateBudgetScenarios} onRenameScenario={handleRenameScenario} onActivateScenario={handleActivateScenario} onSaveBudgetToCloud={handleSaveBudgetToCloud} initializationData={data.initializationData} billingPeriodNotes={data.billingPeriodNotes} onBatchUpdate={handleBatchUpdate} /></div>)}
+          {activeTab === 'budget' && (
+            <Suspense fallback={<LazyPanelFallback />}>
+              <div className="animate-in fade-in zoom-in-50 duration-300"><BudgetManager buildings={data.buildings} tenants={data.tenants} budgetAssumptions={data.budgetAssumptions} onUpdateAssumptions={updateBudgetAssumptions} budgetAdjustments={data.budgetAdjustments} onUpdateAdjustments={updateBudgetAdjustments} budgetAnalysis={data.budgetAnalysis} onUpdateAnalysis={updateBudgetAnalysis} payments={data.payments} scenarios={data.budgetScenarios || []} onUpdateScenarios={updateBudgetScenarios} onRenameScenario={handleRenameScenario} onActivateScenario={handleActivateScenario} onSaveBudgetToCloud={handleSaveBudgetToCloud} initializationData={data.initializationData} billingPeriodNotes={data.billingPeriodNotes} onBatchUpdate={handleBatchUpdate} /></div>
+            </Suspense>
+          )}
           {activeTab === 'initData' && (
             <div className="animate-in fade-in zoom-in-50 duration-300 max-w-2xl mx-auto space-y-4">
                 <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
@@ -2273,6 +2889,7 @@ const App: React.FC = () => {
             </div>
           )}
           {activeTab === 'settings' && (
+            <Suspense fallback={<LazyPanelFallback />}>
               <SystemSettingsPanel
                   isCloudConnected={isCloudConnected}
                   cloudConfig={cloudConfig}
@@ -2345,68 +2962,135 @@ const App: React.FC = () => {
                   onImport={handleImport}
                   onResetData={handleResetData}
               />
+            </Suspense>
           )}
 
         </div>
       </main>
 
       <AssistantPanel isOpen={isAssistantOpen} onClose={() => setAssistantOpen(false)} data={data} />
-            <AIAssistantDialog 
-              isOpen={isAIDialogOpen} 
-              onClose={() => setAIDialogOpen(false)} 
-              dashboardData={data}
-              aiConfig={aiConfig}
-            />
+      {isAIDialogOpen && (
+        <Suspense fallback={null}>
+          <AIAssistantDialog
+            isOpen={isAIDialogOpen}
+            onClose={() => setAIDialogOpen(false)}
+            dashboardData={data}
+            aiConfig={aiConfig}
+          />
+        </Suspense>
+      )}
+
+      {isChangePasswordOpen && authUser && (
+          <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/40 p-4">
+              <form
+                  onSubmit={(e) => void handleChangePasswordSubmit(e)}
+                  className="w-full max-w-md rounded-xl border border-slate-200 bg-white p-5 shadow-xl"
+              >
+                  <div className="mb-4 flex items-start justify-between gap-2">
+                      <div>
+                          <h4 className="text-sm font-bold text-slate-800">修改密码</h4>
+                          <p className="mt-0.5 text-xs text-slate-500">
+                              {displayUserName}
+                              {authUser.email ? ` · ${authUser.email}` : ''}
+                          </p>
+                      </div>
+                      <button
+                          type="button"
+                          aria-label="关闭"
+                          className="rounded p-1 text-slate-500 hover:bg-slate-100"
+                          onClick={closeChangePasswordModal}
+                          disabled={changePasswordSaving}
+                      >
+                          <X size={18} />
+                      </button>
+                  </div>
+                  <div className="space-y-3">
+                      <div>
+                          <label className="mb-1 block text-xs font-medium text-slate-600">当前密码</label>
+                          <input
+                              type="password"
+                              className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm outline-none focus:border-sky-300 focus:ring-2 focus:ring-sky-100"
+                              value={changePasswordForm.oldPassword}
+                              onChange={(e) => setChangePasswordForm((prev) => ({ ...prev, oldPassword: e.target.value }))}
+                              autoComplete="current-password"
+                              disabled={changePasswordSaving}
+                          />
+                      </div>
+                      <div>
+                          <label className="mb-1 block text-xs font-medium text-slate-600">新密码</label>
+                          <input
+                              type="password"
+                              className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm outline-none focus:border-sky-300 focus:ring-2 focus:ring-sky-100"
+                              value={changePasswordForm.newPassword}
+                              onChange={(e) => setChangePasswordForm((prev) => ({ ...prev, newPassword: e.target.value }))}
+                              placeholder="至少 8 位"
+                              autoComplete="new-password"
+                              disabled={changePasswordSaving}
+                          />
+                      </div>
+                      <div>
+                          <label className="mb-1 block text-xs font-medium text-slate-600">确认新密码</label>
+                          <input
+                              type="password"
+                              className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm outline-none focus:border-sky-300 focus:ring-2 focus:ring-sky-100"
+                              value={changePasswordForm.confirmPassword}
+                              onChange={(e) => setChangePasswordForm((prev) => ({ ...prev, confirmPassword: e.target.value }))}
+                              autoComplete="new-password"
+                              disabled={changePasswordSaving}
+                          />
+                      </div>
+                      {changePasswordError && (
+                          <div className="rounded-lg border border-rose-100 bg-rose-50 px-3 py-2 text-xs text-rose-700">
+                              {changePasswordError}
+                          </div>
+                      )}
+                  </div>
+                  <div className="mt-5 flex justify-end gap-2">
+                      <button
+                          type="button"
+                          onClick={closeChangePasswordModal}
+                          disabled={changePasswordSaving}
+                          className="rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-600 hover:bg-slate-50 disabled:opacity-50"
+                      >
+                          取消
+                      </button>
+                      <button
+                          type="submit"
+                          disabled={changePasswordSaving}
+                          className="rounded-lg bg-sky-600 px-3 py-2 text-sm text-white hover:bg-sky-700 disabled:opacity-50"
+                      >
+                          {changePasswordSaving ? '保存中…' : '保存'}
+                      </button>
+                  </div>
+              </form>
+          </div>
+      )}
       
-      {isTargetModalOpen && (
+      {isTargetModalOpen && data && (
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm p-4">
               <div className="bg-white rounded-xl shadow-xl w-full max-sm p-6 animate-in zoom-in-50 duration-200">
                   <h3 className="text-lg font-bold mb-4 text-slate-800">设定 {selectedYear}年度 {targetModalType === 'revenue' ? '营收' : '出租率'}目标</h3>
                   <div className="space-y-4">
                       {targetModalType === 'revenue' ? (
-                          <div><label className="block text-sm text-slate-600 mb-1">年度营收目标 (元)</label><input type="number" className="w-full border rounded-lg p-2 text-lg font-semibold" value={targetForm.revenue} onChange={e => setTargetForm({...targetForm, revenue: Number(e.target.value)})} /></div>
+                          <p className="text-sm text-slate-600">年度营收目标已停用，请在「初始化数据」维护各月年初目标；看板「营收达成」将自动按初始化数据合计。</p>
                       ) : (
                           <div><label className="block text-sm text-slate-600 mb-1">年度出租率目标 (%)</label><input type="number" className="w-full border rounded-lg p-2 text-lg font-semibold" value={targetForm.occupancy} onChange={e => setTargetForm({...targetForm, occupancy: Number(e.target.value)})} /></div>
                       )}
-                      <div className="space-y-2">
-                        <div>
-                          <label className="block text-sm text-slate-600 mb-1">年初预算 (元)</label>
-                          <div className="flex gap-2">
-                            <input type="number" className="flex-1 border rounded-lg p-2 text-lg font-semibold" value={targetForm.initialBudget || ''} placeholder="可手填或从预算方案导入" onChange={e => setTargetForm({...targetForm, initialBudget: Number(e.target.value)})} />
-                            <button
-                              onClick={() => {
-                                if (!data) return;
-                                const activeScenario = (data.budgetScenarios || []).find(s => s.isActive && (s.budgetYear || new Date().getFullYear()) === selectedYear);
-                                if (!activeScenario) { alert(`未找到 ${selectedYear} 年的生效预算方案，请先在预算管理中激活方案。`); return; }
-                                // 使用预算方案快照中的租户/楼宇数据（与仪表盘口径一致）
-                                const snapshotTenants = activeScenario.baseDataSnapshot?.tenants || data.tenants || [];
-                                const snapshotBuildings = activeScenario.baseDataSnapshot?.buildings || data.buildings || [];
-                                const assumptions = activeScenario.assumptions || [];
-                                const adjustments = activeScenario.adjustments || [];
-                                const virtualTenants = getVirtualTenants(snapshotTenants, snapshotBuildings, assumptions);
-                                const allTenants = [...snapshotTenants, ...virtualTenants];
-                                let total = 0;
-                                const yearStart = new Date(selectedYear, 0, 1);
-                                const yearEnd = new Date(selectedYear, 11, 31);
-                                allTenants.forEach(t => {
-                                  if (t.isSpecialBusiness) return;
-                                  const bills = generateBudgetedBills(t, assumptions, adjustments, new Date(selectedYear - 1, 0, 1), new Date(selectedYear + 1, 11, 31));
-                                  bills.forEach(b => {
-                                    if (b.date >= yearStart && b.date <= yearEnd) total += b.amount;
-                                  });
-                                });
-                                setTargetForm(prev => ({ ...prev, initialBudget: Math.round(total) }));
-                              }}
-                              className="px-3 py-2 bg-sky-100 text-sky-700 rounded-lg text-sm hover:bg-sky-200 whitespace-nowrap"
-                              title="从当年生效预算方案自动汇总全年应收"
-                            >
-                              从预算方案导入
-                            </button>
-                          </div>
-                          <div className="text-xs text-slate-400 mt-1">
-                            导入将汇总当年生效预算方案中全部租户（含虚拟租户）的全年预计应收
-                          </div>
+                      <div className="space-y-1">
+                        <label className="block text-sm text-slate-600">年初目标</label>
+                        <div className="w-full border border-slate-200 rounded-lg p-2 text-lg font-semibold bg-slate-50 text-slate-800">
+                          {formatCurrency(
+                              resolveAnnualInitialBudget(
+                                  data.yearlyTargets,
+                                  data.initializationData,
+                                  selectedYear,
+                                  data.tenants?.[0]?.projectId || cloudConfig.projectId
+                              )
+                          )}
                         </div>
+                        <p className="text-xs text-slate-400">
+                          自动汇总「初始化数据」中 {selectedYear} 年各月年初预算，不可在此修改。请前往「初始化数据」维护。
+                        </p>
                       </div>
                       <div className="flex justify-end gap-2 pt-2"><button onClick={() => setIsTargetModalOpen(false)} className="px-4 py-2 border rounded-lg text-slate-600 hover:bg-slate-50">取消</button><button onClick={saveTargets} className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700">保存</button></div>
                   </div>

@@ -44,18 +44,19 @@ export async function unifiedLogin(email: string, password: string) {
     messages.push('物业系统：账号未开通（水电/物业费功能受限）');
   }
 
-  if (!systems.dashboard) {
+  const dashboardSession = session.dashboard;
+  if (!dashboardSession) {
     throw new Error(messages.join('；') || '登录失败');
   }
 
-  setDashboardSession(session.dashboard);
+  setDashboardSession(dashboardSession);
   if (session.facility) setFacilitySession(session.facility);
   if (session.property) setPropertySession(session.property);
 
   return {
     ok: true,
     message: '登录成功',
-    user: publicUserProfile(session.dashboard.user),
+    user: publicUserProfile(dashboardSession.user),
     systems,
     notes: messages.filter((m) => !m.startsWith('招商')),
   };

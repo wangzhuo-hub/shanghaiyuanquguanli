@@ -107,6 +107,8 @@ export interface Tenant {
   id: string;
   rootId?: string; // 根ID，用于关联同一个客户的历史续签记录
   name: string;
+  /** 招商客户经理/中介名称，用于追踪客户来源 */
+  sourceAgentName?: string;
   contactInfo?: string;
   industry?: string;
   
@@ -520,6 +522,13 @@ export interface DashboardData {
   totalArea: number;
   leasedArea: number;
   occupancyRate: number;
+  /** 园区非 Site 楼宇建筑总面积（含自用） */
+  campusTotalArea?: number;
+  selfUseArea?: number;
+  vacantArea?: number;
+  leasableUnits?: number;
+  leasedUnits?: number;
+  vacantUnits?: number;
   
   // Financials (Current Selected Year)
   annualRevenueTarget: number;

@@ -113,6 +113,7 @@ export function dashboardDataToPbRecords(
             original_id: t.id,
             root_id: t.rootId || '',
             name: t.name,
+            source_agent_name: t.sourceAgentName || '',
             contact_info: t.contactInfo || '',
             industry: t.industry || '',
             founding_date: t.foundingDate || '',
@@ -366,11 +367,38 @@ export function diffPbRecords(
                     }
                 }
                 if (Object.keys(changed).length > 0) {
-                    updates.push({
-                        originalId: id,
-                        changedFields: changed,
-                        baseUpdated,
-                    });
+                    // billing_period_notes 的 notes_json 含缓缴/特殊业态/手工应收等多类键，
+                    // 按顶层 key 打补丁，避免整包覆盖导致并发或部分失败时丢失其它键。
+                    if (
+                        collection === 'pb_billing_period_notes' &&
+                        id === 'billing_period_notes' &&
+                        changed.notes_json !== undefined
+                    ) {
+                        const oldNotes = (o.notes_json || {}) as Record<string, unknown>;
+                        const newNotes = (n.notes_json || {}) as Record<string, unknown>;
+                        const patch: Record<string, unknown> = {};
+                        for (const key of new Set([
+                            ...Object.keys(oldNotes),
+                            ...Object.keys(newNotes),
+                        ])) {
+                            if (!deepEqual(oldNotes[key], newNotes[key])) {
+                                patch[key] = Object.prototype.hasOwnProperty.call(newNotes, key)
+                                    ? newNotes[key]
+                                    : null;
+                            }
+                        }
+                        delete changed.notes_json;
+                        if (Object.keys(patch).length > 0) {
+                            changed.notes_json_patch = patch;
+                        }
+                    }
+                    if (Object.keys(changed).length > 0) {
+                        updates.push({
+                            originalId: id,
+                            changedFields: changed,
+                            baseUpdated,
+                        });
+                    }
                 }
             }
         }

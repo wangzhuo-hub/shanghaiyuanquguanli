@@ -18,6 +18,7 @@ NC='\033[0m' # No Color
 FRONTEND_PORT=1001
 BACKEND_PORT=1002
 GATEWAY_PORT=8787
+PAYMENT_API_PORT=18788
 
 # 实际 Vite 运行端口（与 vite.config.ts 中 VITE_DEV_PORT / 默认 1001 一致）
 VITE_PORT=1001
@@ -106,10 +107,18 @@ stop_all_services() {
         echo "$gw_pids" | xargs kill -9 2>/dev/null
     fi
 
+    # 停止收款核销 API
+    local pay_pids=$(pgrep -f "scripts/payment-api" | xargs)
+    if [ -n "$pay_pids" ]; then
+        echo -e "${YELLOW}  停止 payment-api...${NC}"
+        echo "$pay_pids" | xargs kill -9 2>/dev/null
+    fi
+
     # 清理端口
     cleanup_port $VITE_PORT "前端"
     cleanup_port $BACKEND_PORT "后端"
     cleanup_port $GATEWAY_PORT "集成网关"
+    cleanup_port $PAYMENT_API_PORT "收款核销API"
     
     echo -e "${GREEN}✓ 所有服务已停止${NC}"
     exit 0
@@ -161,7 +170,32 @@ else
 fi
 echo ""
 
-echo -e "${BLUE}▶ 步骤 4/4: 启动前端服务...${NC}"
+echo -e "${BLUE}▶ 步骤 4/5: 启动收款核销 API...${NC}"
+echo "────────────────────────────────────────"
+PAY_PB_EMAIL="${PB_ADMIN_EMAIL:-${VITE_POCKETBASE_EMAIL:-wangzhuo@kingdee.com}}"
+PAY_PB_PASSWORD="${PB_ADMIN_PASSWORD:-${VITE_POCKETBASE_PASSWORD:-}}"
+if [ -z "$PAY_PB_PASSWORD" ]; then
+    echo -e "${YELLOW}⚠ 未配置 PB_ADMIN_PASSWORD / VITE_POCKETBASE_PASSWORD，payment-api 跳过启动${NC}"
+    echo -e "${YELLOW}  WorkBuddy / 外部 Agent 需此服务监听 ${PAYMENT_API_PORT} 端口${NC}"
+else
+    echo -e "${YELLOW}▶ 启动 payment-api (端口 ${PAYMENT_API_PORT})...${NC}"
+    PB_URL="http://127.0.0.1:${BACKEND_PORT}" \
+    PB_ADMIN_EMAIL="${PAY_PB_EMAIL}" \
+    PB_ADMIN_PASSWORD="${PAY_PB_PASSWORD}" \
+    PAYMENT_API_PORT="${PAYMENT_API_PORT}" \
+    nohup npx tsx scripts/payment-api.ts > "${SCRIPT_DIR}/payment-api.log" 2>&1 &
+    PAYMENT_API_PID=$!
+    sleep 2
+    if ! lsof -ti :${PAYMENT_API_PORT} > /dev/null 2>&1; then
+        echo -e "${YELLOW}⚠ payment-api 启动可能失败，请检查: ${SCRIPT_DIR}/payment-api.log${NC}"
+    else
+        echo -e "${GREEN}✓ payment-api 已启动 (PID: ${PAYMENT_API_PID})${NC}"
+        echo -e "${CYAN}  收款核销 API: http://${DETECT_IP}:${PAYMENT_API_PORT}/health${NC}"
+    fi
+fi
+echo ""
+
+echo -e "${BLUE}▶ 步骤 5/5: 启动前端服务...${NC}"
 echo "────────────────────────────────────────"
 cd "${SCRIPT_DIR}"
 echo -e "${YELLOW}▶ 启动 Vite 开发服务器 (端口 ${FRONTEND_PORT})...${NC}"
@@ -185,6 +219,7 @@ echo -e "${GREEN}╠════════════════════
 echo -e "${GREEN}║  🌐 前端页面: http://${DETECT_IP}:${VITE_PORT}                       ║${NC}"
 echo -e "${GREEN}║  ⚙️  后端管理: http://${DETECT_IP}:${BACKEND_PORT}/_/                    ║${NC}"
 echo -e "${GREEN}║  🔗 集成网关: http://${DETECT_IP}:${GATEWAY_PORT}                       ║${NC}"
+echo -e "${GREEN}║  💰 收款API:  http://${DETECT_IP}:${PAYMENT_API_PORT}/health              ║${NC}"
 echo -e "${GREEN}╠══════════════════════════════════════════════════════════════╣${NC}"
 echo -e "${GREEN}║  提示: 按 Ctrl+C 可一键停止所有服务                          ║${NC}"
 echo -e "${GREEN}╚══════════════════════════════════════════════════════════════╝${NC}"
