@@ -111,6 +111,21 @@ const createBillingCache = (
     };
 };
 
+/**
+ * 按 DashboardData 引用缓存 BillingCache（模块级 WeakMap）。
+ * 用于 App 侧账单明细 effect / BillingTable 等多处调用共享同一份缓存，
+ * 避免每次从零 createBillingCache + 全量账单生成。data 引用变化时 WeakMap 自动失效。
+ */
+const _billingCacheByData = new WeakMap<DashboardData, BillingCache>();
+export const getOrCreateBillingCacheFor = (data: DashboardData): BillingCache => {
+    let cache = _billingCacheByData.get(data);
+    if (!cache) {
+        cache = createBillingCache(data.buildings || [], data.payments || [], data.initializationData || []);
+        _billingCacheByData.set(data, cache);
+    }
+    return cache;
+};
+
 const getContextId = (cache: BillingCache, value: object | undefined): number => {
     if (!value) return 0;
     const existing = cache.contextSeq.get(value);
@@ -1424,11 +1439,24 @@ export const calculateDashboardMetrics = (
         budgetAdjustments: workingAdjustments,
         budgetScenarios: normalizedScenarios,
     };
+    // 已封账月：直接取封账增量，跳过逐月账单生成（封账后该月视为「关账」，不再随后续录入变动）。
+    // 缺失时回退逐月实时计算，行为与历史完全一致。
+    const sealedArrearsByKey = new Map<string, number>();
+    for (const s of currentData.sealedMonths || []) {
+        if (s && Number.isFinite(s.year) && Number.isFinite(s.month)) {
+            sealedArrearsByKey.set(`${s.year}-${s.month}`, s.arrearsIncrement || 0);
+        }
+    }
     for (let arrearsYear = arrearsStartYear; arrearsYear <= nowYear; arrearsYear++) {
         // 欠款仅算到上月为止，不算当月（当月还没过完，应收尚未确定）
         const endMonth = arrearsYear === nowYear ? nowMonth - 1 : 11;
         if (endMonth < 0) continue;
         for (let month = 0; month <= endMonth; month++) {
+            const sealed = sealedArrearsByKey.get(`${arrearsYear}-${month + 1}`);
+            if (sealed !== undefined) {
+                accumulatedArrears += sealed;
+                continue;
+            }
             const billingDetails = buildBillingDetailsForPeriod(arrearsYear, month, arrearsDataContext, cache);
             billingDetails.forEach((detail) => {
                 if (detail.status === 'Unpaid') accumulatedArrears += detail.amountDue;

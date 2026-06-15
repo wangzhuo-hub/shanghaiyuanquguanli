@@ -9,7 +9,7 @@ import {
   diffPbRecords,
   payloadCount,
 } from './dataDiff';
-import type { DirtyPayload } from './dataDiff';
+import type { DirtyPayload } from './dirtyTracker';
 import { generateInitialData } from './mockData';
 import {
   fetchPocketBaseBackup,

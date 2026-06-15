@@ -25,7 +25,7 @@
 import crypto from 'node:crypto';
 import express from 'express';
 import PocketBase from 'pocketbase';
-import { computeKpi, computeBilling } from './compute-engine.js';
+import { computeKpi, computeBilling, sealMonth } from './compute-engine.js';
 import {
   AuthError,
   ForbiddenError,
@@ -54,6 +54,9 @@ const PORT: number = Number(process.env.INTEGRATION_GATEWAY_PORT || 8787);
 const APP_API_WRITE_ENABLED: boolean = process.env.APP_API_WRITE_ENABLED === '1';
 const APP_API_PAYMENT_WRITE_ENABLED: boolean = process.env.APP_API_PAYMENT_WRITE_ENABLED === '1';
 const APP_API_TENANT_WRITE_ENABLED: boolean = process.env.APP_API_TENANT_WRITE_ENABLED === '1';
+// 定时封账 / 清理调度涉及的园区（可用 SEAL_PROJECTS 覆盖）
+const SEAL_PROJECTS: string[] = (process.env.SEAL_PROJECTS || 'shanghai_park,beijing_park,shenzhen_park')
+  .split(',').map((s) => s.trim()).filter(Boolean);
 
 const WRITABLE_COLLECTIONS = new Set([
   'pb_buildings', 'pb_units', 'pb_tenants', 'pb_payments',
@@ -929,6 +932,133 @@ async function handleComputeRefresh(req: express.Request, res: express.Response)
   }
 }
 
+// ── 月度封账（D1）──
+// 每月把上月应收/欠款定格成 pb_sealed_months 一行；看板/网关读历史月走快照、只实时算当月。
+// arrears_increment 永远自洽；cumulative_arrears 为便利字段（prev + increment），
+// 消费方应以「各月 increment 求和」为准（不依赖累计链的连续性）。
+
+/** 读上一月已封账的累计欠款（缺失按 0） */
+async function readPrevSealedCumulative(projectId: string, year: number, month: number /*1-12*/): Promise<number> {
+  let py = year, pm = month - 1;
+  if (pm < 1) { pm = 12; py -= 1; }
+  try {
+    const list = await pb.collection('pb_sealed_months').getList(1, 1, {
+      filter: `project_id="${escapeFilter(projectId)}" && sealed_year=${py} && sealed_month=${pm}`,
+    });
+    const row = list.items[0] as any;
+    return row ? Number(row.cumulative_arrears || 0) : 0;
+  } catch { return 0; }
+}
+
+/** 计算并 upsert 一个 (project, year, monthIndex 0-11) 的封账行 */
+async function sealProjectMonth(projectId: string, year: number, monthIndex: number): Promise<{ ok: boolean; message?: string; row?: Record<string, unknown> }> {
+  const seal = await sealMonth(projectId, year, monthIndex);
+  if (!seal.ok) return { ok: false, message: seal.message };
+  const prevCumulative = await readPrevSealedCumulative(projectId, seal.year, seal.month);
+  const cumulative = Math.round((prevCumulative + seal.arrearsIncrement) * 100) / 100;
+  const record = {
+    project_id: projectId,
+    sealed_year: seal.year,
+    sealed_month: seal.month,
+    receivable_total: seal.receivableTotal,
+    unpaid_sum: seal.unpaidSum,
+    arrears_increment: seal.arrearsIncrement,
+    cumulative_arrears: cumulative,
+    details_json: seal.billingDetails,
+    data_version: seal.dataVersion,
+    sealed_at: seal.computedAt,
+  };
+  const existing = await pb.collection('pb_sealed_months').getList(1, 1, {
+    filter: `project_id="${escapeFilter(projectId)}" && sealed_year=${seal.year} && sealed_month=${seal.month}`,
+  });
+  if (existing.items.length > 0) await pb.collection('pb_sealed_months').update((existing.items[0] as any).id, record);
+  else await pb.collection('pb_sealed_months').create(record);
+  return { ok: true, row: record };
+}
+
+/** 手动封账端点：默认封「上月」，也可指定 { year, month(1-12) } 补算/重算 */
+async function handleComputeSeal(req: express.Request, res: express.Response) {
+  const authCtx = await requireIntegrationAuth(req, res);
+  if (!authCtx) return;
+  try {
+    const projectId = authCtx.projectId!;
+    let year = Number(req.body?.year);
+    let month = Number(req.body?.month); // 1-12
+    if (!year || !month) {
+      const now = new Date();
+      const prev = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+      year = prev.getFullYear();
+      month = prev.getMonth() + 1;
+    }
+    const result = await sealProjectMonth(projectId, year, month - 1);
+    if (!result.ok) { res.status(500).json({ ok: false, message: result.message }); return; }
+    res.json({ ok: true, sealed: result.row });
+  } catch (e: any) {
+    console.error('[compute/seal] error:', e?.message || e);
+    res.status(500).json({ ok: false, message: e?.message || '内部错误' });
+  }
+}
+
+/** 封上月（所有园区），已封则跳过（幂等）。启动补算 + 每日检查共用。 */
+async function sealPreviousMonthAllProjects(): Promise<void> {
+  const now = new Date();
+  const prev = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+  const year = prev.getFullYear();
+  const monthIndex = prev.getMonth();
+  for (const projectId of SEAL_PROJECTS) {
+    try {
+      const existing = await pb.collection('pb_sealed_months').getList(1, 1, {
+        filter: `project_id="${escapeFilter(projectId)}" && sealed_year=${year} && sealed_month=${monthIndex + 1}`,
+      });
+      if (existing.items.length > 0) continue;
+      await sealProjectMonth(projectId, year, monthIndex);
+      console.log(`[seal] sealed ${projectId} ${year}-${monthIndex + 1}`);
+    } catch (e: any) {
+      console.warn(`[seal] ${projectId} ${year}-${monthIndex + 1} failed:`, e?.message || e);
+    }
+  }
+}
+
+const DAILY_MS = 24 * 60 * 60 * 1000;
+
+// ── 审计/快照增长治理（D3）──
+// 只有 pb_integration_audit_logs 是「每写一条」无界增长（无唯一索引）；
+// pb_integration_snapshots / pb_kpi_snapshots / pb_sealed_months 均有唯一索引、行数有界，无需清理。
+const AUDIT_RETENTION_DAYS = Number(process.env.AUDIT_RETENTION_DAYS || 180);
+async function runRetentionCleanup(): Promise<void> {
+  const cutoff = new Date(Date.now() - AUDIT_RETENTION_DAYS * DAILY_MS);
+  const cutoffStr = cutoff.toISOString().slice(0, 19).replace('T', ' '); // PB datetime 比较格式
+  let deleted = 0;
+  try {
+    // 分批删除（每批 200，最多 50 批/次），避免一次拉取过多
+    for (let batch = 0; batch < 50; batch++) {
+      const list = await pb.collection('pb_integration_audit_logs').getList(1, 200, {
+        filter: `created < "${cutoffStr}"`,
+        fields: 'id',
+        sort: 'created',
+      });
+      if (list.items.length === 0) break;
+      for (const it of list.items) {
+        try { await pb.collection('pb_integration_audit_logs').delete((it as any).id); deleted++; } catch { /* 跳过单行失败 */ }
+      }
+      if (list.items.length < 200) break;
+    }
+    if (deleted > 0) console.log(`[cleanup] 已清理 ${deleted} 条 ${AUDIT_RETENTION_DAYS} 天前的审计日志`);
+  } catch (e: any) {
+    console.warn('[cleanup] 审计日志清理失败:', e?.message || e);
+  }
+}
+
+function startScheduledJobs(): void {
+  // 启动补算（跨月时机错过也能追上）+ 每日检查
+  sealPreviousMonthAllProjects().catch((e) => console.warn('[seal] startup catch-up failed:', e?.message || e));
+  runRetentionCleanup().catch((e) => console.warn('[cleanup] startup failed:', e?.message || e));
+  setInterval(() => {
+    sealPreviousMonthAllProjects().catch((e) => console.warn('[seal] daily failed:', e?.message || e));
+    runRetentionCleanup().catch((e) => console.warn('[cleanup] daily failed:', e?.message || e));
+  }, DAILY_MS);
+}
+
 // ── 主程序 ──
 
 async function main() {
@@ -980,6 +1110,7 @@ async function main() {
   app.post('/api/integration/compute/kpi', handleComputeKpi);
   app.post('/api/integration/compute/billing', handleComputeBilling);
   app.post('/api/integration/compute/refresh', handleComputeRefresh);
+  app.post('/api/integration/compute/seal', handleComputeSeal);
 
   // 写入
   app.post('/api/integration/write', async (req, res) => {
@@ -1039,6 +1170,10 @@ async function main() {
     console.log(`  POST /api/integration/compute/kpi      — 重算 KPI（与前端同口径）`);
     console.log(`  POST /api/integration/compute/billing  — 重算应收明细`);
     console.log(`  POST /api/integration/compute/refresh  — 重算并回写快照`);
+    console.log(`  POST /api/integration/compute/seal     — 封账（默认上月，可指定 year/month）`);
+    // 启动定时任务：每月封账（上月）+ 审计日志清理（180 天）
+    startScheduledJobs();
+    console.log(`[integration-gateway] 定时任务已启动：封账(${SEAL_PROJECTS.join(',')}) + 审计清理(${AUDIT_RETENTION_DAYS}d)`);
     console.log(`[integration-gateway] App API endpoints:`);
     console.log(`  POST /api/v1/app/auth/login            — 看板用户登录`);
     console.log(`  GET  /api/v1/app/auth/me               — 当前用户`);

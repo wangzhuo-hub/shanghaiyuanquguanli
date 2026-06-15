@@ -235,6 +235,65 @@ export async function computeBilling(
     };
 }
 
+// ── 月度封账 ──
+
+export interface SealMonthResult {
+    ok: boolean;
+    projectId: string;
+    year: number;
+    /** 自然月 1-12 */
+    month: number;
+    /** 当月应收合计 */
+    receivableTotal: number;
+    /** 当月未收（与欠款增量同口径） */
+    unpaidSum: number;
+    /** 当月新增欠款：Unpaid 行全额 amountDue + Partial 行余额(amountDue-amountPaid)，与前端欠款循环一致 */
+    arrearsIncrement: number;
+    billingDetails: BillingDetail[];
+    dataVersion: number;
+    computedAt: string;
+    message?: string;
+}
+
+/**
+ * 计算（不落库）指定月份的封账数据。
+ * 复用 computeBilling 拿当月 BillingDetail[]，再按「前端欠款循环」口径算当月新增欠款。
+ * 落库（含累计欠款链）由 integration-gateway 负责，与 pb_kpi_snapshots 的「compute 算、gateway 写」模式一致。
+ */
+export async function sealMonth(
+    projectId: string,
+    year: number,
+    month: number, // 0-11
+): Promise<SealMonthResult> {
+    await ensureInit();
+    const billing = await computeBilling(projectId, year, month);
+    if (!billing.ok) {
+        return {
+            ok: false, projectId, year, month: month + 1,
+            receivableTotal: 0, unpaidSum: 0, arrearsIncrement: 0,
+            billingDetails: [], dataVersion: 0,
+            computedAt: new Date().toISOString(), message: '无法拉取园区数据',
+        };
+    }
+    const details = billing.billingDetails;
+    let arrearsIncrement = 0;
+    for (const d of details) {
+        // 与 dashboardMetrics 欠款循环完全一致
+        if (d.status === 'Unpaid') arrearsIncrement += d.amountDue;
+        else if (d.status === 'Partial') arrearsIncrement += d.amountDue - d.amountPaid;
+    }
+    arrearsIncrement = roundMoney2(arrearsIncrement);
+    return {
+        ok: true, projectId, year, month: month + 1,
+        receivableTotal: roundMoney2(billing.totalDue),
+        unpaidSum: arrearsIncrement,
+        arrearsIncrement,
+        billingDetails: details,
+        dataVersion: 0,
+        computedAt: new Date().toISOString(),
+    };
+}
+
 // ── CLI entry point ──
 
 import * as fs from 'fs';

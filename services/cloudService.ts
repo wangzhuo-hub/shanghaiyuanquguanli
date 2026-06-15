@@ -169,7 +169,7 @@ export const getCloudHistory = async (
 export const fetchCloudBackup = async (
     config: CloudConfig,
     backupId: string,
-    options?: { year?: number }
+    options?: { year?: number; sinceYear?: number }
 ): Promise<{ success: boolean; data?: DashboardData; message: string; recordMeta?: RecordMeta }> => {
     void backupId;
     return pocketbaseService.fetchPocketBaseBackup(config.projectId, options);
@@ -210,6 +210,11 @@ export const bumpCloudSaveVersion = async (config: CloudConfig): Promise<number 
     return pocketbaseService.bumpCloudSaveVersion(config.projectId);
 };
 
+/** 读取云端 dashboard_data_version（任一端写入成功即 +1），用于外部写入感知轮询。 */
+export const readCloudSaveVersion = async (config: CloudConfig): Promise<number> => {
+    return pocketbaseService.readCloudSaveVersion(config.projectId);
+};
+
 export const fetchCloudKpiSnapshot = async (
     config: CloudConfig,
     year: number
@@ -217,15 +222,8 @@ export const fetchCloudKpiSnapshot = async (
     return pocketbaseService.fetchKpiSnapshot(config.projectId, year);
 };
 
-export const upsertCloudKpiSnapshot = async (
-    config: CloudConfig,
-    snapshot: Omit<KpiSnapshot, 'projectId'> & { projectId?: string }
-): Promise<{ success: boolean; message: string }> => {
-    return pocketbaseService.upsertKpiSnapshot({
-        ...snapshot,
-        projectId: snapshot.projectId || config.projectId,
-    });
-};
+// upsertCloudKpiSnapshot 已删除：KPI 快照唯一作者收敛为服务端 compute-engine（compute/refresh），
+// 前端不再上传，避免用陈旧本地数据覆盖 gateway 刚写的新值（第五轮 2.2）。
 
 /** 将全量集成快照写入 pb_integration_snapshots（防抖）；OpenClaw / 外部系统读 payload（含 payload.kpi） */
 export const scheduleUpsertIntegrationFullSnapshot = pocketbaseService.scheduleUpsertIntegrationFullSnapshot;

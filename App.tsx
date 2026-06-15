@@ -3,13 +3,13 @@ import React, { useState, useEffect, useMemo, Suspense } from 'react';
 import { LayoutDashboard, Building2, Users, PieChart, Settings, Bell, Search, Menu, Sparkles, UserCircle, Download, Upload, X, Check, Filter, Save, RotateCcw, Trash2, Calculator, Database, Lightbulb, Cloud, CloudCog, RefreshCw, AlertCircle, ExternalLink, Link, Info, Loader2, CheckCircle2, XCircle, History, FileClock, ChevronRight, ChevronDown, CloudUpload, LogOut, User, Calendar, ChevronLeft, FileInput, Table as TableIcon, FileText, Pencil, UserCog } from 'lucide-react';
 import { generateInitialData } from './services/mockData';
 import { DashboardData, Building, Tenant, PaymentRecord, UnitStatus, MonthlyTrend, PaymentCycle, RentFreePeriod, BillingDetail, ParkingStatDetail, BudgetAssumption, BudgetAdjustment, BudgetAnalysisData, CloudConfig, AIConfig, CloudBackupMetadata, BudgetScenario, MonthlyInitData, ContractStatus, DepositStatus, InvoiceRecord, AuthUser, ParkInfo, UserRole } from './types';
-import { StatsCards } from './components/StatsCards';
-import { RecentActivityTable, AnnualMetricComparisonTable, AnnualComparisonData } from './components/Tables';
-import { BillingTable } from './components/BillingTable';
+import { StatsCards as StatsCardsBase } from './components/StatsCards';
+import { RecentActivityTable as RecentActivityTableBase, AnnualMetricComparisonTable as AnnualMetricComparisonTableBase, AnnualComparisonData } from './components/Tables';
+import { BillingTable as BillingTableBase } from './components/BillingTable';
 import { AssistantPanel } from './components/AssistantPanel';
 import { TenantBudgetNameLinkTool } from './components/TenantMergeTool';
 import { TenantInsights } from './components/TenantInsights';
-import { DashboardAlerts } from './components/DashboardAlerts';
+import { DashboardAlerts as DashboardAlertsBase } from './components/DashboardAlerts';
 import type { NewManagedUserForm } from './components/SystemSettingsPanel';
 import { ConflictDialog } from './components/ConflictDialog';
 import {
@@ -21,6 +21,7 @@ import {
     scheduleUpsertIntegrationFullSnapshot,
     saveIncrementalToCloud,
     bumpCloudSaveVersion,
+    readCloudSaveVersion,
     forceOverwriteCloudRecord,
     loginCloudUser,
     logoutCloudUser,
@@ -59,6 +60,7 @@ import {
 import type { DeferBillingNote } from './services/receivableListHelpers';
 import {
     buildBillingDetailsForPeriod as buildBillingDetailsForPeriodService,
+    getOrCreateBillingCacheFor,
     calculateDashboardMetrics as calculateDashboardMetricsService,
     normalizeScenarioForReceivable as normalizeScenarioForReceivableService,
     normalizeKpiSummaryWithMonthlyTrends,
@@ -66,6 +68,8 @@ import {
     normalizeYearlyTargetsFromInitialization,
     type DashboardQuarter,
 } from './services/dashboardMetrics';
+import { computeMetricsInWorker, isMetricsWorkerAvailable } from './services/metricsWorkerClient';
+import { setLoadWindowSinceYear } from './services/pocketbaseService';
 import { formatCurrency } from './services/numberFormat';
 import { isManagementFeeBillingEnabled } from './services/parkBillingConfig';
 import { userRoleLabel } from './services/receivablePermissions';
@@ -131,6 +135,21 @@ type DashboardBillingLazyState = {
     loading: boolean;
     error?: string;
 };
+// 按年窗口加载（B3，默认关闭）：VITE_YEAR_WINDOW_LOAD=1 时只加载「当年+上一年」收款/发票，
+// 历史欠款走 pb_sealed_months 封账快照。必须在封账回填完成后再开启，否则窗口外欠款会缺失。
+// 同一模块级窗口驱动所有 fetchCloudBackup，data 与 baseline 口径天然一致（规避第二轮的错位风暴）。
+if (import.meta.env?.VITE_YEAR_WINDOW_LOAD === '1') {
+    setLoadWindowSinceYear(new Date().getFullYear() - 1);
+}
+
+// 工作台首屏重组件用 React.memo 包裹（模块级，避免每次渲染重建）：
+// data 引用未变（切 tab 命中结果缓存、无关 state 更新）时跳过整树重渲染。
+const StatsCards = React.memo(StatsCardsBase);
+const RecentActivityTable = React.memo(RecentActivityTableBase);
+const AnnualMetricComparisonTable = React.memo(AnnualMetricComparisonTableBase);
+const BillingTable = React.memo(BillingTableBase);
+const DashboardAlerts = React.memo(DashboardAlertsBase);
+
 const runWhenBrowserIdle = <T,>(task: () => T, timeout = 350): Promise<T> =>
     new Promise((resolve, reject) => {
         const run = () => {
@@ -642,9 +661,8 @@ const App: React.FC = () => {
                 const { data: displayData, recovered } = localSafe
                   ? mergeLocalDashboardCacheIntoCloud(safeCloudData, localSafe)
                   : { data: safeCloudData, recovered: false };
-                const processed = hasKpiPreview
-                  ? await runWhenBrowserIdle(() => recalculateMetrics(displayData, bootstrapYear, 'All'))
-                  : recalculateMetrics(displayData, bootstrapYear, 'All');
+                // Worker 已在后台线程算，无需再用 runWhenBrowserIdle 延后；直接 await 拿结果落本地缓存。
+                const processed = await recalculateMetrics(displayData, bootstrapYear, 'All');
                 captureBaselineFromCloud(safeCloudData, latestRes.recordMeta, configToUse.projectId);
                 parkDataPutObj(getParkStorageKey(configToUse.projectId), processed);
                 setLastSaved(new Date().toLocaleTimeString());
@@ -730,14 +748,19 @@ const App: React.FC = () => {
                       console.error("[auto-save] 数据一致性校验失败:", consistencyCheck, "期望园区:", projectIdAtEffectStart);
                       return;
                   }
-                  const nextSnapshot = dashboardDataToPbRecords(data, projectIdAtEffectStart || '');
-                  const scopedSnapshot = preserveRentFieldsInTenantPbMap(
-                      nextSnapshot,
-                      baselineSnapshotRef.current,
-                      authUser,
-                  );
-                  let payload = diffPbRecords(baselineSnapshotRef.current, scopedSnapshot, recordMetaRef.current);
-                  payload = filterDirtyPayloadForRentMaskedUser(payload, authUser);
+                  // 快照构建 + 全量 diff 是 O(全部行) 的 CPU 重活，挪进浏览器空闲时段，避免阻塞主线程。
+                  const baselineForDiff = baselineSnapshotRef.current;
+                  if (!baselineForDiff) return;
+                  const payload = await runWhenBrowserIdle(() => {
+                      const nextSnapshot = dashboardDataToPbRecords(data, projectIdAtEffectStart || '');
+                      const scopedSnapshot = preserveRentFieldsInTenantPbMap(
+                          nextSnapshot,
+                          baselineForDiff,
+                          authUser,
+                      );
+                      const diffed = diffPbRecords(baselineForDiff, scopedSnapshot, recordMetaRef.current);
+                      return filterDirtyPayloadForRentMaskedUser(diffed, authUser);
+                  });
                   const summary = payloadCount(payload);
                   if (summary.total > 0) {
                       // 二次防御：写云之前再核对一次 projectId，避开 await 期间被切走的极端情况。
@@ -773,8 +796,66 @@ const App: React.FC = () => {
 
   const dataRef = React.useRef(data);
   dataRef.current = data;
+
+  // C2 外部写入感知：轮询 dashboard_data_version（任一端写入成功即 +1）。变化时——
+  // 本地无未保存改动 → 安全全量回拉刷新 data+baseline+recordMeta；有改动 → 仅提示横幅，
+  // 不自动覆盖用户编辑（保存时行级乐观锁/冲突弹窗兜底）。轮询间隔即天然 debounce。
+  const [remoteChangePending, setRemoteChangePending] = useState(false);
+  const lastSeenVersionRef = React.useRef<number | null>(null);
+  const pendingRemotePullRef = React.useRef(false);
+  useEffect(() => {
+      if (!isCloudConnected || !cloudConfig.autoSync) return;
+      let cancelled = false;
+      const POLL_MS = 45000;
+      // 尝试拉取远端更新：本地干净→保存锁内安全回拉并清待拉标记；本地有改动→只提示，保留待拉（下次重试）。
+      const tryPullRemote = async () => {
+          const baseline = baselineSnapshotRef.current;
+          const cur = dataRef.current;
+          if (!baseline || !cur) return;
+          const snap = dashboardDataToPbRecords(cur, cloudConfig.projectId || '');
+          const payload = diffPbRecords(baseline, snap, recordMetaRef.current);
+          if (payloadCount(payload).total > 0) {
+              setRemoteChangePending(true); // 有本地改动：提示，待保存后再拉
+              return;
+          }
+          const release = tryAcquireSaveLock();
+          if (!release) return; // 保存进行中，下次轮询再试
+          try {
+              const res = await fetchCloudBackup(cloudConfig, cloudConfig.projectId || '');
+              if (res.success && res.data) {
+                  captureBaselineFromCloud(res.data, res.recordMeta, cloudConfig.projectId || '');
+                  await recalculateMetrics(res.data, selectedYear, selectedQuarter);
+                  pendingRemotePullRef.current = false;
+                  setRemoteChangePending(false);
+              }
+          } catch (e) {
+              console.warn('[remote-sync] 外部更新回拉失败:', e);
+          } finally {
+              release();
+          }
+      };
+      const tick = async () => {
+          if (cancelled || isKpiPreviewRef.current || !baselineSnapshotRef.current) return;
+          try {
+              const v = await readCloudSaveVersion(cloudConfig);
+              if (cancelled) return;
+              const last = lastSeenVersionRef.current;
+              if (last == null) { lastSeenVersionRef.current = v; return; }
+              if (v > last) {
+                  lastSeenVersionRef.current = v;
+                  pendingRemotePullRef.current = true; // 有新版本待拉（含本端写入，回拉幂等无害）
+              }
+              // 有待拉更新时，只要本地干净就回拉；本地未净则保留待拉、下次再试
+              if (pendingRemotePullRef.current) await tryPullRemote();
+          } catch { /* 瞬时网络错误忽略，下次再试 */ }
+      };
+      const id = setInterval(tick, POLL_MS);
+      return () => { cancelled = true; clearInterval(id); };
+  }, [isCloudConnected, cloudConfig.autoSync, cloudConfig.projectId, authUser, selectedYear, selectedQuarter]);
   /** 切 tab 结果缓存：数据/年/季度未变时跳过重算 */
   const metricsCacheRef = React.useRef<{ dataRef: DashboardData | null; year: number; quarter: string } | null>(null);
+  /** 指标重算请求序号：Worker 异步回填时「最新者胜」，丢弃过期结果的 setData */
+  const metricsReqSeqRef = React.useRef(0);
   /** 启动/bootstrap 已算过指标时，跳过 effect 首次重复计算 */
   const metricsFilterEffectReadyRef = React.useRef(false);
   useEffect(() => {
@@ -849,7 +930,7 @@ const App: React.FC = () => {
               const [yearPart, monthPart] = billingSelectedMonth.split('-');
               const year = Number.parseInt(yearPart, 10) || selectedYear;
               const month = Math.max(0, (Number.parseInt(monthPart, 10) || 1) - 1);
-              const rows = buildBillingDetailsForPeriodService(year, month, data);
+              const rows = buildBillingDetailsForPeriodService(year, month, data, getOrCreateBillingCacheFor(data));
               if (!cancelled) {
                   setDashboardBillingState({ key, rows, loading: false });
               }
@@ -975,9 +1056,7 @@ const App: React.FC = () => {
                   : safeCloudData;
               captureBaselineFromCloud(safeCloudData, res.recordMeta, targetProjectId);
               if (hasMeaningfulDashboardPayload(safeCloudData)) {
-                  const processed = hasSnapshotPreview
-                      ? await runWhenBrowserIdle(() => recalculateMetrics(displayData, selectedYear, selectedQuarter))
-                      : recalculateMetrics(displayData, selectedYear, selectedQuarter);
+                  const processed = await recalculateMetrics(displayData, selectedYear, selectedQuarter);
                   parkDataPutObj(getParkStorageKey(targetProjectId), processed);
               } else if (cached) {
                   const cachedData = scopeCachedDashboardData(
@@ -985,17 +1064,9 @@ const App: React.FC = () => {
                       authUser,
                       targetProjectId,
                   );
-                  if (hasSnapshotPreview) {
-                      await runWhenBrowserIdle(() => recalculateMetrics(cachedData, selectedYear, selectedQuarter));
-                  } else {
-                      recalculateMetrics(cachedData, selectedYear, selectedQuarter);
-                  }
+                  await recalculateMetrics(cachedData, selectedYear, selectedQuarter);
               } else {
-                  if (hasSnapshotPreview) {
-                      await runWhenBrowserIdle(() => recalculateMetrics(displayData, selectedYear, selectedQuarter));
-                  } else {
-                      recalculateMetrics(displayData, selectedYear, selectedQuarter);
-                  }
+                  await recalculateMetrics(displayData, selectedYear, selectedQuarter);
               }
           } else if (cached) {
               const cachedData = scopeCachedDashboardData(
@@ -1109,9 +1180,7 @@ const App: React.FC = () => {
                   : safeCloudData;
               captureBaselineFromCloud(safeCloudData, backupRes.recordMeta, projectId);
               if (hasMeaningfulDashboardPayload(safeCloudData)) {
-                  const processed = hasSnapshotPreview
-                      ? await runWhenBrowserIdle(() => recalculateMetrics(displayData, selectedYear, selectedQuarter))
-                      : recalculateMetrics(displayData, selectedYear, selectedQuarter);
+                  const processed = await recalculateMetrics(displayData, selectedYear, selectedQuarter);
                   parkDataPutObj(getParkStorageKey(projectId), processed);
               } else {
                   if (cachedRaw) {
@@ -1120,17 +1189,9 @@ const App: React.FC = () => {
                           loginUser,
                           projectId,
                       );
-                      if (hasSnapshotPreview) {
-                          await runWhenBrowserIdle(() => recalculateMetrics(cachedOnly, selectedYear, selectedQuarter));
-                      } else {
-                          recalculateMetrics(cachedOnly, selectedYear, selectedQuarter);
-                      }
+                      await recalculateMetrics(cachedOnly, selectedYear, selectedQuarter);
                   } else {
-                      if (hasSnapshotPreview) {
-                          await runWhenBrowserIdle(() => recalculateMetrics(displayData, selectedYear, selectedQuarter));
-                      } else {
-                          recalculateMetrics(displayData, selectedYear, selectedQuarter);
-                      }
+                      await recalculateMetrics(displayData, selectedYear, selectedQuarter);
                   }
               }
               await fetchCloudHistory(authedConfig);
@@ -1803,7 +1864,12 @@ const App: React.FC = () => {
 
 
 
-  const recalculateMetrics = (currentData: DashboardData, year: number = selectedYear, quarter: DashboardQuarter = selectedQuarter) => {
+  // 指标重算：优先走 Web Worker（off-main-thread），不可用/出错时回退主线程同步计算。
+  // 返回 Promise<DashboardData>：boot/切园区等需要拿结果落本地缓存的调用方应 await；
+  // update* 等只要副作用的调用方可直接 fire-and-forget（结果就绪后自动 setData）。
+  const recalculateMetrics = async (currentData: DashboardData, year: number = selectedYear, quarter: DashboardQuarter = selectedQuarter): Promise<DashboardData> => {
+    // 同步更新 dataRef，作为后续重算/编辑的最新输入源
+    dataRef.current = currentData;
     const startedAt = typeof performance !== 'undefined' ? performance.now() : Date.now();
     const isDashboard = activeTab === 'dashboard';
     const projectId = currentData.tenants?.[0]?.projectId || cloudConfig.projectId || '';
@@ -1815,13 +1881,25 @@ const App: React.FC = () => {
             projectId
         ),
     };
-    const { processedData } = calculateDashboardMetricsService(metricsInput, {
+    const options = {
         year,
         quarter,
         billingSelectedMonth,
         quickMode: !isDashboard,
         includeCurrentMonthBilling: false,
-    });
+    };
+    const myReq = ++metricsReqSeqRef.current;
+    let processedData: DashboardData;
+    try {
+        if (isMetricsWorkerAvailable()) {
+            processedData = (await computeMetricsInWorker(metricsInput, options)).processedData;
+        } else {
+            processedData = calculateDashboardMetricsService(metricsInput, options).processedData;
+        }
+    } catch {
+        // Worker 出错 → 同步兜底，保证一定有结果
+        processedData = calculateDashboardMetricsService(metricsInput, options).processedData;
+    }
     const elapsed = (typeof performance !== 'undefined' ? performance.now() : Date.now()) - startedAt;
     if (elapsed > 80) {
         console.info(`[metrics] recalculate ${Math.round(elapsed)}ms`, {
@@ -1830,8 +1908,11 @@ const App: React.FC = () => {
             buildings: currentData.buildings?.length || 0,
         });
     }
-    isKpiPreviewRef.current = false;
-    setData(processedData);
+    // 最新者胜：仅当本请求仍是最新时才回填，避免过期 Worker 结果覆盖新数据
+    if (myReq === metricsReqSeqRef.current) {
+        isKpiPreviewRef.current = false;
+        setData(processedData);
+    }
     return processedData;
   };
 
@@ -1869,7 +1950,7 @@ const App: React.FC = () => {
 
   /** 租金账期跟进备注（纯展示字段，不参与 KPI/应收重算） */
   const remarkSaveTimersRef = React.useRef<Record<string, ReturnType<typeof setTimeout>>>({});
-  const updateRentCollectionRemark = (tenantId: string, periodYYYYMM: string, text: string) => {
+  const updateRentCollectionRemark = React.useCallback((tenantId: string, periodYYYYMM: string, text: string) => {
       const key = rentCollectionRemarkKey(tenantId, periodYYYYMM);
       const timerKey = `${tenantId}|${periodYYYYMM}`;
       const existing = remarkSaveTimersRef.current[timerKey];
@@ -1884,7 +1965,7 @@ const App: React.FC = () => {
               return { ...prev, billingPeriodNotes: next };
           });
       }, 400);
-  };
+  }, []);
 
   const handleDeferPayment = (tenantId: string, fromYear: number, fromMonth: number, toYear: number, toMonth: number) => {
       if (!data) return;
@@ -1895,7 +1976,7 @@ const App: React.FC = () => {
           return;
       }
 
-      const details = buildBillingDetailsForPeriodService(fromYear, fromMonth, data);
+      const details = buildBillingDetailsForPeriodService(fromYear, fromMonth, data, getOrCreateBillingCacheFor(data));
       const row = details.find((d) => d.tenantId === tenantId);
       const amountToDefer = Math.max(0, (row?.amountDue ?? 0) - (row?.amountPaid ?? 0));
 
@@ -2018,7 +2099,7 @@ const App: React.FC = () => {
   const updateBudgetAnalysis = (newAnalysis: BudgetAnalysisData) => { if (!data) return; recalculateMetrics({ ...data, budgetAnalysis: newAnalysis }); };
   const updateInvoices = (newInvoices: InvoiceRecord[]) => { if (!data) return; recalculateMetrics({ ...data, invoices: newInvoices }); };
 
-  const openTargetModal = (type: 'revenue' | 'occupancy') => { 
+  const openTargetModal = React.useCallback((type: 'revenue' | 'occupancy') => {
       if (!data) return;
       setTargetModalType(type);
       const existingTarget = (data.yearlyTargets || {})[selectedYear] || { revenue: 0, occupancy: 0, initialBudget: 0 };
@@ -2026,7 +2107,7 @@ const App: React.FC = () => {
           occupancy: existingTarget.occupancy || data.annualOccupancyTarget,
       });
       setIsTargetModalOpen(true);
-  };
+  }, [data, selectedYear]);
 
   const saveTargets = () => {
       if (!data) return;
@@ -2862,7 +2943,7 @@ const App: React.FC = () => {
                       onUpdateTenants={updateTenants}
                       onUpdateInvoices={updateInvoices}
                       onBatchUpdate={handleBatchUpdate}
-                      getBillingDetails={(year: number, month: number) => buildBillingDetailsForPeriodService(year, month, data)}
+                      getBillingDetails={(year: number, month: number) => buildBillingDetailsForPeriodService(year, month, data, getOrCreateBillingCacheFor(data))}
                       onDeferPayment={handleDeferPayment}
                       onRevokeDeferBillingNote={handleRevokeDeferBillingNote}
                       onResetReceivableApplications={handleResetReceivableApplications}
@@ -3343,6 +3424,17 @@ const App: React.FC = () => {
             await handleResolveConflict(decisions);
         }}
       />
+      {/* C2 外部写入感知：本地有未保存改动时检测到其他端更新，提示用户（保存后会自动同步远端） */}
+      {remoteChangePending && (
+        <div className="fixed bottom-4 right-4 z-50 max-w-sm bg-amber-50 border border-amber-300 text-amber-900 rounded-lg shadow-lg px-4 py-3 text-sm flex items-start gap-2 animate-in fade-in slide-in-from-bottom-2">
+          <span className="mt-0.5">⚠️</span>
+          <div className="flex-1">
+            <div className="font-semibold">检测到其他端更新了数据</div>
+            <div className="text-amber-700 mt-0.5">你有未保存的本地修改。保存后系统会做行级冲突校验并自动同步远端最新数据。</div>
+          </div>
+          <button onClick={() => setRemoteChangePending(false)} className="text-amber-500 hover:text-amber-700 shrink-0" title="忽略">✕</button>
+        </div>
+      )}
     </div>
     </DirtyTrackerProvider>
   );

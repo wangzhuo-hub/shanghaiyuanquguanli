@@ -15,6 +15,7 @@ import {
 } from '../types';
 import { canViewRentPricing, canWriteReceivableScope, assertCanMutatePayment } from '../services/receivablePermissions';
 import { isManagementFeeBillingEnabled } from '../services/parkBillingConfig';
+import { VirtualizedTable } from './VirtualizedTable';
 import { BadgeCheck, Plus, ArrowRightLeft, Check, X, AlertCircle, Banknote, Wallet, TrendingUp, ArrowDownRight, CreditCard, Trash2, Edit2, Download, Upload, FileSpreadsheet, Calendar, ListChecks, Clock, Receipt, RotateCcw, ChevronDown, ChevronUp, ChevronLeft, ChevronRight, FileText, Sparkles, Save, Undo2, Info } from 'lucide-react';
 import {
     getRentCollectionRemark,
@@ -838,6 +839,24 @@ export const FinanceManager: React.FC<FinanceManagerProps> = ({
   }, [payments, selectedYear, paymentKeyword, paymentTypeFilter]);
 
   const sortedMonths = Object.keys(groupedPayments).sort((a,b) => b.localeCompare(a));
+
+  // 收款明细虚拟滚动：把「月份头 + 该月各笔」压平为单一行数组，行很多时（>60）只渲染可视区域。
+  // 收款行是只读展示（编辑走弹窗），无内联输入框，虚拟化无焦点丢失风险。
+  type PaymentDesktopRow =
+    | { kind: 'header'; monthKey: string; count: number; total: number }
+    | { kind: 'payment'; p: PaymentRecord };
+  const paymentDesktopRows = useMemo<PaymentDesktopRow[]>(() => {
+      const out: PaymentDesktopRow[] = [];
+      for (const mk of sortedMonths) {
+          const list = groupedPayments[mk] || [];
+          const total = list.reduce((sum, p) => sum + p.amount, 0);
+          out.push({ kind: 'header', monthKey: mk, count: list.length, total });
+          for (const p of list) out.push({ kind: 'payment', p });
+      }
+      return out;
+  }, [sortedMonths, groupedPayments]);
+  const totalPaymentRowCount = paymentDesktopRows.reduce((n, r) => n + (r.kind === 'payment' ? 1 : 0), 0);
+  const useVirtualPayments = totalPaymentRowCount > 60;
 
   useEffect(() => {
       if (!showForm) return;
@@ -1797,6 +1816,54 @@ export const FinanceManager: React.FC<FinanceManagerProps> = ({
         {listView === 'Payments' ? (
             <>
                 <div className="hidden md:block">
+                    {useVirtualPayments ? (
+                        <VirtualizedTable<PaymentDesktopRow>
+                            rows={paymentDesktopRows}
+                            getRowKey={(r) => (r.kind === 'header' ? `h:${r.monthKey}` : `p:${r.p.id}`)}
+                            estimateRowHeight={56}
+                            dynamicHeight
+                            overscan={12}
+                            height="70vh"
+                            className="border-t border-slate-100"
+                            tableClassName="w-full text-sm text-left table-fixed"
+                            emptyMessage="该年度无收款记录"
+                            renderColgroup={() => (
+                                <colgroup>
+                                    <col style={{ width: '12%' }} />
+                                    <col style={{ width: '20%' }} />
+                                    <col style={{ width: '14%' }} />
+                                    <col style={{ width: '14%' }} />
+                                    <col style={{ width: '14%' }} />
+                                    <col style={{ width: '12%' }} />
+                                    <col style={{ width: '14%' }} />
+                                </colgroup>
+                            )}
+                            renderHeader={() => (
+                                <tr className="bg-slate-50 text-slate-500 font-medium border-b border-slate-200">
+                                    <th className="px-6 py-4">流水号</th>
+                                    <th className="px-6 py-4">付款方</th>
+                                    <th className="px-6 py-4">款项类型</th>
+                                    <th className="px-6 py-4">金额</th>
+                                    <th className="px-6 py-4">收款日期</th>
+                                    <th className="px-6 py-4">关联账期</th>
+                                    <th className="px-6 py-4 text-right">操作</th>
+                                </tr>
+                            )}
+                            renderRow={(r) => r.kind === 'header' ? (
+                                <tr className="bg-slate-50/80 border-y border-slate-100"><td colSpan={7} className="px-6 py-2"><div className="flex items-center justify-between"><div className="font-bold text-slate-700 flex items-center gap-2 text-xs"><Calendar size={14} />{r.monthKey} ({r.count}笔)</div><div className="font-bold text-slate-700 text-xs">月度合计: <span className={r.total >= 0 ? 'text-emerald-600' : 'text-rose-600'}>{formatCurrency(r.total)}</span></div></div></td></tr>
+                            ) : (
+                                <tr className="hover:bg-slate-50 group">
+                                    <td className="px-6 py-4 font-mono text-xs text-slate-400">#{r.p.id.split('_')[0]}</td>
+                                    <td className="px-6 py-4 font-medium text-slate-800 truncate">{r.p.tenantName}</td>
+                                    <td className="px-6 py-4"><span className={`px-2 py-1 rounded text-xs ${r.p.type === 'DepositToRent' ? 'bg-indigo-100 text-indigo-700' : r.p.type === 'DepositRefund' ? 'bg-rose-100 text-rose-700' : 'bg-slate-100 text-slate-600'}`}>{r.p.type === 'Rent' ? '租金' : r.p.type === 'Deposit' ? '押金收取' : r.p.type === 'DepositRefund' ? '押金退还' : r.p.type === 'DepositToRent' ? '押金转租金' : '其他'}</span></td>
+                                    <td className={`px-6 py-4 font-medium ${r.p.amount < 0 ? 'text-rose-600' : 'text-emerald-600'}`}>{r.p.amount > 0 ? '+' : ''}{formatCurrency(r.p.amount)}</td>
+                                    <td className="px-6 py-4 text-slate-600">{r.p.date}</td>
+                                    <td className="px-6 py-4 text-slate-600">{r.p.period || '-'}</td>
+                                    <td className="px-6 py-4 text-right"><div className="flex justify-end gap-2 opacity-0 group-hover:opacity-100 transition-opacity"><button onClick={() => handleEditPayment(r.p)} className="p-1 text-blue-600 hover:bg-blue-50 rounded" title="修改"><Edit2 size={14} /></button><button onClick={() => handleDeletePayment(r.p.id)} className="p-1 text-red-600 hover:bg-red-50 rounded" title="删除"><Trash2 size={14} /></button></div></td>
+                                </tr>
+                            )}
+                        />
+                    ) : (
                     <div ref={desktopViewportRef} className="w-full overflow-hidden">
                         <div style={{ height: desktopScaledHeight ? `${desktopScaledHeight}px` : 'auto' }}>
                             <div
@@ -1846,6 +1913,7 @@ export const FinanceManager: React.FC<FinanceManagerProps> = ({
                             </div>
                         </div>
                     </div>
+                    )}
                 </div>
                 {/* Mobile List View */}
                 <div className="md:hidden">

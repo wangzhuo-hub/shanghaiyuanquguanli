@@ -100,38 +100,67 @@ const stripTenantFieldsPendingMigration = (
 
 const jsonSafeClone = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
 
+/** PATCH 请求中携带服务端乐观锁基线（pb_hooks 的 CAS 据此比对，PB_CAS_ENABLED=1 时生效）。 */
+const casHeaders = (expectedUpdated?: string): { headers: { [k: string]: string } } | undefined =>
+    expectedUpdated ? { headers: { 'X-PB-Expected-Updated': expectedUpdated } } : undefined;
+
 const applyPbRecordUpdate = async (
     client: PocketBase,
     collection: string,
     recordId: string,
     fields: Record<string, unknown>,
+    expectedUpdated?: string,
 ): Promise<PbRecord> => {
     let payload = fields;
+    const opts = casHeaders(expectedUpdated);
     if (collection === 'pb_tenants') {
         try {
-            return (await client.collection(collection).update(recordId, payload)) as PbRecord;
+            return (await client.collection(collection).update(recordId, payload, opts)) as PbRecord;
         } catch (e: unknown) {
             if (!isGenericPbProcessingError(e) || !('source_agent_name' in payload)) throw e;
             payload = stripTenantFieldsPendingMigration(payload);
-            return (await client.collection(collection).update(recordId, payload)) as PbRecord;
+            return (await client.collection(collection).update(recordId, payload, opts)) as PbRecord;
         }
     }
     if (collection === 'pb_budget_scenarios' && payload.base_data_snapshot !== undefined) {
         try {
-            return (await client.collection(collection).update(recordId, payload)) as PbRecord;
+            return (await client.collection(collection).update(recordId, payload, opts)) as PbRecord;
         } catch (e: unknown) {
             if (!isGenericPbProcessingError(e)) throw e;
             const slim = {
                 ...payload,
                 base_data_snapshot: jsonSafeClone(payload.base_data_snapshot),
             };
-            return (await client.collection(collection).update(recordId, slim)) as PbRecord;
+            return (await client.collection(collection).update(recordId, slim, opts)) as PbRecord;
         }
     }
-    return (await client.collection(collection).update(recordId, payload)) as PbRecord;
+    return (await client.collection(collection).update(recordId, payload, opts)) as PbRecord;
+};
+
+/** 是否为服务端乐观锁冲突（pb_hooks 抛 409 + OPTIMISTIC_LOCK_CONFLICT 标记）。 */
+const isOptimisticLockConflict = (e: unknown): boolean => {
+    const err = e as { status?: number; response?: { message?: string }; data?: { message?: string }; message?: string };
+    if (err?.status === 409) return true;
+    const msg = String(err?.response?.message || err?.data?.message || err?.message || '');
+    return msg.indexOf('OPTIMISTIC_LOCK_CONFLICT') >= 0;
 };
 
 let pb: PocketBase | null = null;
+// 会话级 batch 能力缓存（模块级，跨调用保持）：首次被 403/404 拒绝后本会话直接走串行，
+// 并跳过 saveBatchToPocketBase 里的 Phase-1 OR 预查（预查只为 batch 服务）。
+let _batchAvailable = true;
+/** 复位 batch 能力探测（登录/切园区/重连时调用）。 */
+export const resetBatchCapability = () => { _batchAvailable = true; };
+// 单个 /api/batch 请求最多包含的操作数。必须 ≤ 服务端 Settings → Application 的 batch maxRequests
+// （建议服务端设 200~500）。超过则分多个 batch 顺序提交，避免整包被服务端拒绝再回退串行（第三轮 §二.2）。
+const BATCH_MAX_REQUESTS = 200;
+
+// 按年窗口加载（B3）：>0 时 fetchPocketBaseBackup 默认只拉「该年起」的 payments/invoices，
+// 让首屏/切园区/基线回拉口径一致（同一个 fetch 驱动 data 与 baseline，不会错位）。
+// 默认 null = 全量（保持历史行为）。窗口外历史欠款依赖 pb_sealed_months 封账，故须在封账回填后再开启。
+let _loadSinceYear: number | null = null;
+/** 设置按年窗口（传 null 关闭，恢复全量）。前端启动时按 VITE_YEAR_WINDOW_LOAD 决定。 */
+export const setLoadWindowSinceYear = (sinceYear: number | null) => { _loadSinceYear = sinceYear; };
 const isPocketBaseDebug = () => Boolean(import.meta.env?.DEV);
 
 export const initPocketBase = (url: string) => {
@@ -144,6 +173,8 @@ export const initPocketBase = (url: string) => {
         
         // 强制重新创建实例
         pb = new PocketBase(url);
+        // 新连接：复位 batch 能力探测，下一次保存重新尝试 batch。
+        _batchAvailable = true;
         
         if (isPocketBaseDebug()) {
             console.log('New pb instance created');
@@ -1162,7 +1193,7 @@ const escFilter = (value: string): string =>
 /** 与 pb_billing_period_notes 中单条记录的 original_id 对应，存 notes_json.version */
 const DASHBOARD_DATA_VERSION_OID = 'dashboard_data_version';
 
-const readCloudSaveVersion = async (projectId: string): Promise<number> => {
+export const readCloudSaveVersion = async (projectId: string): Promise<number> => {
     if (!pb) return 0;
     const list = await pb.collection('pb_billing_period_notes').getList(1, 1, {
         filter: `project_id = "${escFilter(projectId)}" && original_id = "${escFilter(DASHBOARD_DATA_VERSION_OID)}"`,
@@ -1530,7 +1561,7 @@ export const getPocketBaseHistory = async (
 
 export const fetchPocketBaseBackup = async (
     projectId: string,
-    options?: { year?: number }
+    options?: { year?: number; sinceYear?: number }
 ): Promise<{success: boolean, data?: DashboardData, message: string, recordMeta?: RecordMeta}> => {
     if (!pb) return { success: false, message: 'PocketBase 未初始化' };
     const client = pb;
@@ -1549,11 +1580,19 @@ export const fetchPocketBaseBackup = async (
         });
     };
 
+    // year：精确单年（compute-engine 用）；sinceYear：按年窗口加载（前端用，含该年及以后）；
+    // 都未显式给定时回退模块级窗口 _loadSinceYear。两者都无 = 全量。
+    // 窗口外的历史欠款/趋势依赖 pb_sealed_months 封账快照。
+    const sinceYear = options?.sinceYear ?? (options?.year ? undefined : _loadSinceYear ?? undefined);
     const paymentYearFilter = options?.year
         ? `date >= "${options.year}-01-01" && date <= "${options.year}-12-31"`
+        : sinceYear
+        ? `date >= "${sinceYear}-01-01"`
         : undefined;
     const invoiceYearFilter = options?.year
         ? `bill_date >= "${options.year}-01-01" && bill_date <= "${options.year}-12-31"`
+        : sinceYear
+        ? `bill_date >= "${sinceYear}-01-01"`
         : undefined;
 
     try {
@@ -1570,6 +1609,7 @@ export const fetchPocketBaseBackup = async (
             scenarioRows,
             notesRows,
             versionRows,
+            sealedRows,
         ] = await Promise.all([
             mapList('pb_buildings'),
             mapList('pb_units'),
@@ -1590,6 +1630,12 @@ export const fetchPocketBaseBackup = async (
                 fields: 'notes_json',
                 ...noAutoCancel,
             }),
+            // 已封账历史月（pb_sealed_months）。容错：集合不存在/未迁移时回退空数组，不影响整体加载。
+            client.collection('pb_sealed_months').getFullList({
+                filter: `project_id = "${escFilter(projectId)}"`,
+                fields: 'sealed_year,sealed_month,arrears_increment,cumulative_arrears',
+                ...noAutoCancel,
+            }).catch(() => [] as any[]),
         ]);
         const cloudSaveVersionRaw = (versionRows.items[0]?.notes_json as { version?: unknown } | undefined)?.version;
         const cloudSaveVersion =
@@ -1806,6 +1852,12 @@ export const fetchPocketBaseBackup = async (
             })),
             billingPeriodNotes: (notesRows.items[0]?.notes_json || {}) as Record<string, string>,
             cloudSaveVersion,
+            sealedMonths: (sealedRows as any[]).map((s: any) => ({
+                year: Number(s.sealed_year),
+                month: Number(s.sealed_month),
+                arrearsIncrement: Number(s.arrears_increment) || 0,
+                cumulativeArrears: Number(s.cumulative_arrears) || 0,
+            })),
         };
 
         // 构建 recordMeta：用于增量保存的行级乐观锁基准
@@ -2071,10 +2123,8 @@ export const saveIncrementalToPocketBase = async (
         };
     }
 
-    // 会话级 batch 能力缓存：首次被拒后本会话直接走串行
-    let _batchAvailable = true;
-
-    // 优先尝试 batch 保存（仅当 batch API 可用时）
+    // 优先尝试 batch 保存（仅当本会话 batch API 仍可用时）。
+    // _batchAvailable 为模块级：上一次 batch 被 403/404 拒绝后，这里直接跳过 batch + Phase-1 预查。
     let batchApplied: IncrementalApplied[] = [];
     if (_batchAvailable) {
     try {
@@ -2087,7 +2137,7 @@ export const saveIncrementalToPocketBase = async (
         if (residualPayload) {
             batchApplied = batchResult.applied;
             payload = residualPayload;
-            if (payloadCount(payload).total === 0) {
+            if (!hasResidual(payload)) {
                 return batchResult;
             }
         } else if (batchResult.applied.length === 0) {
@@ -2232,6 +2282,7 @@ export const saveIncrementalToPocketBase = async (
                     collection,
                     server.id,
                     fieldsToWrite as Record<string, unknown>,
+                    baseUpdated,
                 );
                 applied.push({
                     collection,
@@ -2241,12 +2292,25 @@ export const saveIncrementalToPocketBase = async (
                         typeof updated?.updated === 'string' ? updated.updated : null,
                 });
             } catch (e: unknown) {
-                errors.push({
-                    collection,
-                    originalId: u.originalId,
-                    op: 'update',
-                    message: errMsg(e) || String(e),
-                });
+                // 服务端乐观锁 409 → 走冲突流程（ConflictDialog），而非普通错误
+                if (isOptimisticLockConflict(e)) {
+                    conflicts.push({
+                        collection,
+                        originalId: u.originalId,
+                        serverRecord: {},
+                        localChanges: u.changedFields,
+                        baseUpdated: fallbackBaseUpdated(collection, u.originalId, u.baseUpdated),
+                        serverUpdated: '',
+                        op: 'update',
+                    });
+                } else {
+                    errors.push({
+                        collection,
+                        originalId: u.originalId,
+                        op: 'update',
+                        message: errMsg(e) || String(e),
+                    });
+                }
             }
         }
 
@@ -2345,6 +2409,7 @@ const saveBatchToPocketBase = async (
         method: 'POST' | 'PATCH' | 'DELETE';
         url: string;
         body?: Record<string, unknown>;
+        headers?: Record<string, string>;
     };
 
     const requests: BatchRequest[] = [];
@@ -2429,6 +2494,8 @@ const saveBatchToPocketBase = async (
                 method: 'PATCH',
                 url: `/api/collections/${collection}/records/${pbId}`,
                 body: u.changedFields as Record<string, unknown>,
+                // 服务端乐观锁基线（pb_hooks CAS 据此比对，PB_CAS_ENABLED=1 时生效）
+                ...(baseUpdated ? { headers: { 'X-PB-Expected-Updated': baseUpdated } } : {}),
             });
             reqMeta.push({ collection, originalId: u.originalId, op: 'update' });
         }
@@ -2459,32 +2526,36 @@ const saveBatchToPocketBase = async (
         };
     }
 
-    // Phase 3: 发送 batch 请求
+    // Phase 3: 发送 batch 请求（按 BATCH_MAX_REQUESTS 分片顺序提交，结果按序拼接对齐 reqMeta）
     try {
         const baseUrl = client.baseUrl.replace(/\/+$/, '');
-        const batchResp = await fetch(`${baseUrl}/api/batch`, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                ...(client.authStore.token ? { Authorization: client.authStore.token } : {}),
-            },
-            body: JSON.stringify({ requests }),
-        });
+        const results: Array<{ status: number; body?: Record<string, unknown> }> = [];
+        for (let start = 0; start < requests.length; start += BATCH_MAX_REQUESTS) {
+            const chunk = requests.slice(start, start + BATCH_MAX_REQUESTS);
+            const batchResp = await fetch(`${baseUrl}/api/batch`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    ...(client.authStore.token ? { Authorization: client.authStore.token } : {}),
+                },
+                body: JSON.stringify({ requests: chunk }),
+            });
 
-        if (!batchResp.ok) {
-            // batch API 不可用（404）/未启用（403）→ 本会话记录不可用，后续直接走串行
-            if (batchResp.status === 403 || batchResp.status === 404) {
-                _batchAvailable = false;
+            if (!batchResp.ok) {
+                // batch API 不可用（404）/未启用（403）→ 本会话记录不可用，后续直接走串行
+                if (batchResp.status === 403 || batchResp.status === 404) {
+                    _batchAvailable = false;
+                }
+                return {
+                    batchResult: { ...emptyResult, message: `batch API 返回 ${batchResp.status}，回退串行` },
+                    residualPayload: payload, // 整个 payload 交串行走
+                };
             }
-            return {
-                batchResult: { ...emptyResult, message: `batch API 返回 ${batchResp.status}，回退串行` },
-                residualPayload: payload, // 整个 payload 交串行走
-            };
-        }
 
-        const batchResponse = await batchResp.json();
-        const results: Array<{ status: number; body?: Record<string, unknown> }> =
-            Array.isArray(batchResponse) ? batchResponse : [];
+            const batchResponse = await batchResp.json();
+            const chunkResults = Array.isArray(batchResponse) ? batchResponse : [];
+            for (const r of chunkResults) results.push(r);
+        }
 
         const applied: IncrementalApplied[] = [];
         const conflicts: IncrementalConflict[] = [];
@@ -2498,6 +2569,17 @@ const saveBatchToPocketBase = async (
             if (status >= 200 && status < 300) {
                 const newUpdated = res.body?.updated ? String(res.body.updated) : null;
                 applied.push({ collection: meta.collection, originalId: meta.originalId, op: meta.op, newUpdated });
+            } else if (status === 409 || String(res.body?.message || '').indexOf('OPTIMISTIC_LOCK_CONFLICT') >= 0) {
+                // 服务端乐观锁冲突 → 走冲突流程（ConflictDialog），由调用方按基线重拉后重试
+                conflicts.push({
+                    collection: meta.collection,
+                    originalId: meta.originalId,
+                    serverRecord: {},
+                    localChanges: {},
+                    baseUpdated: recordMeta?.[meta.collection]?.[meta.originalId] || '',
+                    serverUpdated: '',
+                    op: meta.op === 'delete' ? 'delete' : 'update',
+                });
             } else {
                 errors.push({
                     collection: meta.collection,

@@ -590,6 +590,24 @@ export interface DashboardData {
    * 未从云端加载过时可视为 0。
    */
   cloudSaveVersion?: number;
+
+  /**
+   * 已封账历史月（来自 pb_sealed_months）。存在时欠款累计读封账增量、只实时算未封账月，
+   * 使欠款成本恒定、不随年限膨胀。缺失（未部署封账/未加载）时回退逐月实时计算，行为与历史一致。
+   */
+  sealedMonths?: SealedMonth[];
+}
+
+/** 已封账月度快照（欠款消费侧只需要 year/month/arrearsIncrement） */
+export interface SealedMonth {
+  /** 自然月份所属年 */
+  year: number;
+  /** 自然月 1-12 */
+  month: number;
+  /** 当月新增欠款（Unpaid 全额 + Partial 余额），与前端欠款循环口径一致 */
+  arrearsIncrement: number;
+  /** 截至本月累计欠款（便利字段，消费侧以 increment 求和为准） */
+  cumulativeArrears?: number;
 }
 
 export interface ChatMessage {
