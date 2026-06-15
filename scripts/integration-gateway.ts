@@ -859,41 +859,67 @@ async function handleComputeBilling(req: express.Request, res: express.Response)
 }
 
 /** 重算 KPI 并回写到 pb_kpi_snapshots，使后续 GET /api/integration/kpi 直接命中 */
+
+// per-project 防抖：5 秒内同一 project 的多次请求合并为一次
+const REFRESH_DEBOUNCE_MS = 5000;
+const _refreshJobs = new Map<string, Promise<any>>();
+
 async function handleComputeRefresh(req: express.Request, res: express.Response) {
   const authCtx = await requireIntegrationAuth(req, res);
   if (!authCtx) return;
   try {
     const projectId = authCtx.projectId!;
     const year = Number(req.body?.year || new Date().getFullYear());
+    const jobKey = `${projectId}:${year}`;
 
-    console.log(`[compute/refresh] project=${projectId} year=${year}`);
-    const result = await computeKpi(projectId, year);
-    if (!result.ok) {
-      res.status(500).json(result);
+    // 防抖：已有进行中的重算则复用
+    const existing = _refreshJobs.get(jobKey);
+    if (existing) {
+      console.log(`[compute/refresh] ${jobKey} 合并到已有任务`);
+      const result = await existing;
+      res.json({ ...result, refreshed: true, debounced: true });
       return;
     }
 
-    // 回写到 pb_kpi_snapshots
-    try {
-      const existing = await pb.collection('pb_kpi_snapshots').getList(1, 1, {
-        filter: `project_id="${escapeFilter(projectId)}" && year=${year}`,
-      });
-      const record = {
-        project_id: projectId,
-        year,
-        summary_json: result.summary,
-        monthly_trends_json: result.fullYearTrends,
-        data_version: result.dataVersion,
-        calculated_at: result.computedAt,
-      };
-      if (existing.items.length > 0) {
-        await pb.collection('pb_kpi_snapshots').update((existing.items[0] as any).id, record);
-      } else {
-        await pb.collection('pb_kpi_snapshots').create(record);
+    const job = (async () => {
+      console.log(`[compute/refresh] project=${projectId} year=${year}`);
+      const result = await computeKpi(projectId, year);
+      if (!result.ok) return result;
+
+      // 回写到 pb_kpi_snapshots
+      try {
+        const existing = await pb.collection('pb_kpi_snapshots').getList(1, 1, {
+          filter: `project_id="${escapeFilter(projectId)}" && year=${year}`,
+        });
+        const record = {
+          project_id: projectId,
+          year,
+          summary_json: result.summary,
+          monthly_trends_json: result.fullYearTrends,
+          data_version: result.dataVersion,
+          calculated_at: result.computedAt,
+        };
+        if (existing.items.length > 0) {
+          await pb.collection('pb_kpi_snapshots').update((existing.items[0] as any).id, record);
+        } else {
+          await pb.collection('pb_kpi_snapshots').create(record);
+        }
+        console.log(`[compute/refresh] 已回写 pb_kpi_snapshots project=${projectId} year=${year}`);
+      } catch (e: any) {
+        console.warn('[compute/refresh] 回写 pb_kpi_snapshots 失败:', e?.message || e);
       }
-      console.log(`[compute/refresh] 已回写 pb_kpi_snapshots project=${projectId} year=${year}`);
-    } catch (e: any) {
-      console.warn('[compute/refresh] 回写 pb_kpi_snapshots 失败:', e?.message || e);
+
+      return result;
+    })();
+
+    _refreshJobs.set(jobKey, job);
+    // 防抖窗口结束后清除 job
+    setTimeout(() => { _refreshJobs.delete(jobKey); }, REFRESH_DEBOUNCE_MS);
+
+    const result = await job;
+    if (!result.ok) {
+      res.status(500).json(result);
+      return;
     }
 
     res.json({ ...result, refreshed: true });

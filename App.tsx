@@ -39,7 +39,6 @@ import {
     fetchCloudSignupRequests,
     approveCloudSignupRequest,
     fetchCloudKpiSnapshot,
-    upsertCloudKpiSnapshot,
 } from './services/cloudService';
 import type { KpiSnapshotSummary, RecordMeta, IncrementalConflict, IncrementalApplied } from './services/cloudService';
 import { formatIncrementalSaveDetails, formatIncrementalSaveAlertTitle, type IncrementalSaveDisplayOptions } from './services/cloudService';
@@ -62,7 +61,6 @@ import {
     buildBillingDetailsForPeriod as buildBillingDetailsForPeriodService,
     calculateDashboardMetrics as calculateDashboardMetricsService,
     normalizeScenarioForReceivable as normalizeScenarioForReceivableService,
-    buildKpiSummaryFromProcessedData,
     normalizeKpiSummaryWithMonthlyTrends,
     resolveAnnualInitialBudget,
     normalizeYearlyTargetsFromInitialization,
@@ -377,6 +375,20 @@ const tryAcquireSaveLock = (): (() => void) | null => {
 };
 
 // ── 持久化缓存双写辅助（IndexedDB 主，localStorage 兜底）────────────────
+/** 缓存前剔除派生字段，减少序列化体积 50-80% */
+const DERIVED_KEYS = [
+    'monthlyTrends', 'prevYearMonthlyTrends', 'currentMonthBilling',
+    'recentSignings', 'expiringSoon', 'parkingStats', 'budgetAnalysis',
+    'parkAreaMetrics',
+];
+
+const stripDerivedFields = (data: unknown): unknown => {
+    if (!data || typeof data !== 'object') return data;
+    const copy = { ...(data as Record<string, unknown>) };
+    for (const key of DERIVED_KEYS) delete copy[key];
+    return copy;
+};
+
 const parkDataPut = (key: string, jsonStr: string) => {
     // IndexedDB 异步主路径（不阻塞）
     cachePut(key, jsonStr).then(ok => {
@@ -388,6 +400,12 @@ const parkDataPut = (key: string, jsonStr: string) => {
     } catch {
         // QuotaExceeded — 不能依赖 localStorage，IndexedDB 是主路径
     }
+};
+
+/** 持久化 DashboardData 到缓存（自动剔除派生字段） */
+const parkDataPutObj = (key: string, obj: unknown) => {
+    const stripped = stripDerivedFields(obj);
+    parkDataPut(key, JSON.stringify(stripped));
 };
 
 const parkDataGet = async (key: string): Promise<string | null> => {
@@ -628,7 +646,7 @@ const App: React.FC = () => {
                   ? await runWhenBrowserIdle(() => recalculateMetrics(displayData, bootstrapYear, 'All'))
                   : recalculateMetrics(displayData, bootstrapYear, 'All');
                 captureBaselineFromCloud(safeCloudData, latestRes.recordMeta, configToUse.projectId);
-                parkDataPut(getParkStorageKey(configToUse.projectId), JSON.stringify(processed));
+                parkDataPutObj(getParkStorageKey(configToUse.projectId), processed);
                 setLastSaved(new Date().toLocaleTimeString());
                 if (recovered) {
                   console.warn(
@@ -697,7 +715,7 @@ const App: React.FC = () => {
           if (!baselineSnapshotRef.current) return;
           // 园区在 2 秒间被切走了（setCloudConfig 触发 effect 但 data 还没刷到目标园区）。
           if (currentProjectIdRef.current !== projectIdAtEffectStart) return;
-          parkDataPut(getParkStorageKey(projectIdAtEffectStart), JSON.stringify(data));
+          parkDataPutObj(getParkStorageKey(projectIdAtEffectStart), data);
           setLastSaved(new Date().toLocaleTimeString());
           if (isCloudConnected && cloudConfig.autoSync) {
               // 保存互斥：手动保存进行中则跳过本次自动同步（下次 timer 会再试）
@@ -755,6 +773,8 @@ const App: React.FC = () => {
 
   const dataRef = React.useRef(data);
   dataRef.current = data;
+  /** 切 tab 结果缓存：数据/年/季度未变时跳过重算 */
+  const metricsCacheRef = React.useRef<{ dataRef: DashboardData | null; year: number; quarter: string } | null>(null);
   /** 启动/bootstrap 已算过指标时，跳过 effect 首次重复计算 */
   const metricsFilterEffectReadyRef = React.useRef(false);
   useEffect(() => {
@@ -763,7 +783,13 @@ const App: React.FC = () => {
           metricsFilterEffectReadyRef.current = true;
           return;
       }
+      // 缓存命中：数据引用相同 + 年/季度相同 → 跳过
+      const cache = metricsCacheRef.current;
+      if (cache && cache.dataRef === dataRef.current && cache.year === selectedYear && cache.quarter === selectedQuarter) {
+          return;
+      }
       recalculateMetrics(dataRef.current, selectedYear, selectedQuarter);
+      metricsCacheRef.current = { dataRef: dataRef.current, year: selectedYear, quarter: selectedQuarter };
   }, [activeTab, selectedYear, selectedQuarter]);
 
   /** 账单明细 DOM 最重，空闲后再挂载，让 KPI 区先可交互 */
@@ -952,7 +978,7 @@ const App: React.FC = () => {
                   const processed = hasSnapshotPreview
                       ? await runWhenBrowserIdle(() => recalculateMetrics(displayData, selectedYear, selectedQuarter))
                       : recalculateMetrics(displayData, selectedYear, selectedQuarter);
-                  parkDataPut(getParkStorageKey(targetProjectId), JSON.stringify(processed));
+                  parkDataPutObj(getParkStorageKey(targetProjectId), processed);
               } else if (cached) {
                   const cachedData = scopeCachedDashboardData(
                       { ...generateInitialData(), ...JSON.parse(cached) },
@@ -1086,7 +1112,7 @@ const App: React.FC = () => {
                   const processed = hasSnapshotPreview
                       ? await runWhenBrowserIdle(() => recalculateMetrics(displayData, selectedYear, selectedQuarter))
                       : recalculateMetrics(displayData, selectedYear, selectedQuarter);
-                  parkDataPut(getParkStorageKey(projectId), JSON.stringify(processed));
+                  parkDataPutObj(getParkStorageKey(projectId), processed);
               } else {
                   if (cachedRaw) {
                       const cachedOnly = scopeCachedDashboardData(
@@ -1343,6 +1369,7 @@ const App: React.FC = () => {
       fullRefreshCounterRef.current++;
       const shouldUploadSnapshot = isManualSave || fullRefreshCounterRef.current % 10 === 0;
 
+      // KPI 快照已收敛为服务端 compute/refresh 单一作者，前端不再上传到 pb_kpi_snapshots
       if (snapshotProjectId && currentData && shouldUploadSnapshot) {
           try {
               const { processedData: fullMetrics, fullYearMonthlyTrends: fullTrends } =
@@ -1352,19 +1379,12 @@ const App: React.FC = () => {
                       billingSelectedMonth,
                       quickMode: false,
                   });
-              const monthlyTrends = fullMetrics.monthlyTrends || [];
               const fullSnapshot = buildIntegrationFullSnapshotV1(fullMetrics, fullTrends, {
                   statsYear: selectedYear,
                   projectId: snapshotProjectId,
               });
               scheduleUpsertIntegrationFullSnapshot(snapshotProjectId, fullSnapshot);
-              await upsertCloudKpiSnapshot(cloudConfig, {
-                  year: selectedYear,
-                  summary: buildKpiSummaryFromProcessedData(fullMetrics, selectedYear),
-                  monthlyTrends,
-                  dataVersion: fullMetrics.cloudSaveVersion || 0,
-                  calculatedAt: new Date().toISOString(),
-              });
+              // upsertCloudKpiSnapshot 已删除 —— KPI 快照唯一作者是服务端 compute/refresh
           } catch (e) {
               console.warn('[refreshAfterSave] 快照构建失败（可忽略）', e);
           }
@@ -1716,7 +1736,7 @@ const App: React.FC = () => {
               const safeData = { ...generateInitialData(), ...res.data };
               recalculateMetrics(safeData, selectedYear, selectedQuarter);
               captureBaselineFromCloud(safeData, res.recordMeta);
-              parkDataPut(getParkStorageKey(cloudConfig.projectId), JSON.stringify(safeData));
+              parkDataPutObj(getParkStorageKey(cloudConfig.projectId), safeData);
               setShowRestorePrompt(false);
               // alert("✅ 系统已同步至最新云端版本");
           } else {
@@ -1766,7 +1786,7 @@ const App: React.FC = () => {
           const res = await fetchCloudBackup(cloudConfig, backupId);
           if (res.success && res.data) {
               const safeData = { ...generateInitialData(), ...res.data };
-              parkDataPut(getParkStorageKey(cloudConfig.projectId), JSON.stringify(safeData));
+              parkDataPutObj(getParkStorageKey(cloudConfig.projectId), safeData);
               alert("✅ 恢复成功！系统正在刷新...");
               window.location.reload();
           } else alert("恢复失败: " + res.message);
@@ -2129,7 +2149,7 @@ const App: React.FC = () => {
               baselineSnapshotRef.current = null;
               dirtyTrackerRef.current.reset();
               setPendingConflicts([]);
-              parkDataPut(getParkStorageKey(targetProjectId), JSON.stringify(mergedData));
+              parkDataPutObj(getParkStorageKey(targetProjectId), mergedData);
               let canSaveIncrementally = false;
               try {
                   const baselineRes = await fetchCloudBackup({ ...cloudConfig, projectId: targetProjectId }, targetProjectId);

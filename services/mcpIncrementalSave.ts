@@ -9,6 +9,7 @@ import {
   diffPbRecords,
   payloadCount,
 } from './dataDiff';
+import type { DirtyPayload } from './dataDiff';
 import { generateInitialData } from './mockData';
 import {
   fetchPocketBaseBackup,
@@ -89,6 +90,67 @@ async function triggerServerComputeRefresh(projectId: string, year: number): Pro
   } catch {
     /* 与前端一致：静默失败 */
   }
+}
+
+/**
+ * 定向保存：不拉全量、不 diff，直接构建 DirtyPayload 提交。
+ * 用于单对象操作（一笔收款/一个租户），从 O(全量) 降为 O(1)。
+ */
+async function runDirectedSave(
+  payload: DirtyPayload,
+  ctx: McpSaveContext,
+): Promise<{ ok: boolean; result: SaveIncrementalResult; message: string }> {
+  const projectId = resolveAuthorizedProjectId(ctx.user, ctx.projectId);
+  restorePocketBaseUserSession(
+    ctx.pbUrl,
+    ctx.userPb.authStore.token,
+    ctx.userPb.authStore.model as Record<string, unknown> | null,
+  );
+
+  // 权限过滤
+  let filteredPayload = filterDirtyPayloadForRentMaskedUser(payload, ctx.user);
+
+  const summary = payloadCount(filteredPayload);
+  if (summary.total === 0) {
+    return {
+      ok: true,
+      result: { success: true, applied: [], conflicts: [], errors: [], message: '无改动' },
+      message: '无改动，无需保存',
+    };
+  }
+
+  const cloudConfig: CloudConfig = {
+    provider: 'pocketbase',
+    autoSync: false,
+    projectId,
+    pocketbaseUrl: ctx.pbUrl,
+  };
+
+  const res = await saveIncrementalToCloud(filteredPayload, cloudConfig, undefined);
+
+  if (res.conflicts.length > 0) {
+    return {
+      ok: false,
+      result: res,
+      message: `保存冲突 ${res.conflicts.length} 条，请在前端冲突对话框处理或使用最新数据重试`,
+    };
+  }
+  if (res.errors.length > 0) {
+    return {
+      ok: false,
+      result: res,
+      message: res.errors.map((e) => `${e.collection}/${e.originalId}: ${e.message}`).join('；'),
+    };
+  }
+
+  try {
+    await bumpCloudSaveVersion(cloudConfig);
+  } catch { /* 非关键 */ }
+
+  const year = ctx.year || new Date().getFullYear();
+  await triggerServerComputeRefresh(projectId, year);
+
+  return { ok: true, result: res, message: res.message };
 }
 
 async function runIncrementalSaveFromDashboardData(
@@ -202,48 +264,56 @@ export async function savePaymentLikeFrontend(
     return { ok: false, message: 'period 格式应为 YYYY-MM' };
   }
 
-  const backupRes = await (async () => {
-    restorePocketBaseUserSession(
-      ctx.pbUrl,
-      ctx.userPb.authStore.token,
-      ctx.userPb.authStore.model as Record<string, unknown> | null,
-    );
-    return fetchPocketBaseBackup(projectId);
-  })();
+  restorePocketBaseUserSession(
+    ctx.pbUrl,
+    ctx.userPb.authStore.token,
+    ctx.userPb.authStore.model as Record<string, unknown> | null,
+  );
 
-  if (!backupRes.success || !backupRes.data) {
-    return { ok: false, message: backupRes.message || '无法加载云端数据' };
+  // 定向查询：仅验证租户存在并获取名称，不拉全量
+  let tenantName = params.tenant_name || '';
+  if (!tenantName) {
+    try {
+      const tenantRows = await ctx.userPb.collection('pb_tenants').getList(1, 1, {
+        filter: `project_id="${projectId}" && original_id="${params.tenant_id}"`,
+        fields: 'name',
+      });
+      tenantName = tenantRows.items[0]?.name || '';
+    } catch { /* 查不到也继续 */ }
   }
-
-  const data: DashboardData = { ...generateInitialData(), ...backupRes.data };
-  const tenant = data.tenants?.find((t) => t.id === params.tenant_id);
-  const tenantName = params.tenant_name || tenant?.name || '';
 
   const paymentId = String(
     params.original_id || `pay_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
   );
 
-  const newPayment: PaymentRecord = {
-    id: paymentId,
-    tenantId: params.tenant_id,
-    tenantName,
+  const newPayment: Record<string, unknown> = {
+    original_id: paymentId,
+    tenant_id: params.tenant_id,
+    tenant_name: tenantName,
     amount: params.amount,
     type: payType,
     date: params.date,
     status: params.status || 'Received',
-    invoiceStatus: params.invoice_status || 'Pending',
+    invoice_status: params.invoice_status || 'Pending',
     period: finalPeriod,
     remarks: params.remarks || '',
+    project_id: projectId,
   };
 
-  data.payments = [...(data.payments || []), newPayment];
+  const payload: DirtyPayload = {
+    pb_payments: {
+      creates: [{ originalId: paymentId, data: newPayment }],
+      updates: [],
+      deletes: [],
+    },
+  };
 
-  const save = await runIncrementalSaveFromDashboardData(data, { ...ctx, projectId });
+  const save = await runDirectedSave(payload, { ...ctx, projectId });
   return {
     ok: save.ok,
     message: save.message,
     payment_id: paymentId,
-    save_path: 'frontend_incremental',
+    save_path: 'directed',
     applied: save.result.applied,
   };
 }
@@ -282,31 +352,42 @@ export async function updatePaymentLikeFrontend(
     ctx.userPb.authStore.token,
     ctx.userPb.authStore.model as Record<string, unknown> | null,
   );
-  const backupRes = await fetchPocketBaseBackup(projectId);
-  if (!backupRes.success || !backupRes.data) {
-    return { ok: false, message: backupRes.message || '无法加载云端数据' };
+
+  // 定向查询：仅查目标收款，不拉全量
+  const existing = await ctx.userPb.collection('pb_payments').getList(1, 1, {
+    filter: `project_id="${projectId}" && original_id="${paymentId}"`,
+  });
+  if (existing.items.length === 0) {
+    return { ok: false, message: `收款记录不存在：${paymentId}` };
   }
-
-  const data: DashboardData = { ...generateInitialData(), ...backupRes.data };
-  const idx = (data.payments || []).findIndex((p) => p.id === paymentId);
-  if (idx < 0) return { ok: false, message: `收款记录不存在：${paymentId}` };
-
-  const existing = data.payments![idx];
-  assertPaymentWriteAllowed(ctx.user, existing.type);
+  const row = existing.items[0] as any;
+  if (row.type) assertPaymentWriteAllowed(ctx.user, row.type);
   if (params.patch.type) assertPaymentWriteAllowed(ctx.user, params.patch.type);
 
-  data.payments![idx] = {
-    ...existing,
-    ...params.patch,
-    amount: params.patch.amount !== undefined ? Number(params.patch.amount) : existing.amount,
+  // 构建更新字段
+  const changedFields: Record<string, unknown> = {};
+  if (params.patch.amount !== undefined) changedFields.amount = Number(params.patch.amount);
+  if (params.patch.date !== undefined) changedFields.date = params.patch.date;
+  if (params.patch.period !== undefined) changedFields.period = params.patch.period;
+  if (params.patch.status !== undefined) changedFields.status = params.patch.status;
+  if (params.patch.invoiceStatus !== undefined) changedFields.invoice_status = params.patch.invoiceStatus;
+  if (params.patch.remarks !== undefined) changedFields.remarks = params.patch.remarks;
+  if (params.patch.type !== undefined) changedFields.type = params.patch.type;
+
+  const payload: DirtyPayload = {
+    pb_payments: {
+      creates: [],
+      updates: [{ originalId: paymentId, changedFields, baseUpdated: row.updated || '' }],
+      deletes: [],
+    },
   };
 
-  const save = await runIncrementalSaveFromDashboardData(data, { ...ctx, projectId });
+  const save = await runDirectedSave(payload, { ...ctx, projectId });
   return {
     ok: save.ok,
     message: save.message,
     payment_id: paymentId,
-    save_path: 'frontend_incremental',
+    save_path: 'directed',
     applied: save.result.applied,
   };
 }
@@ -328,19 +409,26 @@ export async function deletePaymentLikeFrontend(
     ctx.userPb.authStore.token,
     ctx.userPb.authStore.model as Record<string, unknown> | null,
   );
-  const backupRes = await fetchPocketBaseBackup(projectId);
-  if (!backupRes.success || !backupRes.data) {
-    return { ok: false, message: backupRes.message || '无法加载云端数据' };
+
+  // 定向查询：仅查目标收款是否存在并校验权限
+  const existing = await ctx.userPb.collection('pb_payments').getList(1, 1, {
+    filter: `project_id="${projectId}" && original_id="${paymentId}"`,
+  });
+  if (existing.items.length === 0) {
+    return { ok: false, message: `收款记录不存在：${paymentId}` };
   }
+  const row = existing.items[0] as any;
+  if (row.type) assertPaymentWriteAllowed(ctx.user, row.type);
 
-  const data: DashboardData = { ...generateInitialData(), ...backupRes.data };
-  const existing = (data.payments || []).find((p) => p.id === paymentId);
-  if (!existing) return { ok: false, message: `收款记录不存在：${paymentId}` };
-  assertPaymentWriteAllowed(ctx.user, existing.type);
+  const payload: DirtyPayload = {
+    pb_payments: {
+      creates: [],
+      updates: [],
+      deletes: [{ originalId: paymentId, baseUpdated: row.updated || '' }],
+    },
+  };
 
-  data.payments = (data.payments || []).filter((p) => p.id !== paymentId);
-
-  const save = await runIncrementalSaveFromDashboardData(data, { ...ctx, projectId });
+  const save = await runDirectedSave(payload, { ...ctx, projectId });
   return {
     ok: save.ok,
     message: save.message,
@@ -365,37 +453,48 @@ export async function saveTenantLikeFrontend(
     ctx.userPb.authStore.token,
     ctx.userPb.authStore.model as Record<string, unknown> | null,
   );
-  const backupRes = await fetchPocketBaseBackup(projectId);
-  if (!backupRes.success || !backupRes.data) {
-    return { ok: false, message: backupRes.message || '无法加载云端数据' };
-  }
 
-  const dashboard: DashboardData = { ...generateInitialData(), ...backupRes.data };
   const oid = String(params.original_id || params.data.original_id || params.data.id || '').trim();
   if (!oid) return { ok: false, message: '缺少 original_id / 租户 id' };
 
-  const patch = params.data as Partial<Tenant>;
-  const existingIdx = (dashboard.tenants || []).findIndex((t) => t.id === oid);
+  // 定向查询：仅查目标租户是否存在
+  const existing = await ctx.userPb.collection('pb_tenants').getList(1, 1, {
+    filter: `project_id="${projectId}" && original_id="${oid}"`,
+  });
+  const isUpdate = existing.items.length > 0;
 
-  const tenantRow: Tenant = {
-    ...(existingIdx >= 0 ? dashboard.tenants![existingIdx] : ({} as Tenant)),
-    ...patch,
-    id: oid,
-    projectId,
-  } as Tenant;
+  // 构建 PB 行数据（与 dashboardDataToPbRecords 中 tenant 映射对齐）
+  const d = params.data;
+  const tenantData: Record<string, unknown> = {
+    original_id: oid,
+    project_id: projectId,
+    name: d.name,
+    building_id: d.buildingId || d.building_id,
+    unit_ids: d.unitIds || d.unit_ids,
+    total_area: d.totalArea,
+    monthly_rent: d.monthlyRent,
+    unit_price: d.unitPrice || d.unit_price,
+    payment_cycle: d.paymentCycle || d.payment_cycle,
+    lease_start: d.leaseStart || d.lease_start,
+    lease_end: d.leaseEnd || d.lease_end,
+    status: d.status,
+    signing_date: d.signingDate || d.signing_date,
+    deposit_status: d.depositStatus || d.deposit_status || 'Unpaid',
+    type: d.type,
+  };
 
-  if (existingIdx >= 0) {
-    dashboard.tenants![existingIdx] = tenantRow;
-  } else {
-    dashboard.tenants = [...(dashboard.tenants || []), tenantRow];
-  }
+  const payload: DirtyPayload = {
+    pb_tenants: isUpdate
+      ? { creates: [], updates: [{ originalId: oid, changedFields: tenantData, baseUpdated: (existing.items[0] as any).updated || '' }], deletes: [] }
+      : { creates: [{ originalId: oid, data: tenantData }], updates: [], deletes: [] },
+  };
 
-  const save = await runIncrementalSaveFromDashboardData(dashboard, { ...ctx, projectId });
+  const save = await runDirectedSave(payload, { ...ctx, projectId });
   return {
     ok: save.ok,
     message: save.message,
     tenant_id: oid,
-    save_path: 'frontend_incremental',
+    save_path: 'directed',
     applied: save.result.applied,
   };
 }
@@ -420,28 +519,33 @@ export async function archiveTenantLikeFrontend(
     ctx.userPb.authStore.token,
     ctx.userPb.authStore.model as Record<string, unknown> | null,
   );
-  const backupRes = await fetchPocketBaseBackup(projectId);
-  if (!backupRes.success || !backupRes.data) {
-    return { ok: false, message: backupRes.message || '无法加载云端数据' };
-  }
 
-  const dashboard: DashboardData = { ...generateInitialData(), ...backupRes.data };
-  const idx = (dashboard.tenants || []).findIndex((t) => t.id === tenantId);
-  if (idx < 0) return { ok: false, message: `租户不存在：${tenantId}` };
+  // 定向查询：仅查目标租户
+  const existing = await ctx.userPb.collection('pb_tenants').getList(1, 1, {
+    filter: `project_id="${projectId}" && original_id="${tenantId}"`,
+  });
+  if (existing.items.length === 0) return { ok: false, message: `租户不存在：${tenantId}` };
 
-  dashboard.tenants![idx] = {
-    ...dashboard.tenants![idx],
-    status: 'Terminated' as Tenant['status'],
-    terminationDate: params.termination_date || new Date().toISOString().slice(0, 10),
-    terminationReason: params.termination_reason || 'Agent 作废/退租',
+  const changedFields: Record<string, unknown> = {
+    status: 'Terminated',
+    termination_date: params.termination_date || new Date().toISOString().slice(0, 10),
+  };
+  if (params.termination_reason) changedFields.termination_reason = params.termination_reason;
+
+  const payload: DirtyPayload = {
+    pb_tenants: {
+      creates: [],
+      updates: [{ originalId: tenantId, changedFields, baseUpdated: (existing.items[0] as any).updated || '' }],
+      deletes: [],
+    },
   };
 
-  const save = await runIncrementalSaveFromDashboardData(dashboard, { ...ctx, projectId });
+  const save = await runDirectedSave(payload, { ...ctx, projectId });
   return {
     ok: save.ok,
     message: save.message,
     tenant_id: tenantId,
-    save_path: 'frontend_incremental',
+    save_path: 'directed',
     applied: save.result.applied,
   };
 }
@@ -464,18 +568,22 @@ export async function deleteTenantLikeFrontend(
     ctx.userPb.authStore.token,
     ctx.userPb.authStore.model as Record<string, unknown> | null,
   );
-  const backupRes = await fetchPocketBaseBackup(projectId);
-  if (!backupRes.success || !backupRes.data) {
-    return { ok: false, message: backupRes.message || '无法加载云端数据' };
-  }
 
-  const dashboard: DashboardData = { ...generateInitialData(), ...backupRes.data };
-  const existing = (dashboard.tenants || []).find((t) => t.id === tenantId);
-  if (!existing) return { ok: false, message: `租户不存在：${tenantId}` };
+  // 定向查询：仅查目标租户
+  const existing = await ctx.userPb.collection('pb_tenants').getList(1, 1, {
+    filter: `project_id="${projectId}" && original_id="${tenantId}"`,
+  });
+  if (existing.items.length === 0) return { ok: false, message: `租户不存在：${tenantId}` };
 
-  dashboard.tenants = (dashboard.tenants || []).filter((t) => t.id !== tenantId);
+  const payload: DirtyPayload = {
+    pb_tenants: {
+      creates: [],
+      updates: [],
+      deletes: [{ originalId: tenantId, baseUpdated: (existing.items[0] as any).updated || '' }],
+    },
+  };
 
-  const save = await runIncrementalSaveFromDashboardData(dashboard, { ...ctx, projectId });
+  const save = await runDirectedSave(payload, { ...ctx, projectId });
   return {
     ok: save.ok,
     message: save.message,
