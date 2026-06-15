@@ -14,19 +14,25 @@
 
 确认：PB Admin → Collections 出现 `pb_sealed_months`；`pb_payments` 的 Indexes 含上述两条复合索引。
 
-## ② 网关定时任务（环境变量）
+## ② 网关定时任务（默认关闭，需显式开启）
 
-`integration-gateway` 启动即内置：每日检查 → 封"上月"账（所有园区）+ 清理 180 天前审计日志。依赖网关原有 admin 凭证：
+`integration-gateway` 的定时任务（每日封"上月"账 + 清理 180 天前审计日志）**默认关闭**——
+部署网关本身零行为变化，手动 `/compute/seal` 端点始终可用。确认要启用后：
 
 ```
-PB_URL=...                 # 已有
-PB_ADMIN_EMAIL=...         # 已有
-PB_ADMIN_PASSWORD=...      # 已有
+GATEWAY_SCHEDULER_ENABLED=1   # 开启定时封账+审计清理（默认关）
+PB_URL=...                    # 已有
+PB_ADMIN_EMAIL=...            # 已有（封账/清理需 admin）
+PB_ADMIN_PASSWORD=...         # 已有
 SEAL_PROJECTS=shanghai_park,beijing_park,shenzhen_park   # 可选，默认即此三园区
-AUDIT_RETENTION_DAYS=180   # 可选，审计日志留存天数
+AUDIT_RETENTION_DAYS=180      # 可选，审计日志留存天数（首次清理会删更早的）
 ```
 
-启动日志应出现：`[integration-gateway] 定时任务已启动：封账(...) + 审计清理(180d)`。
+设置后**重启网关**。启动日志应出现：`定时任务已启动：封账(...) + 审计清理(180d)`；
+未启用时显示：`定时任务未启用（GATEWAY_SCHEDULER_ENABLED=1 开启…）`。
+
+⚠️ 启用封账后，已封月欠款**冻结**（对已封月的补缴不再回头减欠款）——会计关账的正确语义，请知会财务。
+单实例运行，勿起多个网关进程（否则重复封账）。
 
 ## ③ 封账回填（一次性，按需）
 
