@@ -1171,9 +1171,15 @@ async function main() {
     console.log(`  POST /api/integration/compute/billing  — 重算应收明细`);
     console.log(`  POST /api/integration/compute/refresh  — 重算并回写快照`);
     console.log(`  POST /api/integration/compute/seal     — 封账（默认上月，可指定 year/month）`);
-    // 启动定时任务：每月封账（上月）+ 审计日志清理（180 天）
-    startScheduledJobs();
-    console.log(`[integration-gateway] 定时任务已启动：封账(${SEAL_PROJECTS.join(',')}) + 审计清理(${AUDIT_RETENTION_DAYS}d)`);
+    // 定时任务（封账 + 审计清理）默认关闭：部署网关本身零行为变化；
+    // 手动 /compute/seal 端点始终可用。确认要启用封账（写 pb_sealed_months、冻结已封月欠款）后，
+    // 设 GATEWAY_SCHEDULER_ENABLED=1 再重启即可。
+    if (process.env.GATEWAY_SCHEDULER_ENABLED === '1') {
+      startScheduledJobs();
+      console.log(`[integration-gateway] 定时任务已启动：封账(${SEAL_PROJECTS.join(',')}) + 审计清理(${AUDIT_RETENTION_DAYS}d)`);
+    } else {
+      console.log(`[integration-gateway] 定时任务未启用（GATEWAY_SCHEDULER_ENABLED=1 开启封账+审计清理）；手动 /compute/seal 仍可用`);
+    }
     console.log(`[integration-gateway] App API endpoints:`);
     console.log(`  POST /api/v1/app/auth/login            — 看板用户登录`);
     console.log(`  GET  /api/v1/app/auth/me               — 当前用户`);
