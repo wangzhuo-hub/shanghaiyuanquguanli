@@ -151,8 +151,8 @@ let pb: PocketBase | null = null;
 let _batchAvailable = true;
 /** 复位 batch 能力探测（登录/切园区/重连时调用）。 */
 export const resetBatchCapability = () => { _batchAvailable = true; };
-// 单个 /api/batch 请求最多包含的操作数。必须 ≤ 服务端 Settings → Application 的 batch maxRequests
-// （建议服务端设 200~500）。超过则分多个 batch 顺序提交，避免整包被服务端拒绝再回退串行（第三轮 §二.2）。
+// 单个 /api/batch（单事务）最多包含的操作数。必须 ≤ 服务端 Settings → Application 的 batch maxRequests
+// （建议服务端设 200~500）。超过此数的保存整包走串行，不跨事务分片，以保持原子性。
 const BATCH_MAX_REQUESTS = 200;
 
 // 按年窗口加载（B3）：>0 时 fetchPocketBaseBackup 默认只拉「该年起」的 payments/invoices，
@@ -415,7 +415,7 @@ export const restorePocketBaseUserSession = (
 ): void => {
     initPocketBase(url);
     if (!pb) throw new Error('PocketBase 未初始化');
-    pb.authStore.save(token, model);
+    pb.authStore.save(token, (model as Parameters<typeof pb.authStore.save>[1]) ?? undefined);
 };
 
 export const fetchAuthorizedParks = async (): Promise<{ success: boolean; parks: ParkInfo[]; message: string }> => {
@@ -2526,36 +2526,40 @@ const saveBatchToPocketBase = async (
         };
     }
 
-    // Phase 3: 发送 batch 请求（按 BATCH_MAX_REQUESTS 分片顺序提交，结果按序拼接对齐 reqMeta）
+    // Phase 3: 发送 batch 请求。PB batch 为单事务（all-or-nothing）。跨多个 batch 分片会丢失原子性——
+    // 若后一片失败而前一片已提交，整包回串行会对「已提交行」重复处理（update 因 updated 已变而误判冲突）。
+    // 故仅当操作数 ≤ BATCH_MAX_REQUESTS 时走单个 batch；超过则整包交串行（串行可处理任意规模、逐行幂等/冲突可控）。
+    if (requests.length > BATCH_MAX_REQUESTS) {
+        return {
+            batchResult: { ...emptyResult, message: `batch: 操作数 ${requests.length} 超过单事务上限 ${BATCH_MAX_REQUESTS}，转串行` },
+            residualPayload: payload,
+        };
+    }
     try {
         const baseUrl = client.baseUrl.replace(/\/+$/, '');
-        const results: Array<{ status: number; body?: Record<string, unknown> }> = [];
-        for (let start = 0; start < requests.length; start += BATCH_MAX_REQUESTS) {
-            const chunk = requests.slice(start, start + BATCH_MAX_REQUESTS);
-            const batchResp = await fetch(`${baseUrl}/api/batch`, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    ...(client.authStore.token ? { Authorization: client.authStore.token } : {}),
-                },
-                body: JSON.stringify({ requests: chunk }),
-            });
+        const batchResp = await fetch(`${baseUrl}/api/batch`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                ...(client.authStore.token ? { Authorization: client.authStore.token } : {}),
+            },
+            body: JSON.stringify({ requests }),
+        });
 
-            if (!batchResp.ok) {
-                // batch API 不可用（404）/未启用（403）→ 本会话记录不可用，后续直接走串行
-                if (batchResp.status === 403 || batchResp.status === 404) {
-                    _batchAvailable = false;
-                }
-                return {
-                    batchResult: { ...emptyResult, message: `batch API 返回 ${batchResp.status}，回退串行` },
-                    residualPayload: payload, // 整个 payload 交串行走
-                };
+        if (!batchResp.ok) {
+            // batch API 不可用（404）/未启用（403）→ 本会话记录不可用，后续直接走串行
+            if (batchResp.status === 403 || batchResp.status === 404) {
+                _batchAvailable = false;
             }
-
-            const batchResponse = await batchResp.json();
-            const chunkResults = Array.isArray(batchResponse) ? batchResponse : [];
-            for (const r of chunkResults) results.push(r);
+            return {
+                batchResult: { ...emptyResult, message: `batch API 返回 ${batchResp.status}，回退串行` },
+                residualPayload: payload, // 整个 payload 交串行走
+            };
         }
+
+        const batchResponse = await batchResp.json();
+        const results: Array<{ status: number; body?: Record<string, unknown> }> =
+            Array.isArray(batchResponse) ? batchResponse : [];
 
         const applied: IncrementalApplied[] = [];
         const conflicts: IncrementalConflict[] = [];

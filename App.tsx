@@ -807,6 +807,10 @@ const App: React.FC = () => {
       if (!isCloudConnected || !cloudConfig.autoSync) return;
       let cancelled = false;
       const POLL_MS = 45000;
+      // 复位版本基线：切园区/年/季度后各园区有各自的 dashboard_data_version，
+      // 不复位会沿用上一园区的旧版本号，导致新园区外部写入漏检（新版本号 < 旧值时永不触发）。
+      lastSeenVersionRef.current = null;
+      pendingRemotePullRef.current = false;
       // 尝试拉取远端更新：本地干净→保存锁内安全回拉并清待拉标记；本地有改动→只提示，保留待拉（下次重试）。
       const tryPullRemote = async () => {
           const baseline = baselineSnapshotRef.current;
