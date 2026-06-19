@@ -35,6 +35,7 @@ import { formatArea, formatCurrency, formatPercent } from '../services/numberFor
 import { paymentCycleLabelMap } from '../services/sharedUtils';
 import { isManagementFeeBillingEnabled } from '../services/parkBillingConfig';
 import { canViewRentPricing } from '../services/receivablePermissions';
+import { buildRenewalContractDraft } from '../services/contractRenewal';
 import {
     generateManagementFeeBills,
     getManagementFeeCardStatus,
@@ -55,6 +56,8 @@ interface ContractManagerProps {
   onUpdateAdjustments?: (newAdjustments: BudgetAdjustment[]) => void;
   /** 手机窄屏：隐藏经营分析，默认进入在租列表便于录入合同 */
   mobileEntryMode?: boolean;
+  /** 手机管理员：仅查询合同，不显示新签、导入、续签、退租等办理入口 */
+  mobileQueryOnly?: boolean;
   authUser?: AuthUser | null;
   projectId?: string;
 }
@@ -152,7 +155,8 @@ const renderManagementFeeCardFields = (t: Tenant, projectIdFallback?: string) =>
     );
 };
 
-export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, buildings, onUpdateTenants, dashboardData, payments = [], onUpdatePayments, budgetAdjustments = [], onUpdateAdjustments, mobileEntryMode = false, authUser = null, projectId: projectIdProp }) => {
+export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, buildings, onUpdateTenants, dashboardData, payments = [], onUpdatePayments, budgetAdjustments = [], onUpdateAdjustments, mobileEntryMode = false, mobileQueryOnly = false, authUser = null, projectId: projectIdProp }) => {
+  const isMobileQueryOnly = mobileEntryMode && mobileQueryOnly;
   const viewRentPricing = canViewRentPricing(authUser);
   const mgmtFeeParkEnabled = isManagementFeeBillingEnabled(projectIdProp || tenants[0]?.projectId);
   const currentCalendarYear = new Date().getFullYear();
@@ -290,7 +294,7 @@ export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, build
   const [showCycleChange, setShowCycleChange] = useState(false);
 
   const canBatchSelectTenant = (t: Tenant) =>
-      !String(t.id || '').startsWith('virt_') && !String(t.name || '').includes('(预算)');
+      !isMobileQueryOnly && !String(t.id || '').startsWith('virt_') && !String(t.name || '').includes('(预算)');
 
   const toggleBatchContractSelect = (id: string) => {
       setBatchSelectedContractIds((prev) => {
@@ -302,6 +306,7 @@ export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, build
   };
 
   const handleBatchDeleteContracts = () => {
+      if (isMobileQueryOnly) return;
       if (!viewRentPricing) {
           alert('当前账号无合同删除权限。');
           return;
@@ -315,6 +320,22 @@ export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, build
           setIsEditing(false);
           setCurrentTenant({});
       }
+  };
+
+  const beginNewContract = () => {
+      if (isMobileQueryOnly) return;
+      setCurrentTenant({
+          signingDate: new Date().toISOString().split('T')[0],
+          status: ContractStatus.Active,
+          depositStatus: DepositStatus.Unpaid,
+          rentFreePeriods: [],
+          paymentCycle: 'Quarterly',
+          paymentCycleMonths: 3,
+          firstPaymentMonths: 3,
+      });
+      setRenewingFromId(null);
+      setFormErrors({});
+      setIsEditing(true);
   };
 
   // 批量导入/导出 & AI 识别导入
@@ -469,6 +490,13 @@ export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, build
 
   // --- Actions ---
   const handleSave = () => {
+    if (isMobileQueryOnly) {
+      setIsEditing(false);
+      setCurrentTenant({});
+      setRenewingFromId(null);
+      setFormErrors({});
+      return;
+    }
     const errors: Record<string, boolean> = {};
     const missingFields = [];
     if (!currentTenant.name) { errors.name = true; missingFields.push('企业名称'); }
@@ -507,7 +535,6 @@ export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, build
 
     let updatedTenants = [...tenants];
     if (renewingFromId) {
-        updatedTenants = updatedTenants.map(t => t.id === renewingFromId ? { ...t, status: ContractStatus.Expired } : t);
         updatedTenants.push(newTenant);
     } else if (currentTenant.id && tenants.some(t => t.id === currentTenant.id)) {
        updatedTenants = updatedTenants.map(t => t.id === currentTenant.id ? newTenant : t);
@@ -517,6 +544,7 @@ export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, build
 
   // 退租回退
   const handleRollback = (tenantId: string) => {
+    if (isMobileQueryOnly) return;
     const t = tenants.find(x => x.id === tenantId);
     if (!t) return;
 
@@ -586,10 +614,12 @@ export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, build
 
   // 名称变更
   const handleNameChange = (tenant: Tenant) => {
+    if (isMobileQueryOnly) return;
     setNameChangeTenantId(tenant.id);
     setShowNameChange(true);
   };
   const handleNameChangeConfirm = (newName: string, record: import('../types').NameChangeRecord) => {
+    if (isMobileQueryOnly) return;
     const updated = tenants.map(t =>
       t.id === nameChangeTenantId
         ? { ...t, name: newName, nameHistory: [...(t.nameHistory || []), record] }
@@ -602,6 +632,7 @@ export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, build
 
   // 付款周期变更
   const handleCycleChangeConfirm = (change: import('../types').PaymentCycleChange) => {
+    if (isMobileQueryOnly) return;
     if (!currentTenant.id) return;
     const updated = tenants.map(t =>
       t.id === currentTenant.id
@@ -630,6 +661,7 @@ export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, build
    * 不会触碰合同其他字段，保留 `paymentPeriodAdjustments`（单月调整）记录。
    */
   const handleShiftPaymentPeriod = (tenantId: string, delta: number) => {
+    if (isMobileQueryOnly) return;
     if (!delta) return;
     const updated = tenants.map((t) =>
       t.id === tenantId
@@ -641,6 +673,7 @@ export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, build
 
   /** 清除合同的整体账期偏移（保留单月级 `paymentPeriodAdjustments`）。 */
   const handleClearPaymentPeriodShift = (tenantId: string) => {
+    if (isMobileQueryOnly) return;
     const updated = tenants.map((t) =>
       t.id === tenantId ? { ...t, paymentPeriodShiftMonths: 0 } : t,
     );
@@ -648,22 +681,8 @@ export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, build
   };
 
   const handleRenewal = (tenant: Tenant) => {
-    const nextDay = new Date(tenant.leaseEnd);
-    nextDay.setDate(nextDay.getDate() + 1);
-    const leaseEnd = new Date(nextDay);
-    leaseEnd.setFullYear(leaseEnd.getFullYear() + 1);
-
-    const renewalTenant: Partial<Tenant> = {
-      ...tenant,
-      id: `t${Date.now()}_renewal`,
-      rootId: tenant.rootId || tenant.id,
-      leaseStart: nextDay.toISOString().split('T')[0],
-      leaseEnd: leaseEnd.toISOString().split('T')[0],
-      signingDate: new Date().toISOString().split('T')[0],
-      status: ContractStatus.Pending,
-    };
-    
-    setCurrentTenant(renewalTenant);
+    if (isMobileQueryOnly) return;
+    setCurrentTenant(buildRenewalContractDraft(tenant));
     setRenewingFromId(tenant.id);
     setFormErrors({});
     setIsEditing(true);
@@ -718,6 +737,7 @@ export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, build
   };
 
   const initiateTermination = (id: string) => {
+    if (isMobileQueryOnly) return;
     const tenant = tenants.find(t => t.id === id);
     const allUnitIds = tenant?.unitIds || [];
     setTerminateId(id);
@@ -891,6 +911,12 @@ export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, build
         return matchesSearch && matchesBuilding && matchesStatus && matchesPayment;
     }).sort((a,b) => new Date(b.leaseStart).getTime() - new Date(a.leaseStart).getTime());
   }, [tenants, searchTerm, filterBuilding, filterStatus, filterPaymentCycle, activeTab]);
+
+  const activeContractCount = tenants.filter(
+      (t) => t.status !== ContractStatus.Terminated && t.status !== ContractStatus.Expired
+  ).length;
+  const terminatedContractCount = tenants.filter((t) => t.status === ContractStatus.Terminated).length;
+  const filteredContractCount = filteredTenants.length;
 
   const normalizeDate = (input: any): string => {
       const s = String(input ?? '').trim();
@@ -1686,24 +1712,29 @@ export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, build
      const selectedUnitTerms = syncUnitTermsForSelection(currentTenant, currentTenant.unitIds || []);
 
      return (
-         <div className="bg-slate-50 fixed inset-0 z-50 overflow-y-auto p-2 md:p-6 animate-in zoom-in-50 duration-200">
-             <div className="bg-white rounded-xl shadow-2xl border border-slate-200 max-w-5xl mx-auto flex flex-col min-h-full">
-                <div className="flex justify-between items-center px-6 py-4 border-b border-slate-100 sticky top-0 bg-white z-20 rounded-t-xl shadow-sm">
-                    <div className="flex items-center gap-3">
+         <div className="fixed inset-0 z-50 overflow-y-auto bg-slate-50 p-0 animate-in zoom-in-50 duration-200 md:p-6">
+             <div className="mx-auto flex min-h-full max-w-5xl flex-col border border-slate-200 bg-white shadow-2xl md:rounded-xl">
+                <div className="sticky top-0 z-20 flex items-center justify-between border-b border-slate-100 bg-white px-4 py-3 shadow-sm md:rounded-t-xl md:px-6 md:py-4">
+                    <div className="flex min-w-0 items-center gap-2 md:gap-3">
                         <div className="p-2 bg-blue-50 text-blue-600 rounded-lg"><Users size={20}/></div>
-                        <h2 className="text-xl font-bold text-slate-800">
-                            {currentTenant.id ? (renewingFromId ? '合同续签' : '客户合同详情') : '新增租赁签约'}
-                        </h2>
+                        <div className="min-w-0">
+                            <h2 className="truncate text-base font-bold text-slate-800 md:text-xl">
+                                {isMobileQueryOnly ? '客户合同详情' : currentTenant.id ? (renewingFromId ? '合同续签' : '客户合同详情') : '新增租赁签约'}
+                            </h2>
+                            <div className="mt-0.5 truncate text-[11px] font-semibold text-slate-400 md:hidden">
+                                {currentTenant.name || '待录入客户'} · {currentTenant.totalArea ? formatArea(currentTenant.totalArea) : '未选房源'}
+                            </div>
+                        </div>
                     </div>
                     <button onClick={() => { setIsEditing(false); setRenewingFromId(null); setFormErrors({}); }} className="text-slate-400 hover:text-slate-600 bg-slate-100 p-2 rounded-full transition-colors"><X size={20}/></button>
                 </div>
 
-                <div className="p-6 md:p-8 space-y-8 flex-1">
+                <div className="flex-1 space-y-3 p-3 pb-28 md:space-y-8 md:p-8 md:pb-8">
                     {/* 1. Core Info Section */}
-                    <section className="bg-white p-6 rounded-xl border border-slate-100 shadow-sm space-y-4">
+                    <section className="bg-white p-4 md:p-6 rounded-xl border border-slate-100 shadow-sm space-y-4">
                         <div className="flex items-center gap-2 text-blue-600 font-bold mb-2"><FileText size={18}/> <span>核心签约信息</span></div>
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                            <div><label className="block text-sm font-medium mb-1.5 text-slate-600">企业名称 <span className="text-red-500">*</span></label><div className="flex gap-2"><input type="text" className={`flex-1 border p-2.5 rounded-lg text-sm ${formErrors.name ? 'border-red-500 bg-red-50' : 'border-slate-300'}`} value={currentTenant.name || ''} onChange={e => setCurrentTenant({...currentTenant, name: e.target.value})} />{currentTenant.id && <button type="button" onClick={() => handleNameChange(currentTenant as Tenant)} className="px-3 py-2 text-xs bg-amber-50 text-amber-700 border border-amber-200 rounded-lg hover:bg-amber-100 whitespace-nowrap">变更名称</button>}</div></div>
+                            <div><label className="block text-sm font-medium mb-1.5 text-slate-600">企业名称 <span className="text-red-500">*</span></label><div className="flex gap-2"><input type="text" className={`flex-1 border p-2.5 rounded-lg text-sm ${formErrors.name ? 'border-red-500 bg-red-50' : 'border-slate-300'}`} value={currentTenant.name || ''} onChange={e => setCurrentTenant({...currentTenant, name: e.target.value})} />{!isMobileQueryOnly && currentTenant.id && <button type="button" onClick={() => handleNameChange(currentTenant as Tenant)} className="px-3 py-2 text-xs bg-amber-50 text-amber-700 border border-amber-200 rounded-lg hover:bg-amber-100 whitespace-nowrap">变更名称</button>}</div></div>
                             <div><label className="block text-sm font-medium mb-1.5 text-slate-600">招商客户经理/中介名称</label><input type="text" placeholder="例如：张三（自拓）/ XX中介公司" className="w-full border border-slate-300 p-2.5 rounded-lg text-sm" value={currentTenant.sourceAgentName || ''} onChange={e => setCurrentTenant({...currentTenant, sourceAgentName: e.target.value})} /><p className="text-[10px] text-slate-400 mt-1">用于追踪客户来源，便于后期分析各来源客户的稳定性</p></div>
                             <div><label className="block text-sm font-medium mb-1.5 text-slate-600">所属资产 <span className="text-red-500">*</span></label><select className={`w-full border p-2.5 rounded-lg text-sm ${formErrors.buildingId ? 'border-red-500 bg-red-50' : 'border-slate-300'}`} value={currentTenant.buildingId || ''} onChange={e => setCurrentTenant({...currentTenant, buildingId: e.target.value, unitIds: [], unitTerms: [], paymentTerms: [], totalArea: 0, monthlyRent: 0})}>
                                 <option value="">选择资产...</option>{buildings.map(b => <option key={b.id} value={b.id}>{b.name} {b.type === 'Site' ? '(场地)' : ''}</option>)}
@@ -1722,7 +1753,7 @@ export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, build
                                         </div>
                                     </div>
                                 ) : (
-                                    <div className="grid grid-cols-4 sm:grid-cols-6 md:grid-cols-8 gap-2 bg-slate-50 p-3 rounded-xl border border-slate-200 max-h-48 overflow-y-auto font-mono">
+                                    <div className="grid max-h-36 grid-cols-3 gap-2 overflow-y-auto rounded-xl border border-slate-200 bg-slate-50 p-2 font-mono sm:grid-cols-6 md:max-h-48 md:grid-cols-8 md:p-3">
                                         {availableUnits.length > 0 ? availableUnits.map(u => (
                                             <button key={u.id} onClick={() => toggleUnit(u.id)} className={`px-2 py-2 rounded text-xs border transition-all ${currentTenant.unitIds?.includes(u.id) ? 'bg-blue-600 text-white border-blue-600 shadow-md scale-105 font-bold' : 'bg-white border-slate-200 hover:border-blue-400'}`}><div>{u.name}</div><div className="opacity-70 font-normal">{formatArea(u.area)}</div></button>
                                         )) : (
@@ -1833,7 +1864,7 @@ export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, build
                     </section>
 
                     {renewalHistory.length > 1 && (
-                        <section className="bg-white p-6 rounded-xl border border-slate-100 shadow-sm space-y-4">
+                        <section className="bg-white p-4 md:p-6 rounded-xl border border-slate-100 shadow-sm space-y-4">
                             <div className="flex items-center gap-2 text-violet-600 font-bold mb-2"><Clock size={18}/> <span>历史签约记录</span></div>
                             <div className="overflow-x-auto border border-slate-200 rounded-lg">
                                 <table className="w-full text-sm min-w-[720px]">
@@ -1876,7 +1907,7 @@ export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, build
                     {viewRentPricing && (
                     <>
                     {/* 2. Rent & Payments */}
-                    <section className="bg-white p-6 rounded-xl border border-slate-100 shadow-sm space-y-4">
+                    <section className="bg-white p-4 md:p-6 rounded-xl border border-slate-100 shadow-sm space-y-4">
                         <div className="flex items-center gap-2 text-emerald-600 font-bold mb-2"><DollarSign size={18}/> <span>租金与支付</span></div>
 
                         {/* 租金输入模式：按单价运算 / 直接填月租金 */}
@@ -1968,7 +1999,7 @@ export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, build
                                 </div>
                             </div>
                             <div>
-                                <label className="block text-sm font-medium mb-1.5 text-slate-600">支付频率 {currentTenant.id && <button type="button" onClick={() => setShowCycleChange(true)} className="ml-2 text-xs text-amber-600 hover:text-amber-700 underline">变更周期</button>}</label>
+                                <label className="block text-sm font-medium mb-1.5 text-slate-600">支付频率 {!isMobileQueryOnly && currentTenant.id && <button type="button" onClick={() => setShowCycleChange(true)} className="ml-2 text-xs text-amber-600 hover:text-amber-700 underline">变更周期</button>}</label>
                                 <select
                                     className="w-full border border-slate-300 p-2.5 rounded-lg text-sm"
                                     value={currentTenant.paymentCycle || 'Quarterly'}
@@ -2030,7 +2061,7 @@ export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, build
                         </p>
                     )}
                     {(mgmtFeeParkEnabled || isManagementFeeBillingEnabled(currentTenant.projectId)) && (
-                    <section className="bg-white p-6 rounded-xl border border-slate-100 shadow-sm space-y-4">
+                    <section className="bg-white p-4 md:p-6 rounded-xl border border-slate-100 shadow-sm space-y-4">
                             <div className="space-y-4">
                                 <div className="text-teal-800 font-bold text-sm">物业费条款</div>
                                 <label className="flex items-center gap-2 text-sm">
@@ -2134,7 +2165,7 @@ export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, build
                     {currentTenant.status === ContractStatus.Terminated &&
                         currentTenant.terminationType === 'Early' &&
                         currentTenant.terminationDate && (
-                            <section className="bg-amber-50/60 p-6 rounded-xl border border-amber-200 shadow-sm space-y-4">
+                            <section className="bg-amber-50/60 p-4 md:p-6 rounded-xl border border-amber-200 shadow-sm space-y-4">
                                 <div className="flex items-center gap-2 text-amber-800 font-bold">
                                     <Receipt size={18} /> <span>提前退租最后一期结算</span>
                                 </div>
@@ -2199,7 +2230,7 @@ export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, build
                         )}
 
                     {/* 3. Rent Free Periods */}
-                    <section className="bg-white p-6 rounded-xl border border-slate-100 shadow-sm space-y-4">
+                    <section className="bg-white p-4 md:p-6 rounded-xl border border-slate-100 shadow-sm space-y-4">
                          <div className="flex justify-between items-center mb-2">
                              <div className="flex items-center gap-2 text-indigo-600 font-bold"><Gift size={18}/> <span>免租期设定</span></div>
                              <button onClick={addRentFree} className="text-xs font-bold bg-indigo-50 text-indigo-600 px-3 py-1.5 rounded-lg hover:bg-indigo-100 flex items-center gap-1 transition-colors"><Plus size={14}/> 添加免租段</button>
@@ -2310,7 +2341,7 @@ export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, build
                     </section>
 
                     {/* 固定金额减免（补充协议等） */}
-                    <section className="bg-white p-6 rounded-xl border border-teal-100 shadow-sm space-y-4">
+                    <section className="bg-white p-4 md:p-6 rounded-xl border border-teal-100 shadow-sm space-y-4">
                         <div className="flex justify-between items-center">
                             <div className="flex items-center gap-2 text-teal-700 font-bold">
                                 <Receipt size={18} />
@@ -2415,7 +2446,7 @@ export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, build
 
                     {/* 按月金额调整（amount_delta，叠加预算方案） */}
                     {currentTenant.id && onUpdateAdjustments && (
-                        <section className="bg-white p-6 rounded-xl border border-purple-100 shadow-sm space-y-3">
+                        <section className="bg-white p-4 md:p-6 rounded-xl border border-purple-100 shadow-sm space-y-3">
                             <div className="flex justify-between items-center">
                                 <div className="flex items-center gap-2 text-purple-700 font-bold text-sm">
                                     <ArrowLeftRight size={16} />
@@ -2535,7 +2566,7 @@ export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, build
                         </section>
                     )}
 
-                    <section className="bg-white p-6 rounded-xl border border-slate-100 shadow-sm space-y-4">
+                    <section className="bg-white p-4 md:p-6 rounded-xl border border-slate-100 shadow-sm space-y-4">
                          {/* 账单明细预览 */}
                         {currentTenant.leaseStart && currentTenant.leaseEnd &&
                          currentTenant.monthlyRent && currentTenant.monthlyRent > 0 && (
@@ -2759,7 +2790,7 @@ export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, build
                                                                          含初始化
                                                                      </span>
                                                                  );
-                                                             } else {
+                                                             } else if (!isMobileQueryOnly) {
                                                                  return (
                                                                      <button
                                                                          onClick={() => setShowInitPaymentModal(true)}
@@ -2770,6 +2801,7 @@ export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, build
                                                                      </button>
                                                                  );
                                                              }
+                                                             return null;
                                                          })()}
                                                      </div>
                                                     <div className="text-2xl font-bold text-green-900">{formatCurrency(totalPaid)}</div>
@@ -3081,7 +3113,7 @@ export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, build
                     )}
 
                     {/* 4. Business Insights & Risk */}
-                    <section className="bg-white p-6 rounded-xl border border-slate-100 shadow-sm space-y-4">
+                    <section className="bg-white p-4 md:p-6 rounded-xl border border-slate-100 shadow-sm space-y-4">
                         <div className="flex items-center gap-2 text-rose-600 font-bold mb-2"><Briefcase size={18}/> <span>客户背景与风险管理</span></div>
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                             <div className="space-y-4">
@@ -3120,7 +3152,7 @@ export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, build
 
                 {/* 账期调整（存量调优） */}
                 {currentTenant.id && (
-                    <section className="px-8 py-5 border-t border-slate-200 bg-amber-50/30">
+                    <section className="border-t border-slate-200 bg-amber-50/30 px-4 py-4 md:px-8 md:py-5">
                         {(() => {
                             // 二次防御：过滤掉缺失关键字段的非法条目（OpenClaw 误填可能造成），避免渲染时 .toLocaleString() 崩溃。
                             const tenantAdjs = (currentTenant.paymentPeriodAdjustments || []).filter(
@@ -3216,20 +3248,26 @@ export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, build
                                             {/* 整体偏移 */}
                                             <div className="flex items-center gap-1 text-xs">
                                                 <span className="text-slate-500">整体偏移:</span>
-                                                <button
-                                                    onClick={() => setCurrentTenant(prev => ({ ...prev, paymentPeriodShiftMonths: (prev.paymentPeriodShiftMonths || 0) - 1 }))}
-                                                    className="w-6 h-6 rounded bg-amber-100 text-amber-700 font-bold hover:bg-amber-200"
-                                                >−</button>
+                                                {!isMobileQueryOnly && (
+                                                    <button
+                                                        onClick={() => setCurrentTenant(prev => ({ ...prev, paymentPeriodShiftMonths: (prev.paymentPeriodShiftMonths || 0) - 1 }))}
+                                                        className="w-6 h-6 rounded bg-amber-100 text-amber-700 font-bold hover:bg-amber-200"
+                                                    >−</button>
+                                                )}
                                                 <span className="font-mono font-bold w-6 text-center">{(currentTenant.paymentPeriodShiftMonths || 0) > 0 ? '+' : ''}{currentTenant.paymentPeriodShiftMonths || 0}</span>
-                                                <button
-                                                    onClick={() => setCurrentTenant(prev => ({ ...prev, paymentPeriodShiftMonths: (prev.paymentPeriodShiftMonths || 0) + 1 }))}
-                                                    className="w-6 h-6 rounded bg-amber-100 text-amber-700 font-bold hover:bg-amber-200"
-                                                >+</button>
+                                                {!isMobileQueryOnly && (
+                                                    <button
+                                                        onClick={() => setCurrentTenant(prev => ({ ...prev, paymentPeriodShiftMonths: (prev.paymentPeriodShiftMonths || 0) + 1 }))}
+                                                        className="w-6 h-6 rounded bg-amber-100 text-amber-700 font-bold hover:bg-amber-200"
+                                                    >+</button>
+                                                )}
                                                 <span className="text-slate-400">月</span>
                                             </div>
-                                            <button onClick={() => setShowAdjForm(!showAdjForm)} className="text-xs px-3 py-1 bg-amber-100 text-amber-700 rounded-lg hover:bg-amber-200 font-medium">
-                                                {showAdjForm ? '取消' : '+ 单月调整'}
-                                            </button>
+                                            {!isMobileQueryOnly && (
+                                                <button onClick={() => setShowAdjForm(!showAdjForm)} className="text-xs px-3 py-1 bg-amber-100 text-amber-700 rounded-lg hover:bg-amber-200 font-medium">
+                                                    {showAdjForm ? '取消' : '+ 单月调整'}
+                                                </button>
+                                            )}
                                         </div>
                                     </div>
                                     {(currentTenant.paymentPeriodShiftMonths || 0) !== 0 && (
@@ -3381,9 +3419,23 @@ export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, build
                     </section>
                 )}
 
-                <div className="flex justify-between items-center px-8 py-6 border-t border-slate-100 bg-white sticky bottom-0 z-20 rounded-b-xl shadow-lg">
-                    <div>{currentTenant.id && viewRentPricing && <button onClick={() => { if(window.confirm("确定删除?")) { onUpdateTenants(tenants.filter(t => t.id !== currentTenant.id)); setIsEditing(false); } }} className="text-rose-500 font-bold flex items-center gap-2 px-4 py-2 hover:bg-rose-50 rounded-lg"><Trash2 size={18}/> 删除记录</button>}</div>
-                    <div className="flex gap-3"><button onClick={() => { setIsEditing(false); setRenewingFromId(null); setFormErrors({}); }} className="px-6 py-2.5 text-slate-600 font-bold">取消</button><button onClick={handleSave} className="px-10 py-2.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-bold flex items-center gap-2 shadow-lg"><Save size={18}/> 保存并退出</button></div>
+                <div className="sticky bottom-0 z-20 border-t border-slate-100 bg-white px-3 py-3 pb-[calc(env(safe-area-inset-bottom)+0.75rem)] shadow-[0_-8px_24px_rgba(15,23,42,0.08)] md:flex md:items-center md:justify-between md:rounded-b-xl md:px-8 md:py-6">
+                    {isMobileQueryOnly ? (
+                        <div className="ml-auto w-full md:w-auto">
+                            <button onClick={() => { setIsEditing(false); setRenewingFromId(null); setFormErrors({}); }} className="w-full rounded-lg bg-slate-950 px-4 py-2.5 text-sm font-bold text-white md:w-auto md:px-10">关闭</button>
+                        </div>
+                    ) : (
+                        <>
+                            <div className="hidden md:block">{currentTenant.id && viewRentPricing && <button onClick={() => { if(window.confirm("确定删除?")) { onUpdateTenants(tenants.filter(t => t.id !== currentTenant.id)); setIsEditing(false); } }} className="text-rose-500 font-bold flex items-center gap-2 px-4 py-2 hover:bg-rose-50 rounded-lg"><Trash2 size={18}/> 删除记录</button>}</div>
+                            <div className="grid grid-cols-[1fr_2fr] gap-2 md:flex md:gap-3">
+                                <button onClick={() => { setIsEditing(false); setRenewingFromId(null); setFormErrors({}); }} className="rounded-lg border border-slate-200 px-4 py-2.5 text-sm font-bold text-slate-600 md:border-0 md:px-6">取消</button>
+                                <button onClick={handleSave} className="flex items-center justify-center gap-2 rounded-lg bg-blue-600 px-4 py-2.5 text-sm font-bold text-white shadow-lg hover:bg-blue-700 md:px-10"><Save size={18}/> 保存并退出</button>
+                            </div>
+                            {currentTenant.id && viewRentPricing && (
+                                <button onClick={() => { if(window.confirm("确定删除?")) { onUpdateTenants(tenants.filter(t => t.id !== currentTenant.id)); setIsEditing(false); } }} className="mt-2 flex w-full items-center justify-center gap-1.5 rounded-lg px-3 py-2 text-xs font-bold text-rose-500 md:hidden"><Trash2 size={15}/> 删除记录</button>
+                            )}
+                        </>
+                    )}
                 </div>
              </div>
              
@@ -3521,11 +3573,94 @@ export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, build
 
   return (
     <div className="space-y-6">
+      {mobileEntryMode && (
+        <section className="md:hidden overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+          <div className="bg-slate-950 px-4 py-3 text-white">
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <div className="text-sm font-black">{isMobileQueryOnly ? '合同查询' : '快速办理'}</div>
+                <div className="mt-0.5 text-[11px] font-semibold text-slate-400">
+                  在租 {activeContractCount} 份 · 待到期 {expiringTenants.length} 家
+                </div>
+              </div>
+              <span className="rounded-full bg-white/10 px-2 py-0.5 text-[10px] font-bold text-slate-200">
+                {filteredContractCount} 条
+              </span>
+            </div>
+            {!isMobileQueryOnly && (
+              <div className="mt-3 grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  onClick={beginNewContract}
+                  className="inline-flex items-center justify-center gap-1.5 rounded-xl bg-blue-600 px-3 py-2.5 text-sm font-black text-white shadow-sm active:scale-[0.98]"
+                >
+                  <Plus size={16} />
+                  新签客户
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowAIContractImport(true)}
+                  className="inline-flex items-center justify-center gap-1.5 rounded-xl bg-white px-3 py-2.5 text-sm font-black text-slate-900 shadow-sm active:scale-[0.98]"
+                >
+                  <Sparkles size={16} />
+                  AI导入
+                </button>
+              </div>
+            )}
+            <label className="mt-2 flex items-center gap-2 rounded-xl bg-white px-3 py-2 text-slate-900">
+              <Search size={15} className="shrink-0 text-slate-400" />
+              <input
+                type="search"
+                enterKeyHint="search"
+                value={searchTerm}
+                onChange={(event) => {
+                  if (activeTab !== 'List') setActiveTab('List');
+                  setSearchTerm(event.target.value);
+                }}
+                placeholder="搜索企业名称"
+                className="min-w-0 flex-1 bg-transparent text-sm font-semibold outline-none placeholder:text-slate-400"
+              />
+            </label>
+          </div>
+          <div className="grid grid-cols-3 divide-x divide-slate-100">
+            <button
+              type="button"
+              onClick={() => setActiveTab('List')}
+              className={`px-3 py-2.5 text-left ${activeTab === 'List' ? 'bg-blue-50' : 'bg-white'}`}
+            >
+              <div className="text-[10px] font-semibold text-slate-500">在租</div>
+              <div className={`mt-0.5 text-lg font-black tabular-nums ${activeTab === 'List' ? 'text-blue-700' : 'text-slate-900'}`}>
+                {activeContractCount}
+              </div>
+            </button>
+            <button
+              type="button"
+              onClick={() => setActiveTab('Expiring')}
+              className={`px-3 py-2.5 text-left ${activeTab === 'Expiring' ? 'bg-amber-50' : 'bg-white'}`}
+            >
+              <div className="text-[10px] font-semibold text-slate-500">到期</div>
+              <div className={`mt-0.5 text-lg font-black tabular-nums ${activeTab === 'Expiring' ? 'text-amber-700' : 'text-slate-900'}`}>
+                {expiringTenants.length}
+              </div>
+            </button>
+            <button
+              type="button"
+              onClick={() => setActiveTab('Terminated')}
+              className={`px-3 py-2.5 text-left ${activeTab === 'Terminated' ? 'bg-rose-50' : 'bg-white'}`}
+            >
+              <div className="text-[10px] font-semibold text-slate-500">历史</div>
+              <div className={`mt-0.5 text-lg font-black tabular-nums ${activeTab === 'Terminated' ? 'text-rose-700' : 'text-slate-900'}`}>
+                {terminatedContractCount}
+              </div>
+            </button>
+          </div>
+        </section>
+      )}
       {/* ... keeping Analysis/List/Terminated navigation logic from previous version ... */}
-      <div className={`flex justify-between items-center gap-3 ${mobileEntryMode ? 'flex-col sm:flex-row sm:items-center' : ''}`}>
+      <div className={`justify-between items-center gap-3 ${mobileEntryMode ? 'hidden md:flex md:flex-row md:items-center' : 'flex'}`}>
            <h2 className="text-lg md:text-xl font-bold text-slate-800 flex items-center gap-2 w-full sm:w-auto">
              <LayoutDashboard size={22} className="text-blue-600 shrink-0"/>
-             {mobileEntryMode ? '合同录入' : '客户合同中心'}
+             {isMobileQueryOnly ? '合同查询' : mobileEntryMode ? '合同录入' : '客户合同中心'}
            </h2>
            <div className={`flex bg-slate-200/60 p-1 rounded-xl shadow-inner w-full sm:w-auto ${mobileEntryMode ? 'justify-stretch' : ''}`}>
                {!mobileEntryMode && (
@@ -3785,7 +3920,7 @@ export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, build
 
       {(activeTab === 'List' || activeTab === 'Terminated') && (
           <>
-            <div className="mb-4 rounded-2xl border border-slate-200/90 bg-white p-3 shadow-sm sm:p-4">
+            <div className={`mb-4 rounded-2xl border border-slate-200/90 bg-white p-3 shadow-sm sm:p-4 ${mobileEntryMode ? 'hidden md:block' : ''}`}>
                 {/* 第一行：筛选（小屏可横向滑动，避免与操作区抢高） */}
                 <div className="flex gap-2 overflow-x-auto pb-1 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden sm:flex-wrap sm:overflow-visible sm:pb-0">
                     <div className="flex min-w-0 shrink-0 items-center gap-2 rounded-xl border border-slate-200 bg-slate-50/90 px-2.5 py-1.5 text-sm shadow-sm sm:min-w-[10rem]">
@@ -3860,18 +3995,22 @@ export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, build
                                 role="group"
                                 aria-label="批量与导入"
                             >
-                                <button
-                                    type="button"
-                                    onClick={handleBatchDeleteContracts}
-                                    disabled={!viewRentPricing || batchSelectedContractIds.size === 0}
-                                    className="inline-flex items-center gap-1 rounded-lg border border-transparent px-2.5 py-1.5 text-xs font-semibold text-rose-700 hover:bg-rose-50 disabled:pointer-events-none disabled:opacity-40 sm:px-3 sm:text-sm"
-                                    title="删除已勾选的可删合同"
-                                >
-                                    <Trash2 size={14} className="shrink-0 opacity-80" aria-hidden />
-                                    <span>删除</span>
-                                    <span className="tabular-nums text-rose-600/90">({batchSelectedContractIds.size})</span>
-                                </button>
-                                <span className="hidden h-5 w-px bg-slate-300/80 sm:inline" aria-hidden />
+                                {!isMobileQueryOnly && (
+                                    <>
+                                        <button
+                                            type="button"
+                                            onClick={handleBatchDeleteContracts}
+                                            disabled={!viewRentPricing || batchSelectedContractIds.size === 0}
+                                            className="inline-flex items-center gap-1 rounded-lg border border-transparent px-2.5 py-1.5 text-xs font-semibold text-rose-700 hover:bg-rose-50 disabled:pointer-events-none disabled:opacity-40 sm:px-3 sm:text-sm"
+                                            title="删除已勾选的可删合同"
+                                        >
+                                            <Trash2 size={14} className="shrink-0 opacity-80" aria-hidden />
+                                            <span>删除</span>
+                                            <span className="tabular-nums text-rose-600/90">({batchSelectedContractIds.size})</span>
+                                        </button>
+                                        <span className="hidden h-5 w-px bg-slate-300/80 sm:inline" aria-hidden />
+                                    </>
+                                )}
                                 <button
                                     type="button"
                                     onClick={handleExportTenants}
@@ -3881,32 +4020,36 @@ export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, build
                                     <Download size={14} className="shrink-0 text-slate-500" aria-hidden />
                                     导出
                                 </button>
-                                <button
-                                    type="button"
-                                    onClick={handleDownloadTemplate}
-                                    className="inline-flex items-center gap-1 rounded-lg border border-transparent px-2.5 py-1.5 text-xs font-semibold text-slate-700 hover:bg-white sm:px-3 sm:text-sm"
-                                    title="下载导入模板"
-                                >
-                                    模板
-                                </button>
-                                <label
-                                    className="inline-flex cursor-pointer items-center gap-1 rounded-lg border border-transparent px-2.5 py-1.5 text-xs font-semibold text-slate-700 hover:bg-white sm:px-3 sm:text-sm"
-                                    title="批量导入（Excel）"
-                                >
-                                    <Upload size={14} className="shrink-0 text-slate-500" aria-hidden />
-                                    导入
-                                    <input
-                                        type="file"
-                                        accept=".xlsx,.xls,.csv"
-                                        className="hidden"
-                                        onChange={(e) => {
-                                            const f = e.target.files?.[0];
-                                            if (!f) return;
-                                            void handleBatchImportFile(f);
-                                            e.target.value = '';
-                                        }}
-                                    />
-                                </label>
+                                {!isMobileQueryOnly && (
+                                    <>
+                                        <button
+                                            type="button"
+                                            onClick={handleDownloadTemplate}
+                                            className="inline-flex items-center gap-1 rounded-lg border border-transparent px-2.5 py-1.5 text-xs font-semibold text-slate-700 hover:bg-white sm:px-3 sm:text-sm"
+                                            title="下载导入模板"
+                                        >
+                                            模板
+                                        </button>
+                                        <label
+                                            className="inline-flex cursor-pointer items-center gap-1 rounded-lg border border-transparent px-2.5 py-1.5 text-xs font-semibold text-slate-700 hover:bg-white sm:px-3 sm:text-sm"
+                                            title="批量导入（Excel）"
+                                        >
+                                            <Upload size={14} className="shrink-0 text-slate-500" aria-hidden />
+                                            导入
+                                            <input
+                                                type="file"
+                                                accept=".xlsx,.xls,.csv"
+                                                className="hidden"
+                                                onChange={(e) => {
+                                                    const f = e.target.files?.[0];
+                                                    if (!f) return;
+                                                    void handleBatchImportFile(f);
+                                                    e.target.value = '';
+                                                }}
+                                            />
+                                        </label>
+                                    </>
+                                )}
                             </div>
 
                             <div className="flex flex-wrap items-center gap-2 sm:justify-end">
@@ -3939,35 +4082,28 @@ export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, build
                                         <Rows3 size={14} aria-hidden /> 表格
                                     </button>
                                 </div>
-                                <button
-                                    type="button"
-                                    onClick={() => setShowAIContractImport(true)}
-                                    className="inline-flex items-center justify-center gap-1.5 rounded-xl bg-indigo-600 px-3 py-2 text-xs font-bold text-white shadow-sm transition-colors hover:bg-indigo-700 sm:px-4 sm:text-sm"
-                                    title="上传截图/文本/Excel，由 AI 识别并生成合同草稿"
-                                >
-                                    <Sparkles size={15} className="shrink-0" aria-hidden />
-                                    <span className="sm:hidden">AI导入</span>
-                                    <span className="hidden sm:inline">AI识别导入</span>
-                                </button>
-                                <button
-                                    type="button"
-                                    onClick={() => {
-                                        setCurrentTenant({
-                                            signingDate: new Date().toISOString().split('T')[0],
-                                            status: ContractStatus.Active,
-                                            depositStatus: DepositStatus.Unpaid,
-                                            rentFreePeriods: [],
-                                            paymentCycle: 'Quarterly',
-                                            paymentCycleMonths: 3,
-                                            firstPaymentMonths: 3,
-                                        });
-                                        setIsEditing(true);
-                                    }}
-                                    className="inline-flex flex-1 items-center justify-center gap-1.5 rounded-xl bg-blue-600 px-3 py-2 text-xs font-bold text-white shadow-sm transition-colors hover:bg-blue-700 sm:flex-initial sm:px-4 sm:text-sm"
-                                >
-                                    <Plus size={16} className="shrink-0" aria-hidden />
-                                    新签客户
-                                </button>
+                                {!isMobileQueryOnly && (
+                                    <>
+                                        <button
+                                            type="button"
+                                            onClick={() => setShowAIContractImport(true)}
+                                            className="inline-flex items-center justify-center gap-1.5 rounded-xl bg-indigo-600 px-3 py-2 text-xs font-bold text-white shadow-sm transition-colors hover:bg-indigo-700 sm:px-4 sm:text-sm"
+                                            title="上传截图/文本/Excel，由 AI 识别并生成合同草稿"
+                                        >
+                                            <Sparkles size={15} className="shrink-0" aria-hidden />
+                                            <span className="sm:hidden">AI导入</span>
+                                            <span className="hidden sm:inline">AI识别导入</span>
+                                        </button>
+                                        <button
+                                            type="button"
+                                            onClick={beginNewContract}
+                                            className="inline-flex flex-1 items-center justify-center gap-1.5 rounded-xl bg-blue-600 px-3 py-2 text-xs font-bold text-white shadow-sm transition-colors hover:bg-blue-700 sm:flex-initial sm:px-4 sm:text-sm"
+                                        >
+                                            <Plus size={16} className="shrink-0" aria-hidden />
+                                            新签客户
+                                        </button>
+                                    </>
+                                )}
                             </div>
                         </div>
                     ) : null}
@@ -4248,7 +4384,7 @@ export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, build
                                                                 >
                                                                     <FileText size={12} /> 详情
                                                                 </button>
-                                                                {canRenewContract(t) && (
+                                                                {!isMobileQueryOnly && canRenewContract(t) && (
                                                                     <button
                                                                         type="button"
                                                                         onClick={() => handleRenewal(t)}
@@ -4257,7 +4393,7 @@ export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, build
                                                                         续签
                                                                     </button>
                                                                 )}
-                                                                {t.status !== ContractStatus.Terminated && (
+                                                                {!isMobileQueryOnly && t.status !== ContractStatus.Terminated && (
                                                                     <button
                                                                         type="button"
                                                                         onClick={() => initiateTermination(t.id)}
@@ -4354,7 +4490,7 @@ export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, build
                                                     <td className="px-6 py-4 text-slate-600 text-xs">{t.moveInDate ? <span className="font-medium text-slate-800">{t.moveInDate}</span> : <span className="text-slate-400">同起租</span>}</td>
                                                     <td className="px-6 py-4"><div className="text-slate-500 text-xs">{t.leaseStart} ~ {t.leaseEnd}</div><div className="text-blue-600 font-bold">{formatCurrency(displayPrice)}</div></td>
                                                     <td className="px-6 py-4 text-slate-600 text-sm">{paymentCycleLabelMap[t.paymentCycle] || t.paymentCycle}</td>
-                                                    <td className="px-6 py-4 text-right space-x-3"><button onClick={() => handleEdit(t)} className="text-blue-600 font-bold text-xs hover:underline">详情</button>{canRenewContract(t) && <button onClick={() => handleRenewal(t)} className="text-emerald-600 font-bold text-xs hover:underline">续签</button>}{t.status !== ContractStatus.Terminated && <button onClick={() => initiateTermination(t.id)} className="text-amber-600 font-bold text-xs hover:underline">退租</button>}</td>
+                                                    <td className="px-6 py-4 text-right space-x-3"><button onClick={() => handleEdit(t)} className="text-blue-600 font-bold text-xs hover:underline">详情</button>{!isMobileQueryOnly && canRenewContract(t) && <button onClick={() => handleRenewal(t)} className="text-emerald-600 font-bold text-xs hover:underline">续签</button>}{!isMobileQueryOnly && t.status !== ContractStatus.Terminated && <button onClick={() => initiateTermination(t.id)} className="text-amber-600 font-bold text-xs hover:underline">退租</button>}</td>
                                                 </tr>
                                             );
                                         })}
@@ -4402,7 +4538,7 @@ export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, build
                                             <td className="px-6 py-4 text-slate-600 text-xs">{t.moveInDate ? <span className="font-medium text-slate-800">{t.moveInDate}</span> : <span className="text-slate-400">同起租</span>}</td>
                                             <td className="px-6 py-4"><div className="text-slate-500 text-xs">{t.leaseStart} ~ {t.leaseEnd}</div><div className="text-blue-600 font-bold">{formatCurrency(displayPrice)}</div></td>
                                             <td className="px-6 py-4 text-slate-600 text-sm">{paymentCycleLabelMap[t.paymentCycle] || t.paymentCycle}</td>
-                                            <td className="px-6 py-4 text-right space-x-3"><button onClick={() => handleEdit(t)} className="text-blue-600 font-bold text-xs hover:underline">详情</button><button onClick={() => handleRollback(t.id)} className="text-emerald-600 font-bold text-xs hover:underline">回退</button></td>
+                                            <td className="px-6 py-4 text-right space-x-3"><button onClick={() => handleEdit(t)} className="text-blue-600 font-bold text-xs hover:underline">详情</button>{!isMobileQueryOnly && <button onClick={() => handleRollback(t.id)} className="text-emerald-600 font-bold text-xs hover:underline">回退</button>}</td>
                                         </tr>
                                     );
                                 })}
@@ -4518,12 +4654,12 @@ export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, build
                                                             <button type="button" onClick={() => handleEdit(t)} className="text-blue-600 font-bold text-xs">
                                                                 详情
                                                             </button>
-                                                            {canRenewContract(t) && (
+                                                            {!isMobileQueryOnly && canRenewContract(t) && (
                                                                 <button type="button" onClick={() => handleRenewal(t)} className="text-emerald-600 font-bold text-xs">
                                                                     续签
                                                                 </button>
                                                             )}
-                                                            {t.status !== ContractStatus.Terminated && (
+                                                            {!isMobileQueryOnly && t.status !== ContractStatus.Terminated && (
                                                                 <button type="button" onClick={() => initiateTermination(t.id)} className="text-amber-600 font-bold text-xs">
                                                                     退租
                                                                 </button>
@@ -4745,20 +4881,32 @@ export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, build
                           </div>
 
                           <div className="flex gap-2">
-                            <button
-                              type="button"
-                              onClick={() => handleRenewal(t)}
-                              className="flex-1 py-2 bg-emerald-600 text-white rounded-lg text-sm font-bold hover:bg-emerald-700 transition-colors flex items-center justify-center gap-1"
-                            >
-                              <FileText size={14} /> 续约
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => initiateTermination(t.id)}
-                              className="flex-1 py-2 bg-white border border-red-300 text-red-600 rounded-lg text-sm font-bold hover:bg-red-50 transition-colors flex items-center justify-center gap-1"
-                            >
-                              <XCircle size={14} /> 退租
-                            </button>
+                            {isMobileQueryOnly ? (
+                              <button
+                                type="button"
+                                onClick={() => handleEdit(t)}
+                                className="flex-1 py-2 bg-slate-950 text-white rounded-lg text-sm font-bold transition-colors flex items-center justify-center gap-1"
+                              >
+                                <FileText size={14} /> 查看详情
+                              </button>
+                            ) : (
+                              <>
+                                <button
+                                  type="button"
+                                  onClick={() => handleRenewal(t)}
+                                  className="flex-1 py-2 bg-emerald-600 text-white rounded-lg text-sm font-bold hover:bg-emerald-700 transition-colors flex items-center justify-center gap-1"
+                                >
+                                  <FileText size={14} /> 续约
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => initiateTermination(t.id)}
+                                  className="flex-1 py-2 bg-white border border-red-300 text-red-600 rounded-lg text-sm font-bold hover:bg-red-50 transition-colors flex items-center justify-center gap-1"
+                                >
+                                  <XCircle size={14} /> 退租
+                                </button>
+                              </>
+                            )}
                           </div>
                         </div>
                       </div>

@@ -1,4 +1,5 @@
 import type { Tenant, RentFreePeriod, Building, Unit } from '../types';
+import { ContractStatus } from '../types';
 import type { BudgetedBill } from './billingService';
 
 /** 格式化日期为 YYYY-MM-DD */
@@ -89,4 +90,50 @@ export function freeRentHandlingLabel(h?: Tenant['freeRentHandling']): string {
 export function budgetBillCoverageLabel(b: BudgetedBill): string {
     if (!b.coverageStart || !b.coverageEnd) return '—';
     return `${formatLocalYMD(b.coverageStart)} ~ ${formatLocalYMD(b.coverageEnd)}`;
+}
+
+/** 根据当前日期自动修正合同状态：
+ *  - Expired（leaseEnd 尚未到）→ 恢复为 Active（修复续签误标）
+ *  - Active/Expiring → Expired（leaseEnd 已过）
+ *  - Pending → Active（leaseStart 已到或已过） */
+export function transitionContractStatuses(tenants: Tenant[], today?: Date): Tenant[] {
+    const now = endOfToday(today ?? new Date());
+    let changed = false;
+    const result = tenants.map((t) => {
+        const leaseEnd = parseYMD(t.leaseEnd);
+        const leaseStart = parseYMD(t.leaseStart);
+        if (
+            t.status === ContractStatus.Expired &&
+            leaseEnd && leaseEnd > now
+        ) {
+            changed = true;
+            return { ...t, status: ContractStatus.Active };
+        }
+        if (
+            (t.status === ContractStatus.Active || t.status === ContractStatus.Expiring) &&
+            leaseEnd && leaseEnd <= now
+        ) {
+            changed = true;
+            return { ...t, status: ContractStatus.Expired };
+        }
+        if (
+            t.status === ContractStatus.Pending &&
+            leaseStart && leaseStart <= now
+        ) {
+            changed = true;
+            return { ...t, status: ContractStatus.Active };
+        }
+        return t;
+    });
+    return changed ? result : tenants;
+}
+
+function endOfToday(d: Date): Date {
+    return new Date(d.getFullYear(), d.getMonth(), d.getDate(), 23, 59, 59, 999);
+}
+
+function parseYMD(s: string): Date | null {
+    if (!s) return null;
+    const d = new Date(s + 'T00:00:00');
+    return Number.isNaN(d.getTime()) ? null : d;
 }

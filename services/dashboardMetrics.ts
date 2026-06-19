@@ -1093,6 +1093,13 @@ const calculateTrends = (
     const currentSystemYear = now.getFullYear();
     const currentSystemMonth = now.getMonth();
     const buildingMap = cache.buildingById.size > 0 ? cache.buildingById : new Map(buildings.map((b) => [b.id, b]));
+    const leasableUnitAreaById = new Map<string, number>();
+    buildings.forEach((building) => {
+        if (building.type === 'Site') return;
+        building.units.forEach((unit) => {
+            if (!unit.isSelfUse) leasableUnitAreaById.set(unit.id, unit.area || 0);
+        });
+    });
     const importedBudgetTable = readImportedBudgetTable(billingPeriodNotes, year);
 
     let startMonth = 0;
@@ -1120,9 +1127,11 @@ const calculateTrends = (
         const initEntry = cache.initByYearMonth.get(`${year}_${month + 1}`) || initializationData.find((d) => d.year === year && d.month === month + 1);
         const startDate = new Date(year, month, 1);
         const endDate = new Date(year, month + 1, 0);
+        const monthEndDate = new Date(year, month + 1, 0, 23, 59, 59, 999);
         const isFutureMonth = year > currentSystemYear || (year === currentSystemYear && month > currentSystemMonth);
 
         let leasedAreaInMonth = 0;
+        const leasedUnitIdsInMonth = new Set<string>();
         let totalRentInMonth = 0;
         let physicalTenantAreaForPrice = 0;
         for (const tenant of tenants) {
@@ -1131,13 +1140,24 @@ const calculateTrends = (
             const isSelfUse = tenant.unitIds.some((uid) => selfUseUnitIds.has(uid));
             if (isSelfUse) continue;
 
-            const achievedDate = tenant.signingDate ? parseDateLocal(tenant.signingDate) : parseDateLocal(tenant.leaseStart);
+            const physicalLeaseStart = parseDateLocal(tenant.leaseStart);
             const leaseEnd = tenant.leaseEnd ? parseDateLocal(tenant.leaseEnd) : parseDateLocal(FAR_FUTURE_DATE);
             const terminationDate = tenant.terminationDate ? parseDateLocal(tenant.terminationDate) : null;
             const effectiveEnd = terminationDate && terminationDate < leaseEnd ? terminationDate : leaseEnd;
-            if (achievedDate <= endDate && effectiveEnd > endDate) leasedAreaInMonth += tenant.totalArea;
+            const effectiveEndOfDay = new Date(effectiveEnd.getFullYear(), effectiveEnd.getMonth(), effectiveEnd.getDate(), 23, 59, 59, 999);
+            if (physicalLeaseStart <= monthEndDate && effectiveEndOfDay >= monthEndDate) {
+                let hasMatchedUnit = false;
+                tenant.unitIds.forEach((unitId) => {
+                    const unitArea = leasableUnitAreaById.get(unitId);
+                    if (unitArea === undefined) return;
+                    hasMatchedUnit = true;
+                    if (leasedUnitIdsInMonth.has(unitId)) return;
+                    leasedUnitIdsInMonth.add(unitId);
+                    leasedAreaInMonth += unitArea;
+                });
+                if (!hasMatchedUnit) leasedAreaInMonth += tenant.totalArea;
+            }
 
-            const physicalLeaseStart = parseDateLocal(tenant.leaseStart);
             if (!tenant.isSpecialBusiness && physicalLeaseStart <= endDate && effectiveEnd >= startDate) {
                 // 统一转为天单价用于均价展示
                 let price = tenant.unitPrice;

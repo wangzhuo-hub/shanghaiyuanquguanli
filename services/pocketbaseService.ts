@@ -900,6 +900,37 @@ export const deleteSignupRequest = async (
     }
 };
 
+export const rejectSignupRequest = async (
+    requestId: string,
+    reviewerNote: string = ''
+): Promise<{ success: boolean; message: string }> => {
+    if (!pb) return { success: false, message: 'PocketBase 未初始化' };
+    if (!pb.authStore?.isValid) return { success: false, message: '尚未登录' };
+    const id = String(requestId || '').trim();
+    if (!id) return { success: false, message: '缺少申请记录ID' };
+    try {
+        const row = await pb.collection('pb_user_signup_requests').getOne(id);
+        const request = mapSignupRequest(row);
+        if (request.status === 'approved') {
+            return { success: false, message: '该申请已审批通过；如需撤销，请先删除或停用对应登录账号。' };
+        }
+        if (request.status === 'rejected') {
+            return { success: true, message: '该申请已退回' };
+        }
+        await pb.collection('pb_user_signup_requests').update(id, {
+            status: 'rejected',
+            review_note: reviewerNote.trim() || '管理员退回注册申请',
+        });
+        return { success: true, message: '已退回注册申请' };
+    } catch (e: unknown) {
+        const status = errStatus(e);
+        if (status === 404) {
+            return { success: true, message: '审批记录已不存在' };
+        }
+        return { success: false, message: formatPocketBaseClientError(e) || '退回注册申请失败' };
+    }
+};
+
 /**
  * 清理与某 `users` 记录关联的「已审批通过」注册申请：
  * - 通过 `approved_user_id` 反查；找不到时按邮箱兜底匹配；
@@ -1052,7 +1083,6 @@ export const approveSignupRequest = async (
                     review_note: reviewerNote || '管理员审批通过（合并已有账号）',
                     approved_user_id: merged.user.id,
                     approved_at: new Date().toISOString(),
-                    password_plain: '',
                 });
                 return { success: true, message: merged.message || '审批完成，申请人账号已可登录' };
             }
@@ -1063,7 +1093,6 @@ export const approveSignupRequest = async (
             review_note: reviewerNote || (existingUser ? '管理员审批通过（合并已有账号）' : '管理员审批通过'),
             approved_user_id: createRes.user.id,
             approved_at: new Date().toISOString(),
-            password_plain: '',
         });
         return {
             success: true,

@@ -39,6 +39,7 @@ import {
     submitCloudSignupRequest,
     fetchCloudSignupRequests,
     approveCloudSignupRequest,
+    rejectCloudSignupRequest,
     fetchCloudKpiSnapshot,
 } from './services/cloudService';
 import type { KpiSnapshotSummary, RecordMeta, IncrementalConflict, IncrementalApplied } from './services/cloudService';
@@ -70,7 +71,8 @@ import {
 } from './services/dashboardMetrics';
 import { computeMetricsInWorker, isMetricsWorkerAvailable } from './services/metricsWorkerClient';
 import { setLoadWindowSinceYear } from './services/pocketbaseService';
-import { formatCurrency } from './services/numberFormat';
+import { formatArea, formatCurrency, formatPercent, formatWan } from './services/numberFormat';
+import { transitionContractStatuses } from './services/sharedUtils';
 import { isManagementFeeBillingEnabled } from './services/parkBillingConfig';
 import { userRoleLabel } from './services/receivablePermissions';
 import { DEFAULT_CLOUD_CONFIG, mergeStoredCloudConfig, cloudConfigForStorage } from './config/deploymentDefaults';
@@ -270,6 +272,494 @@ const LazyPanelFallback = () => (
   </div>
 );
 
+type MobileDashboardMode = 'overview' | 'search';
+
+type MobileTenantSearchResult = {
+    id: string;
+    name: string;
+    location: string;
+    statusLabel: string;
+    helper: string;
+    paymentSummary?: string;
+};
+
+const MOBILE_TOTAL_SCOPE = '__total__';
+const MOBILE_PARK_SNAPSHOT_CACHE_MS = 60_000;
+const PROJECT_SWITCH_DEBOUNCE_MS = 160;
+
+type MobileParkKpi = {
+    projectId: string;
+    parkName: string;
+    revenueGoal: number;
+    revenueCollected: number;
+    revenueProgress: number;
+    occupancyRate: number;
+    occupancyTarget: number;
+    totalArea: number;
+    leasedArea: number;
+    vacantArea: number;
+    accumulatedArrears: number;
+    tenantCount: number;
+    source: 'current' | 'snapshot' | 'computed' | 'total' | 'empty';
+};
+
+type MobileParkKpiSnapshotEntry = {
+    summary: KpiSnapshotSummary;
+    dataVersion?: number;
+    year: number;
+    source: 'snapshot' | 'computed';
+    loadedAt?: number;
+};
+
+const isParkManagerRole = (role?: UserRole) =>
+    role === 'platform_admin' || role === 'group_admin' || role === 'park_admin';
+
+const contractStatusText = (status: ContractStatus) => {
+    switch (status) {
+        case ContractStatus.Active:
+            return '履约中';
+        case ContractStatus.Expiring:
+            return '即将到期';
+        case ContractStatus.Pending:
+            return '签约中';
+        case ContractStatus.Expired:
+            return '已到期';
+        case ContractStatus.Terminated:
+            return '已退租';
+        default:
+            return status;
+    }
+};
+
+const MobileFocusCell: React.FC<{
+    label: string;
+    value: string;
+    helper: string;
+    tone: 'blue' | 'emerald' | 'amber' | 'rose';
+}> = ({ label, value, helper, tone }) => {
+    const toneClass = {
+        blue: 'text-sky-700 bg-sky-50 border-sky-100',
+        emerald: 'text-emerald-700 bg-emerald-50 border-emerald-100',
+        amber: 'text-amber-700 bg-amber-50 border-amber-100',
+        rose: 'text-rose-700 bg-rose-50 border-rose-100',
+    }[tone];
+    return (
+        <div className="mobile-card-enter min-w-0 px-3 py-2.5">
+            <div className="text-[10px] font-semibold text-slate-500">{label}</div>
+            <div className="mt-0.5 truncate text-base font-black tabular-nums tracking-normal text-slate-900">
+                {value}
+            </div>
+            <div className={`mt-0.5 inline-flex max-w-full rounded-full border px-1.5 py-0.5 text-[10px] font-semibold ${toneClass}`}>
+                <span className="truncate">{helper}</span>
+            </div>
+        </div>
+    );
+};
+
+const MobileActionButton: React.FC<{
+    icon: React.ReactNode;
+    label: string;
+    helper: string;
+    tone: 'blue' | 'emerald' | 'amber' | 'slate';
+    onClick: () => void;
+}> = ({ icon, label, helper, tone, onClick }) => {
+    const toneClass = {
+        blue: 'bg-gradient-to-br from-sky-500 to-blue-600 text-white shadow-sky-500/20',
+        emerald: 'bg-gradient-to-br from-emerald-400 to-teal-500 text-white shadow-emerald-500/20',
+        amber: 'bg-gradient-to-br from-amber-300 to-orange-400 text-slate-950 shadow-amber-400/20',
+        slate: 'bg-white text-slate-900 border border-sky-100',
+    }[tone];
+    return (
+        <button
+            type="button"
+            onClick={onClick}
+            className={`mobile-pressable min-w-0 rounded-xl px-2.5 py-2 text-left shadow-sm ${toneClass}`}
+        >
+            <span className="flex items-center gap-1.5 text-sm font-black">
+                {icon}
+                <span className="truncate">{label}</span>
+            </span>
+            <span className="mt-0.5 block truncate text-[10px] font-semibold opacity-80">{helper}</span>
+        </button>
+    );
+};
+
+const MobileDashboardFocus: React.FC<{
+    data: DashboardData;
+    selectedYear: number;
+    projectId?: string;
+    parkName: string;
+    isCloudConnected: boolean;
+    isSyncing: boolean;
+    lastSaved: string;
+    mode: MobileDashboardMode;
+    isManagerView: boolean;
+    isGlobalAdminView?: boolean;
+    managerKpi?: MobileParkKpi;
+    managerParkKpis?: MobileParkKpi[];
+    managerKpiScope?: string;
+    isLoadingManagerKpis?: boolean;
+    searchQuery: string;
+    searchResults: MobileTenantSearchResult[];
+    onSearchQueryChange: (value: string) => void;
+    onYearChange: (year: number) => void;
+    onGoContracts: () => void;
+    onGoFinance: () => void;
+    onGoSearch: () => void;
+    onBackToOverview: () => void;
+    onManagerKpiScopeChange?: (scope: string) => void;
+}> = ({
+    data,
+    selectedYear,
+    projectId,
+    parkName,
+    isCloudConnected,
+    isSyncing,
+    lastSaved,
+    mode,
+    isManagerView,
+    isGlobalAdminView = false,
+    managerKpi,
+    managerParkKpis = [],
+    managerKpiScope,
+    isLoadingManagerKpis = false,
+    searchQuery,
+    searchResults,
+    onSearchQueryChange,
+    onYearChange,
+    onGoContracts,
+    onGoFinance,
+    onGoSearch,
+    onBackToOverview,
+    onManagerKpiScopeChange,
+}) => {
+    const fallbackRevenueGoal =
+        resolveAnnualInitialBudget(data.yearlyTargets, data.initializationData, selectedYear, projectId) ||
+        data.annualRevenueTarget ||
+        data.monthlyRevenueTarget ||
+        0;
+    const fallbackRevenueCollected = data.annualRevenueCollected || 0;
+    const fallbackRevenueProgress =
+        fallbackRevenueGoal > 0 ? (fallbackRevenueCollected / fallbackRevenueGoal) * 100 : data.collectionRate || 0;
+    const activeContractCount = (data.tenants || []).filter((tenant) => tenant.status === ContractStatus.Active).length;
+    const fallbackKpi: MobileParkKpi = {
+        projectId: projectId || '',
+        parkName: parkName || projectId || '当前园区',
+        revenueGoal: fallbackRevenueGoal,
+        revenueCollected: fallbackRevenueCollected,
+        revenueProgress: fallbackRevenueProgress,
+        occupancyRate: data.occupancyRate || 0,
+        occupancyTarget: data.annualOccupancyTarget || 0,
+        totalArea: data.totalArea || 0,
+        leasedArea: data.leasedArea || 0,
+        vacantArea: data.vacantArea || Math.max(0, (data.totalArea || 0) - (data.leasedArea || 0)),
+        accumulatedArrears: data.accumulatedArrears || 0,
+        tenantCount: activeContractCount,
+        source: 'current',
+    };
+    const displayKpi = managerKpi || fallbackKpi;
+    const kpiUnavailable = displayKpi.source === 'empty';
+    const revenueGoal = displayKpi.revenueGoal || 0;
+    const revenueCollected = displayKpi.revenueCollected || 0;
+    const revenueProgress =
+        displayKpi.revenueProgress || (revenueGoal > 0 ? (revenueCollected / revenueGoal) * 100 : 0);
+    const progressWidth = kpiUnavailable ? '0%' : `${Math.max(0, Math.min(100, revenueProgress))}%`;
+    const occupancyGap = (displayKpi.occupancyTarget || 0) - (displayKpi.occupancyRate || 0);
+    const arrears = displayKpi.accumulatedArrears || 0;
+    const arrearsTone = arrears > 100000 ? 'rose' : arrears > 0 ? 'amber' : 'emerald';
+    const expiringCount = data.expiringSoon?.length || 0;
+    const signingCount = data.recentSignings?.length || 0;
+    const leasedArea = displayKpi.leasedArea || Math.max(0, (displayKpi.totalArea || 0) - (displayKpi.vacantArea || 0));
+    const remainingRevenue = Math.max(0, revenueGoal - revenueCollected);
+    const collectionGap = Math.max(0, 100 - revenueProgress);
+    const resolvedTenantCount = displayKpi.tenantCount || activeContractCount || 0;
+    const tenantCountValue = resolvedTenantCount > 0 ? `${resolvedTenantCount} 家` : '待同步';
+    const tenantCountHelper = resolvedTenantCount > 0
+        ? displayKpi.source === 'total'
+            ? '汇总在租客户'
+            : displayKpi.source === 'current'
+                ? `近期签约 ${signingCount} 家`
+                : '在租客户'
+        : '客户明细同步中';
+    const searchInputRef = React.useRef<HTMLInputElement | null>(null);
+
+    useEffect(() => {
+        if (mode !== 'search') return;
+        const focusTimer = window.setTimeout(() => searchInputRef.current?.focus(), 80);
+        return () => window.clearTimeout(focusTimer);
+    }, [mode]);
+
+    if (mode === 'search') {
+        return (
+            <section className="mobile-card-enter md:hidden overflow-hidden rounded-2xl border border-sky-100 bg-white shadow-sm shadow-sky-100/60">
+                <div className="bg-gradient-to-br from-sky-500 via-cyan-500 to-emerald-400 px-3.5 py-3 text-white">
+                    <div className="flex items-center justify-between gap-3">
+                        <div className="min-w-0">
+                            <div className="truncate text-sm font-bold">{isManagerView ? '客户收款查询' : '快速查询'}</div>
+                            <div className="mt-0.5 text-[11px] text-white/80">{parkName || projectId || '当前园区'}</div>
+                        </div>
+                        <button
+                            type="button"
+                            onClick={onBackToOverview}
+                            className="mobile-pressable rounded-full bg-white/20 px-3 py-1 text-[11px] font-bold text-white shadow-sm ring-1 ring-white/20"
+                        >
+                            指标
+                        </button>
+                    </div>
+                    <label className="mt-2.5 flex items-center gap-2 rounded-xl bg-white px-3 py-2 text-slate-900">
+                        <Search size={16} className="shrink-0 text-slate-400" />
+                        <input
+                            ref={searchInputRef}
+                            value={searchQuery}
+                            onChange={(event) => onSearchQueryChange(event.target.value)}
+                            placeholder={isManagerView ? '搜客户、收款、房号' : '搜客户、联系人、房号'}
+                            className="min-w-0 flex-1 bg-transparent text-sm font-semibold outline-none placeholder:text-slate-400"
+                        />
+                    </label>
+                </div>
+                <div className="divide-y divide-slate-100">
+                    {searchResults.length > 0 ? searchResults.map((item) => (
+                        <div key={item.id} className="mobile-card-enter flex items-center justify-between gap-3 px-3 py-2">
+                            <div className="min-w-0">
+                                <div className="truncate text-sm font-black text-slate-900">{item.name}</div>
+                                <div className="mt-0.5 truncate text-[11px] font-semibold text-slate-500">
+                                    {item.location} · {item.statusLabel}
+                                </div>
+                                <div className={`mt-0.5 truncate text-[10px] ${isManagerView ? 'font-bold text-blue-600' : 'text-slate-400'}`}>
+                                    {isManagerView ? (item.paymentSummary || '暂无收款记录') : item.helper}
+                                </div>
+                            </div>
+                            <div className="flex shrink-0 items-center gap-1">
+                                <button type="button" onClick={onGoContracts} className="mobile-pressable rounded-lg bg-sky-50 px-2 py-1 text-[11px] font-bold text-sky-700 ring-1 ring-sky-100">
+                                    合同
+                                </button>
+                                {!isManagerView && (
+                                    <button type="button" onClick={onGoFinance} className="mobile-pressable rounded-lg bg-gradient-to-r from-sky-500 to-blue-600 px-2 py-1 text-[11px] font-bold text-white shadow-sm">
+                                        核销
+                                    </button>
+                                )}
+                            </div>
+                        </div>
+                    )) : (
+                        <div className="px-4 py-8 text-center text-sm font-semibold text-slate-400">未找到匹配客户</div>
+                    )}
+                </div>
+            </section>
+        );
+    }
+
+    if (!isManagerView) {
+        return (
+            <section className="mobile-card-enter md:hidden overflow-hidden rounded-2xl border border-sky-100 bg-white shadow-sm shadow-sky-100/60">
+                <div className="bg-gradient-to-br from-sky-500 via-cyan-500 to-emerald-400 px-3.5 py-3 text-white">
+                    <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                            <div className="truncate text-sm font-bold">今日工作台</div>
+                            <div className="mt-0.5 truncate text-[11px] text-white/80">
+                                {parkName || projectId || '当前园区'} · {isSyncing ? '同步中' : lastSaved ? `缓存 ${lastSaved}` : '数据就绪'}
+                            </div>
+                        </div>
+                        <span
+                            className={`shrink-0 rounded-full border px-2 py-0.5 text-[10px] font-semibold ${
+                                isCloudConnected
+                                    ? 'border-white/30 bg-white/20 text-white'
+                                    : 'border-white/25 bg-white/10 text-white/80'
+                            }`}
+                        >
+                            {isCloudConnected ? '在线' : '本地'}
+                        </span>
+                    </div>
+                    <div className="mt-2.5 grid grid-cols-3 gap-2">
+                        <MobileActionButton icon={<CheckCircle2 size={15} />} label="核销" helper="收款入账" tone="emerald" onClick={onGoFinance} />
+                        <MobileActionButton icon={<FileText size={15} />} label="合同" helper="录入续签" tone="blue" onClick={onGoContracts} />
+                        <MobileActionButton icon={<Search size={15} />} label="查询" helper="客户账款" tone="amber" onClick={onGoSearch} />
+                    </div>
+                </div>
+                <div className="grid grid-cols-3 divide-x divide-slate-100">
+                    <MobileFocusCell label="待跟进" value={formatWan(arrears, 0)} helper="欠款核销" tone={arrearsTone} />
+                    <MobileFocusCell label="在租合同" value={`${activeContractCount} 份`} helper="可录入变更" tone="blue" />
+                    <MobileFocusCell label="到期预警" value={`${expiringCount} 家`} helper={`新签 ${signingCount} 家`} tone={expiringCount > 0 ? 'amber' : 'emerald'} />
+                </div>
+            </section>
+        );
+    }
+
+    return (
+        <section className="mobile-card-enter md:hidden overflow-hidden rounded-2xl border border-sky-100 bg-white shadow-sm shadow-sky-100/60">
+            <div className="bg-gradient-to-br from-sky-500 via-cyan-500 to-emerald-400 px-3.5 py-3 text-white">
+                <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                        <div className="truncate text-sm font-bold">{displayKpi.parkName || parkName || projectId || '当前园区'}</div>
+                        <div className="mt-0.5 text-[11px] text-white/80">
+                            {kpiUnavailable
+                                ? (isLoadingManagerKpis ? '正在同步快照' : '部分园区数据未就绪')
+                                : isSyncing ? '正在同步数据' : lastSaved ? `本地缓存 ${lastSaved}` : '数据已就绪'}
+                        </div>
+                    </div>
+                    <span
+                        className={`shrink-0 rounded-full border px-2 py-0.5 text-[10px] font-semibold ${
+                            isCloudConnected
+                                ? 'border-white/30 bg-white/20 text-white'
+                                : 'border-white/25 bg-white/10 text-white/80'
+                        }`}
+                    >
+                        {isCloudConnected ? '后端在线' : '本地模式'}
+                    </span>
+                </div>
+
+                <div className="mt-2.5 flex items-end justify-between gap-3">
+                    <div>
+                        <div className="text-[11px] font-semibold text-white/80">年度收款达成</div>
+                        <div className="mt-1 flex items-baseline gap-2">
+                            <span className="text-[36px] font-black leading-none tabular-nums tracking-normal">
+                                {kpiUnavailable ? '...' : formatPercent(revenueProgress, 0)}
+                            </span>
+                            {!kpiUnavailable && <span className="rounded-full bg-white/20 px-2 py-0.5 text-[10px] font-black text-white ring-1 ring-white/20">
+                                缺口 {formatPercent(collectionGap, 0)}
+                            </span>}
+                        </div>
+                    </div>
+                    <div className="flex shrink-0 flex-col items-end">
+                        <div className="flex items-center rounded-full border border-white/30 bg-white/20 p-0.5 shadow-sm backdrop-blur">
+                            <button
+                                type="button"
+                                onClick={() => onYearChange(selectedYear - 1)}
+                                className="mobile-pressable rounded-full p-1 text-white hover:bg-white/20"
+                                aria-label="上一年"
+                            >
+                                <ChevronLeft size={13} />
+                            </button>
+                            <span className="px-2 text-xs font-black tabular-nums text-white">{selectedYear}</span>
+                            <button
+                                type="button"
+                                onClick={() => onYearChange(selectedYear + 1)}
+                                className="mobile-pressable rounded-full p-1 text-white hover:bg-white/20"
+                                aria-label="下一年"
+                            >
+                                <ChevronRight size={13} />
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <div className="mt-2.5 h-1.5 overflow-hidden rounded-full bg-white/25">
+                    <div className="h-full rounded-full bg-white shadow-[0_0_14px_rgba(255,255,255,0.65)] transition-all duration-700" style={{ width: progressWidth }} />
+                </div>
+                <div className="mt-1.5 flex items-center justify-between gap-2 text-[11px] text-white/90">
+                    <span className="truncate">已收 {kpiUnavailable ? '读取中' : formatWan(revenueCollected, 0)}</span>
+                    <span className="shrink-0">目标 {kpiUnavailable ? '读取中' : revenueGoal > 0 ? formatWan(revenueGoal, 0) : '未设定'}</span>
+                </div>
+                <div className="mt-2 grid grid-cols-3 gap-1.5">
+                    <div className="rounded-xl bg-white/18 px-2 py-1.5 ring-1 ring-white/20">
+                        <div className="text-[9px] font-bold text-white/75">收款缺口</div>
+                        <div className="mt-0.5 truncate text-[11px] font-black tabular-nums">{kpiUnavailable ? '--' : formatWan(remainingRevenue, 0)}</div>
+                    </div>
+                    <div className="rounded-xl bg-white/18 px-2 py-1.5 ring-1 ring-white/20">
+                        <div className="text-[9px] font-bold text-white/75">已租面积</div>
+                        <div className="mt-0.5 truncate text-[11px] font-black tabular-nums">{kpiUnavailable ? '--' : formatArea(leasedArea)}</div>
+                    </div>
+                    <div className="rounded-xl bg-white/18 px-2 py-1.5 ring-1 ring-white/20">
+                        <div className="text-[9px] font-bold text-white/75">出租目标</div>
+                        <div className="mt-0.5 truncate text-[11px] font-black tabular-nums">{kpiUnavailable ? '--' : formatPercent(displayKpi.occupancyTarget || 0, 0)}</div>
+                    </div>
+                </div>
+            </div>
+
+            <div className="grid grid-cols-2 divide-x divide-y divide-slate-100">
+                <MobileFocusCell
+                    label="出租率"
+                    value={kpiUnavailable ? '--' : formatPercent(displayKpi.occupancyRate || 0, 0)}
+                    helper={kpiUnavailable ? '读取中' : occupancyGap > 0 ? `距目标 ${formatPercent(occupancyGap, 0)}` : '已达目标'}
+                    tone={kpiUnavailable ? 'blue' : occupancyGap > 0 ? 'amber' : 'emerald'}
+                />
+                <MobileFocusCell
+                    label="累计欠款"
+                    value={kpiUnavailable ? '--' : formatWan(arrears, 0)}
+                    helper={kpiUnavailable ? '读取中' : arrears > 0 ? '需跟进核销' : '账款健康'}
+                    tone={kpiUnavailable ? 'blue' : arrearsTone}
+                />
+                <MobileFocusCell
+                    label="空置面积"
+                    value={kpiUnavailable ? '--' : formatArea(displayKpi.vacantArea || Math.max(0, (displayKpi.totalArea || 0) - (displayKpi.leasedArea || 0)))}
+                    helper={kpiUnavailable ? '读取中' : `总面积 ${formatArea(displayKpi.totalArea || 0)}`}
+                    tone="blue"
+                />
+                <MobileFocusCell
+                    label="客户数"
+                    value={kpiUnavailable ? '--' : tenantCountValue}
+                    helper={kpiUnavailable ? '读取中' : tenantCountHelper}
+                    tone={kpiUnavailable ? 'blue' : expiringCount > 0 && displayKpi.source === 'current' ? 'amber' : 'emerald'}
+                />
+                <MobileFocusCell
+                    label="已租面积"
+                    value={kpiUnavailable ? '--' : formatArea(leasedArea)}
+                    helper={kpiUnavailable ? '读取中' : `出租 ${formatPercent(displayKpi.occupancyRate || 0, 0)}`}
+                    tone="emerald"
+                />
+                <MobileFocusCell
+                    label="收款缺口"
+                    value={kpiUnavailable ? '--' : formatWan(remainingRevenue, 0)}
+                    helper={kpiUnavailable ? '读取中' : `待达成 ${formatPercent(collectionGap, 0)}`}
+                    tone={kpiUnavailable ? 'blue' : remainingRevenue > 0 ? 'amber' : 'emerald'}
+                />
+            </div>
+            {managerParkKpis.length > 1 && (
+                <div className="border-t border-sky-50 bg-gradient-to-b from-sky-50/80 to-white p-2.5">
+                    <div className="mb-2 flex items-center justify-between px-0.5 text-[10px] font-bold text-sky-700">
+                        <span>{isGlobalAdminView ? '园区汇总与切换' : '园区切换'}</span>
+                        {isLoadingManagerKpis && <span>刷新中...</span>}
+                    </div>
+                    <div className="grid grid-cols-2 gap-2">
+                        {managerParkKpis.map((item, index) => {
+                            const selected = managerKpiScope
+                                ? item.projectId === managerKpiScope
+                                : item.projectId === displayKpi.projectId;
+                            const itemUnavailable = item.source === 'empty';
+                            return (
+                                <button
+                                    key={item.projectId}
+                                    type="button"
+                                    onClick={() => onManagerKpiScopeChange?.(item.projectId)}
+                                    style={{ animationDelay: `${index * 35}ms` }}
+                                    className={`mobile-card-enter mobile-pressable min-w-0 rounded-xl border px-2.5 py-2 text-left ${
+                                        selected
+                                            ? 'border-cyan-300 bg-gradient-to-br from-sky-500 to-emerald-400 text-white shadow-md shadow-sky-300/30'
+                                            : 'border-sky-100 bg-white text-slate-700 shadow-sm shadow-sky-100/70'
+                                    }`}
+                                >
+                                    <div className="flex items-center justify-between gap-2">
+                                        <span className="truncate text-xs font-black">{item.parkName}</span>
+                                        <span className={`shrink-0 rounded-full px-1.5 py-0.5 text-[10px] font-black ${
+                                            selected ? 'bg-white/20 text-white ring-1 ring-white/20' : 'bg-sky-50 text-sky-700'
+                                        }`}>
+                                            {itemUnavailable ? (isLoadingManagerKpis ? '...' : '暂无') : formatPercent(item.revenueProgress, 0)}
+                                        </span>
+                                    </div>
+                                    <div className={`mt-1 grid grid-cols-2 gap-x-1 gap-y-0.5 text-[10px] font-semibold ${
+                                        selected ? 'text-white/85' : 'text-slate-500'
+                                    }`}>
+                                        {itemUnavailable ? (
+                                            <span className="col-span-2 truncate">
+                                                {isLoadingManagerKpis ? '同步快照中' : '暂无可用快照'}
+                                            </span>
+                                        ) : (
+                                            <>
+                                                <span className="truncate">已收 {formatWan(item.revenueCollected, 0)}</span>
+                                                <span className="shrink-0 text-right">出租 {formatPercent(item.occupancyRate, 0)}</span>
+                                                <span className="col-span-2 truncate">欠款 {formatWan(item.accumulatedArrears, 0)}</span>
+                                            </>
+                                        )}
+                                    </div>
+                                </button>
+                            );
+                        })}
+                    </div>
+                </div>
+            )}
+        </section>
+    );
+};
+
 const waitForNextPaint = () =>
   new Promise<void>((resolve) => {
     if (typeof window === 'undefined' || typeof window.requestAnimationFrame !== 'function') {
@@ -279,7 +769,7 @@ const waitForNextPaint = () =>
     window.requestAnimationFrame(() => window.requestAnimationFrame(() => resolve()));
   });
 
-/** 与侧栏 `lg:` 断点一致：窄屏仅保留工作台 / 合同录入 / 收款核销 */
+/** 与侧栏 `lg:` 断点一致：窄屏切换为底部导航和移动操作台 */
 function useMobileNavLayout(): boolean {
   const [narrow, setNarrow] = useState(() =>
     typeof window !== 'undefined' ? window.matchMedia('(max-width: 1023px)').matches : false
@@ -293,6 +783,123 @@ function useMobileNavLayout(): boolean {
   }, []);
   return narrow;
 }
+
+const buildMobileParkKpiFromSummary = (
+    projectId: string,
+    parkName: string,
+    summary: Partial<KpiSnapshotSummary> | undefined,
+    source: MobileParkKpi['source']
+): MobileParkKpi => {
+    const revenueGoal =
+        summary?.annualInitialBudget ||
+        summary?.annualRevenueTarget ||
+        summary?.annualBudgetTarget ||
+        summary?.annualContractReceivable ||
+        0;
+    const revenueCollected = summary?.annualRevenueCollected || 0;
+    const totalArea = summary?.totalArea || 0;
+    const leasedArea = summary?.leasedArea || Math.max(0, totalArea - (summary?.vacantArea || 0));
+    const vacantArea = summary?.vacantArea ?? Math.max(0, totalArea - leasedArea);
+    const revenueProgress =
+        revenueGoal > 0
+            ? (revenueCollected / revenueGoal) * 100
+            : summary?.annualGoalCompletion || summary?.annualBudgetCompletion || 0;
+
+    return {
+        projectId,
+        parkName,
+        revenueGoal,
+        revenueCollected,
+        revenueProgress,
+        occupancyRate: summary?.occupancyRate || (totalArea > 0 ? (leasedArea / totalArea) * 100 : 0),
+        occupancyTarget: summary?.annualOccupancyTarget || 0,
+        totalArea,
+        leasedArea,
+        vacantArea,
+        accumulatedArrears: summary?.accumulatedArrears || 0,
+        tenantCount: summary?.tenantCount || 0,
+        source,
+    };
+};
+
+const buildMobileParkKpiFromDashboard = (
+    data: DashboardData,
+    selectedYear: number,
+    projectId: string,
+    parkName: string
+): MobileParkKpi => {
+    const revenueGoal =
+        resolveAnnualInitialBudget(data.yearlyTargets, data.initializationData, selectedYear, projectId) ||
+        data.annualRevenueTarget ||
+        data.monthlyRevenueTarget ||
+        0;
+    const revenueCollected = data.annualRevenueCollected || 0;
+    const totalArea = data.totalArea || 0;
+    const leasedArea = data.leasedArea || 0;
+    const vacantArea = data.vacantArea || Math.max(0, totalArea - leasedArea);
+    const tenantCount = (data.tenants || []).filter((tenant) => tenant.status === ContractStatus.Active).length;
+
+    return {
+        projectId,
+        parkName,
+        revenueGoal,
+        revenueCollected,
+        revenueProgress: revenueGoal > 0 ? (revenueCollected / revenueGoal) * 100 : data.collectionRate || 0,
+        occupancyRate: data.occupancyRate || 0,
+        occupancyTarget: data.annualOccupancyTarget || 0,
+        totalArea,
+        leasedArea,
+        vacantArea,
+        accumulatedArrears: data.accumulatedArrears || 0,
+        tenantCount,
+        source: 'current',
+    };
+};
+
+const buildMobileTotalParkKpi = (items: MobileParkKpi[]): MobileParkKpi => {
+    const readyItems = items.filter((item) => item.source !== 'empty');
+    if (readyItems.length === 0) {
+        return {
+            projectId: MOBILE_TOTAL_SCOPE,
+            parkName: '全部园区',
+            revenueGoal: 0,
+            revenueCollected: 0,
+            revenueProgress: 0,
+            occupancyRate: 0,
+            occupancyTarget: 0,
+            totalArea: 0,
+            leasedArea: 0,
+            vacantArea: 0,
+            accumulatedArrears: 0,
+            tenantCount: 0,
+            source: 'empty',
+        };
+    }
+    const revenueGoal = readyItems.reduce((sum, item) => sum + (item.revenueGoal || 0), 0);
+    const revenueCollected = readyItems.reduce((sum, item) => sum + (item.revenueCollected || 0), 0);
+    const totalArea = readyItems.reduce((sum, item) => sum + (item.totalArea || 0), 0);
+    const leasedArea = readyItems.reduce((sum, item) => sum + (item.leasedArea || 0), 0);
+    const occupancyTargetArea = readyItems.reduce(
+        (sum, item) => sum + ((item.occupancyTarget || 0) / 100) * (item.totalArea || 0),
+        0
+    );
+
+    return {
+        projectId: MOBILE_TOTAL_SCOPE,
+        parkName: '全部园区',
+        revenueGoal,
+        revenueCollected,
+        revenueProgress: revenueGoal > 0 ? (revenueCollected / revenueGoal) * 100 : 0,
+        occupancyRate: totalArea > 0 ? (leasedArea / totalArea) * 100 : 0,
+        occupancyTarget: totalArea > 0 ? (occupancyTargetArea / totalArea) * 100 : 0,
+        totalArea,
+        leasedArea,
+        vacantArea: readyItems.reduce((sum, item) => sum + (item.vacantArea || 0), 0),
+        accumulatedArrears: readyItems.reduce((sum, item) => sum + (item.accumulatedArrears || 0), 0),
+        tenantCount: readyItems.reduce((sum, item) => sum + (item.tenantCount || 0), 0),
+        source: 'total',
+    };
+};
 
 const buildIncrementalSaveDisplayOptions = (
     currentData?: DashboardData | null
@@ -463,6 +1070,13 @@ const App: React.FC = () => {
   const [authUser, setAuthUser] = useState<AuthUser | null>(null);
   const [bootReady, setBootReady] = useState(false);
   const [authorizedParks, setAuthorizedParks] = useState<ParkInfo[]>([]);
+  const [mobileKpiScope, setMobileKpiScope] = useState<string>(MOBILE_TOTAL_SCOPE);
+  const [mobileParkSnapshotMap, setMobileParkSnapshotMap] = useState<Record<string, MobileParkKpiSnapshotEntry>>({});
+  const [isLoadingMobileParkKpis, setIsLoadingMobileParkKpis] = useState(false);
+  const mobileParkSnapshotMapRef = React.useRef<Record<string, MobileParkKpiSnapshotEntry>>({});
+  const mobileKpiLoadSeqRef = React.useRef(0);
+  const projectSwitchSeqRef = React.useRef(0);
+  const projectSwitchTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
   const [loginForm, setLoginForm] = useState({
       email: '',
       password: '',
@@ -500,7 +1114,19 @@ const App: React.FC = () => {
   const [isTargetModalOpen, setIsTargetModalOpen] = useState(false);
   const [targetModalType, setTargetModalType] = useState<'revenue' | 'occupancy'>('revenue');
   const [activeTab, setActiveTab] = useState<'dashboard' | 'buildings' | 'contracts' | 'finance' | 'budget' | 'initData' | 'settings'>('dashboard');
+  const [mobileDashboardMode, setMobileDashboardMode] = useState<MobileDashboardMode>('overview');
+  const [mobileSearchQuery, setMobileSearchQuery] = useState('');
   const mobileNavLayout = useMobileNavLayout();
+
+  React.useEffect(() => {
+      mobileParkSnapshotMapRef.current = mobileParkSnapshotMap;
+  }, [mobileParkSnapshotMap]);
+
+  React.useEffect(() => {
+      return () => {
+          if (projectSwitchTimerRef.current) window.clearTimeout(projectSwitchTimerRef.current);
+      };
+  }, []);
   const [lastSaved, setLastSaved] = useState<string>('');
   const currentYear = new Date().getFullYear();
   const [selectedYear, setSelectedYear] = useState(currentYear);
@@ -880,7 +1506,7 @@ const App: React.FC = () => {
   /** 账单明细 DOM 最重，空闲后再挂载，让 KPI 区先可交互 */
   const [showDashboardBillingTable, setShowDashboardBillingTable] = useState(false);
   useEffect(() => {
-      if (activeTab !== 'dashboard') {
+      if (activeTab !== 'dashboard' || mobileNavLayout) {
           setShowDashboardBillingTable(false);
           return;
       }
@@ -900,7 +1526,7 @@ const App: React.FC = () => {
               window.clearTimeout(idleId as number);
           }
       };
-  }, [activeTab, cloudConfig.projectId, billingSelectedMonth, selectedYear]);
+  }, [activeTab, cloudConfig.projectId, billingSelectedMonth, selectedYear, mobileNavLayout]);
 
   const dashboardBillingKey = useMemo(() => {
       if (!data) return '';
@@ -1006,6 +1632,7 @@ const App: React.FC = () => {
       user?.role === 'platform_admin' || user?.role === 'group_admin';
   const isPlatformAdmin = (user: AuthUser | null = authUser) =>
       user?.role === 'platform_admin';
+  const isParkManagerOrAbove = (user: AuthUser | null = authUser) => isParkManagerRole(user?.role);
   const canAccessSystemSettings = isGlobalAdmin();
 
   const resolveInitialProjectId = (user: AuthUser, parks: ParkInfo[], storedProjectId?: string) => {
@@ -1027,67 +1654,84 @@ const App: React.FC = () => {
           return;
       }
 
+      const switchSeq = ++projectSwitchSeqRef.current;
+      const isLatestSwitch = () =>
+          projectSwitchSeqRef.current === switchSeq &&
+          currentProjectIdRef.current === targetProjectId;
       const nextConfig = { ...cloudConfig, projectId: targetProjectId };
+      currentProjectIdRef.current = targetProjectId;
       setIsSyncing(true);
-      setCloudConfig(nextConfig);
+      React.startTransition(() => {
+          setCloudConfig(nextConfig);
+      });
       localStorage.setItem(CLOUD_CONFIG_KEY, JSON.stringify(cloudConfigForStorage(nextConfig)));
       setRecordMeta({});
       baselineSnapshotRef.current = null;
       dirtyTrackerRef.current.reset();
       setPendingConflicts([]);
       try {
-          const cached = localStorage.getItem(getParkStorageKey(targetProjectId));
+          const cachedPromise = parkDataGet(getParkStorageKey(targetProjectId));
           const snapshotPromise = fetchCloudKpiSnapshot(nextConfig, selectedYear).catch(() => null);
           const backupPromise = fetchCloudBackup(nextConfig, targetProjectId);
+
+          const cached = await cachedPromise;
+          let cachedData: DashboardData | null = null;
+          if (cached) {
+              try {
+                  cachedData = scopeCachedDashboardData(
+                      { ...generateInitialData(), ...JSON.parse(cached) },
+                      authUser,
+                      targetProjectId,
+                  );
+              } catch (e) {
+                  console.warn('[App] 读取目标园区本地缓存失败:', e);
+              }
+          }
+          if (cachedData && isLatestSwitch()) {
+              React.startTransition(() => {
+                  setData(cachedData!);
+              });
+          }
+
           const snapshotRes = await snapshotPromise;
           const hasSnapshotPreview = !!(snapshotRes?.success && snapshotRes.snapshot);
-          if (snapshotRes?.success && snapshotRes.snapshot) {
+          if (!cachedData && snapshotRes?.success && snapshotRes.snapshot && isLatestSwitch()) {
               isKpiPreviewRef.current = true;
-              setData(buildDashboardDataFromKpiSnapshot(snapshotRes.snapshot));
+              React.startTransition(() => {
+                  setData(buildDashboardDataFromKpiSnapshot(snapshotRes.snapshot!));
+              });
           }
           const res = await backupPromise;
+          if (!isLatestSwitch()) return;
           if (res.success && res.data) {
               const safeCloudData = { ...generateInitialData(), ...res.data };
-              const cachedData = cached
-                  ? scopeCachedDashboardData(
-                        { ...generateInitialData(), ...JSON.parse(cached) },
-                        authUser,
-                        targetProjectId,
-                    )
-                  : null;
               const displayData = cachedData
                   ? mergeLocalDashboardCacheIntoCloud(safeCloudData, cachedData).data
                   : safeCloudData;
               captureBaselineFromCloud(safeCloudData, res.recordMeta, targetProjectId);
               if (hasMeaningfulDashboardPayload(safeCloudData)) {
-                  const processed = await recalculateMetrics(displayData, selectedYear, selectedQuarter);
+                  const processed = await recalculateMetrics(displayData, selectedYear, selectedQuarter, isLatestSwitch);
+                  if (!isLatestSwitch()) return;
                   parkDataPutObj(getParkStorageKey(targetProjectId), processed);
               } else if (cached) {
-                  const cachedData = scopeCachedDashboardData(
-                      { ...generateInitialData(), ...JSON.parse(cached) },
-                      authUser,
-                      targetProjectId,
-                  );
-                  await recalculateMetrics(cachedData, selectedYear, selectedQuarter);
+                  await recalculateMetrics(cachedData || generateInitialData(), selectedYear, selectedQuarter, isLatestSwitch);
               } else {
-                  await recalculateMetrics(displayData, selectedYear, selectedQuarter);
+                  await recalculateMetrics(displayData, selectedYear, selectedQuarter, isLatestSwitch);
               }
-          } else if (cached) {
-              const cachedData = scopeCachedDashboardData(
-                  { ...generateInitialData(), ...JSON.parse(cached) },
-                  authUser,
-                  targetProjectId,
-              );
-              recalculateMetrics(cachedData, selectedYear, selectedQuarter);
+          } else if (cachedData) {
+              await recalculateMetrics(cachedData, selectedYear, selectedQuarter, isLatestSwitch);
           } else {
-              recalculateMetrics(generateInitialData(), selectedYear, selectedQuarter);
+              await recalculateMetrics(generateInitialData(), selectedYear, selectedQuarter, isLatestSwitch);
           }
-          await fetchCloudHistory(nextConfig);
+          if (isLatestSwitch()) {
+              await fetchCloudHistory(nextConfig);
+          }
       } catch (e) {
+          if (!isLatestSwitch()) return;
           console.error('[App] 切换园区失败:', e);
           alert('切换园区失败，请检查网络或权限。');
       } finally {
-          setIsSyncing(false);
+          if (isLatestSwitch()) setIsSyncing(false);
       }
   };
 
@@ -1871,7 +2515,17 @@ const App: React.FC = () => {
   // 指标重算：优先走 Web Worker（off-main-thread），不可用/出错时回退主线程同步计算。
   // 返回 Promise<DashboardData>：boot/切园区等需要拿结果落本地缓存的调用方应 await；
   // update* 等只要副作用的调用方可直接 fire-and-forget（结果就绪后自动 setData）。
-  const recalculateMetrics = async (currentData: DashboardData, year: number = selectedYear, quarter: DashboardQuarter = selectedQuarter): Promise<DashboardData> => {
+  const recalculateMetrics = async (
+    currentData: DashboardData,
+    year: number = selectedYear,
+    quarter: DashboardQuarter = selectedQuarter,
+    shouldApply: () => boolean = () => true,
+  ): Promise<DashboardData> => {
+    // 根据当前日期修正合同状态：已到期合同自动 Expired，Pending 合同到期后自动 Active
+    const autoTenants = transitionContractStatuses(currentData.tenants || []);
+    if (autoTenants !== currentData.tenants) {
+        currentData = { ...currentData, tenants: autoTenants };
+    }
     // 同步更新 dataRef，作为后续重算/编辑的最新输入源
     dataRef.current = currentData;
     const startedAt = typeof performance !== 'undefined' ? performance.now() : Date.now();
@@ -1913,7 +2567,7 @@ const App: React.FC = () => {
         });
     }
     // 最新者胜：仅当本请求仍是最新时才回填，避免过期 Worker 结果覆盖新数据
-    if (myReq === metricsReqSeqRef.current) {
+    if (myReq === metricsReqSeqRef.current && shouldApply()) {
         isKpiPreviewRef.current = false;
         setData(processedData);
     }
@@ -2378,7 +3032,26 @@ const App: React.FC = () => {
           return;
       }
       await Promise.all([loadSignupRequests(), loadManagedUsers()]);
-      alert('审批完成，已创建可登录账号。');
+      alert(res.message || '审批完成，申请人账号已可登录。');
+  };
+
+  const handleRejectSignupRequest = async (req: SignupRequestRecord) => {
+      if (!isPlatformAdmin()) {
+          alert('仅平台管理员可退回注册申请。');
+          return;
+      }
+      const note = window.prompt(
+          `请输入退回「${req.email}」的原因（可留空）：`,
+          '申请园区或账号信息不符合要求'
+      );
+      if (note === null) return;
+      const res = await rejectCloudSignupRequest(req.id, note.trim());
+      if (!res.success) {
+          alert(`退回失败：${res.message || '未知错误'}`);
+          return;
+      }
+      await loadSignupRequests();
+      alert(res.message || '已退回注册申请');
   };
 
   const openUserManageModal = (u: ManagedUserAccount) => {
@@ -2476,6 +3149,7 @@ const App: React.FC = () => {
           totalArea: summary.totalArea,
           leasedArea: summary.leasedArea ?? 0,
           vacantArea: summary.vacantArea ?? Math.max(0, (summary.totalArea || 0) - (summary.leasedArea || 0)),
+          accumulatedArrears: summary.accumulatedArrears || 0,
           monthlyRevenueTarget: summary.annualBudgetTarget,
           monthlyRevenueCollected: summary.annualRevenueCollected,
           collectionRate: summary.annualBudgetCompletion,
@@ -2483,6 +3157,177 @@ const App: React.FC = () => {
           cloudSaveVersion: snapshot.dataVersion || 0,
       };
   };
+
+  const mobileAuthorizedParks = useMemo(() => {
+      if (!authUser) return [];
+      const enabledParks = authorizedParks.filter((park) => park.enabled);
+      if (isGlobalAdmin(authUser)) return enabledParks;
+      const allowedProjectIds = authUser.allowedProjectIds.length
+          ? authUser.allowedProjectIds
+          : [authUser.projectId];
+      const allowedSet = new Set(allowedProjectIds.filter(Boolean));
+      return enabledParks.filter((park) => allowedSet.has(park.projectId));
+  }, [authorizedParks, authUser]);
+
+  useEffect(() => {
+      if (!mobileNavLayout || !authUser) return;
+      if (!isGlobalAdmin(authUser)) {
+          setMobileKpiScope(cloudConfig.projectId || authUser.projectId || '');
+      } else if (!mobileKpiScope) {
+          setMobileKpiScope(MOBILE_TOTAL_SCOPE);
+      }
+  }, [mobileNavLayout, authUser?.id, authUser?.role, cloudConfig.projectId, mobileKpiScope]);
+
+  useEffect(() => {
+      if (!mobileNavLayout || !isParkManagerOrAbove() || mobileAuthorizedParks.length === 0) {
+          setIsLoadingMobileParkKpis(false);
+          return;
+      }
+      let cancelled = false;
+      const loadSeq = ++mobileKpiLoadSeqRef.current;
+      const targetYear = selectedYear;
+      const activeProjectId = cloudConfig.projectId || '';
+      const now = Date.now();
+      const cachedEntries = mobileParkSnapshotMapRef.current;
+      const parksNeedingSnapshot = mobileAuthorizedParks.filter((park) => {
+          if (park.projectId === activeProjectId) return false;
+          const entry = cachedEntries[park.projectId];
+          return !entry || entry.year !== targetYear || now - (entry.loadedAt || 0) > MOBILE_PARK_SNAPSHOT_CACHE_MS;
+      });
+      if (parksNeedingSnapshot.length === 0) {
+          setIsLoadingMobileParkKpis(false);
+          return;
+      }
+      setIsLoadingMobileParkKpis(true);
+      setMobileParkSnapshotMap((prev) => {
+          const next = { ...prev };
+          for (const park of mobileAuthorizedParks) {
+              const entry = next[park.projectId];
+              if (entry && entry.year !== targetYear) delete next[park.projectId];
+          }
+          return next;
+      });
+      void (async () => {
+          const entries = await Promise.all(
+              parksNeedingSnapshot.map(async (park) => {
+                  const parkConfig = { ...cloudConfig, projectId: park.projectId };
+                  const [snapshotRes, serverVersion] = await Promise.all([
+                      fetchCloudKpiSnapshot(parkConfig, targetYear).catch(() => null),
+                      readCloudSaveVersion(parkConfig).catch(() => 0),
+                  ]);
+                  const snapshot = snapshotRes?.success ? snapshotRes.snapshot : undefined;
+                  const snapshotFresh =
+                      !!snapshot &&
+                      snapshot.year === targetYear &&
+                      (serverVersion <= 0 || (snapshot.dataVersion || 0) >= serverVersion);
+                  if (snapshotFresh && snapshot) {
+                      return {
+                          projectId: park.projectId,
+                          summary: normalizeKpiSummaryWithMonthlyTrends(
+                              snapshot.summary,
+                              snapshot.monthlyTrends || []
+                          ),
+                          dataVersion: snapshot.dataVersion,
+                          year: targetYear,
+                          loadedAt: Date.now(),
+                          source: 'snapshot' as const,
+                      };
+                  }
+
+                  if (!snapshotFresh) {
+                      triggerServerComputeRefresh(parkConfig, targetYear);
+                  }
+
+                  if (snapshot) {
+                      console.warn('[mobile-kpi] 快照过期，已触发服务端重算，暂不展示旧 KPI', {
+                          projectId: park.projectId,
+                          snapshotVersion: snapshot.dataVersion,
+                          serverVersion,
+                          year: targetYear,
+                      });
+                  }
+                  return {
+                      projectId: park.projectId,
+                      summary: undefined,
+                      year: targetYear,
+                      loadedAt: Date.now(),
+                  };
+              })
+          );
+          if (cancelled || mobileKpiLoadSeqRef.current !== loadSeq) return;
+          setMobileParkSnapshotMap((prev) => {
+              const next = { ...prev };
+              entries.forEach((entry) => {
+                  if (!entry) return;
+                  if (!entry.summary) {
+                      delete next[entry.projectId];
+                      return;
+                  }
+                  next[entry.projectId] = {
+                      summary: entry.summary,
+                      dataVersion: entry.dataVersion,
+                      year: entry.year,
+                      source: entry.source,
+                      loadedAt: entry.loadedAt,
+                  };
+              });
+              return next;
+          });
+          setIsLoadingMobileParkKpis(false);
+      })();
+      return () => {
+          cancelled = true;
+      };
+  }, [mobileNavLayout, authUser?.id, authUser?.role, selectedYear, cloudConfig.pocketbaseUrl, cloudConfig.projectId, mobileAuthorizedParks]);
+
+  const mobileCurrentParkKpi = useMemo(() => {
+      if (!data) return null;
+      return buildMobileParkKpiFromDashboard(
+          data,
+          selectedYear,
+          cloudConfig.projectId || data.tenants?.[0]?.projectId || '',
+          getCurrentParkName()
+      );
+  }, [data, selectedYear, cloudConfig.projectId, authorizedParks]);
+
+  const mobileParkKpis = useMemo(() => {
+      return mobileAuthorizedParks.map((park) => {
+          if (mobileCurrentParkKpi && park.projectId === cloudConfig.projectId) {
+              return {
+                  ...mobileCurrentParkKpi,
+                  parkName: park.name,
+              };
+          }
+          const snapshotEntry = mobileParkSnapshotMap[park.projectId];
+          const snapshot = snapshotEntry?.year === selectedYear ? snapshotEntry.summary : undefined;
+          return buildMobileParkKpiFromSummary(
+              park.projectId,
+              park.name,
+              snapshot,
+              snapshot ? snapshotEntry.source : 'empty'
+          );
+      });
+  }, [mobileAuthorizedParks, mobileCurrentParkKpi, cloudConfig.projectId, mobileParkSnapshotMap, selectedYear]);
+
+  const mobileTotalParkKpi = useMemo(() => buildMobileTotalParkKpi(mobileParkKpis), [mobileParkKpis]);
+
+  const mobileManagerParkKpis = useMemo(() => {
+      if (!isGlobalAdmin()) return mobileParkKpis;
+      return [mobileTotalParkKpi, ...mobileParkKpis];
+  }, [mobileParkKpis, mobileTotalParkKpi, authUser?.role]);
+
+  const mobileSelectedManagerKpi = useMemo(() => {
+      if (!isParkManagerOrAbove()) return mobileCurrentParkKpi || undefined;
+      if (isGlobalAdmin()) {
+          if (mobileKpiScope === MOBILE_TOTAL_SCOPE) return mobileTotalParkKpi;
+          return mobileParkKpis.find((item) => item.projectId === mobileKpiScope) || mobileTotalParkKpi;
+      }
+      return (
+          mobileParkKpis.find((item) => item.projectId === (mobileKpiScope || cloudConfig.projectId)) ||
+          mobileCurrentParkKpi ||
+          undefined
+      );
+  }, [mobileKpiScope, mobileTotalParkKpi, mobileParkKpis, mobileCurrentParkKpi, cloudConfig.projectId, authUser?.role]);
 
   useEffect(() => {
       if (!canAccessSystemSettings && activeTab === 'settings') {
@@ -2492,6 +3337,7 @@ const App: React.FC = () => {
 
   useEffect(() => {
       if (!mobileNavLayout) return;
+      setSidebarOpen(false);
       if (
           activeTab === 'buildings' ||
           activeTab === 'budget' ||
@@ -2500,7 +3346,11 @@ const App: React.FC = () => {
       ) {
           setActiveTab('dashboard');
       }
-  }, [mobileNavLayout, activeTab]);
+      if (activeTab === 'finance' && isParkManagerOrAbove()) {
+          setActiveTab('dashboard');
+          setMobileDashboardMode('search');
+      }
+  }, [mobileNavLayout, activeTab, authUser?.role]);
 
   useEffect(() => {
       if (activeTab === 'settings' && isPlatformAdmin()) {
@@ -2632,6 +3482,77 @@ const App: React.FC = () => {
       };
   }, [data, dashboardBillingReady, dashboardBillingState.rows]);
 
+  const mobileSearchResults = useMemo<MobileTenantSearchResult[]>(() => {
+      if (!data) return [];
+      const normalizedQuery = mobileSearchQuery.trim().toLowerCase();
+      const statusRank: Record<ContractStatus, number> = {
+          [ContractStatus.Active]: 0,
+          [ContractStatus.Expiring]: 1,
+          [ContractStatus.Pending]: 2,
+          [ContractStatus.Expired]: 3,
+          [ContractStatus.Terminated]: 4,
+      };
+      const findUnitName = (unitId: string) => {
+          for (const building of data.buildings || []) {
+              const unit = building.units.find((item) => item.id === unitId);
+              if (unit) return unit.name;
+          }
+          return unitId;
+      };
+      const rankedTenants = [...(data.tenants || [])].sort((a, b) => {
+          const rankDiff = (statusRank[a.status] ?? 9) - (statusRank[b.status] ?? 9);
+          if (rankDiff !== 0) return rankDiff;
+          return (a.leaseEnd || '').localeCompare(b.leaseEnd || '');
+      });
+      return rankedTenants
+          .filter((tenant) => {
+              if (!normalizedQuery) return tenant.status !== ContractStatus.Terminated;
+              const buildingName = (data.buildings || []).find((building) => building.id === tenant.buildingId)?.name || '';
+              const unitText = (tenant.unitIds || []).map(findUnitName).join(' ');
+              return [
+                  tenant.name,
+                  tenant.contactName,
+                  tenant.legalRepName,
+                  tenant.contactInfo,
+                  tenant.industry,
+                  buildingName,
+                  unitText,
+              ]
+                  .filter(Boolean)
+                  .some((value) => String(value).toLowerCase().includes(normalizedQuery));
+          })
+          .slice(0, 4)
+          .map((tenant) => {
+              const buildingName = (data.buildings || []).find((building) => building.id === tenant.buildingId)?.name || '';
+              const unitNames = (tenant.unitIds || []).map(findUnitName).slice(0, 2);
+              const location = [buildingName, unitNames.join('/')].filter(Boolean).join(' · ') || formatArea(tenant.totalArea || 0);
+              const tenantPayments = (data.payments || [])
+                  .filter((payment) =>
+                      payment.status === 'Received' &&
+                      (payment.tenantId === tenant.id || payment.tenantName === tenant.name)
+                  )
+                  .sort((a, b) => (b.date || '').localeCompare(a.date || ''));
+              const paymentTotal = tenantPayments.reduce((sum, payment) => sum + (payment.amount || 0), 0);
+              const latestPaymentDate = tenantPayments[0]?.date;
+              const paymentSummary = paymentTotal > 0
+                  ? `已收 ${formatWan(paymentTotal, 1)}${latestPaymentDate ? ` · 最近 ${latestPaymentDate}` : ''}`
+                  : '暂无收款记录';
+              const helper = tenant.contactName
+                  ? `联系人 ${tenant.contactName}`
+                  : tenant.leaseEnd
+                    ? `租期至 ${tenant.leaseEnd}`
+                    : tenant.industry || '暂无联系人';
+              return {
+                  id: tenant.id,
+                  name: tenant.name,
+                  location,
+                  statusLabel: contractStatusText(tenant.status),
+                  helper,
+                  paymentSummary,
+              };
+          });
+  }, [data, mobileSearchQuery]);
+
   if (!bootReady) {
       return (
           <div className="min-h-screen flex items-center justify-center bg-slate-50">
@@ -2760,9 +3681,122 @@ const App: React.FC = () => {
       );
   }
 
+  const pageTitle =
+      activeTab === 'dashboard' ? '金蝶地产——招商管理系统' :
+      activeTab === 'buildings' ? '楼宇资产管理' :
+      activeTab === 'contracts' ? (mobileNavLayout && isParkManagerOrAbove() ? '合同查询' : mobileNavLayout ? '合同录入' : '客户合同中心') :
+      activeTab === 'finance' ? (mobileNavLayout && isParkManagerOrAbove() ? '客户收款查询' : mobileNavLayout ? '收款核销' : '财务收款报表') :
+      activeTab === 'budget' ? '招商预算管理' :
+      activeTab === 'initData' ? '初始化数据' :
+      '系统设置';
+  const mobilePageTitle =
+      activeTab === 'dashboard' ? (mobileDashboardMode === 'search' ? (isParkManagerOrAbove() ? '收款查询' : '快速查询') : '招商工作台') :
+      activeTab === 'contracts' ? (isParkManagerOrAbove() ? '合同查询' : '合同录入') :
+      activeTab === 'finance' ? (isParkManagerOrAbove() ? '收款查询' : '收款核销') :
+      pageTitle;
+  const currentParkDisplayName = getCurrentParkName();
+  const isManagerMobileView = isParkManagerOrAbove();
+  const managerMobileNav = mobileNavLayout && isManagerMobileView;
+  const goMobileOverview = () => {
+      setActiveTab('dashboard');
+      setMobileDashboardMode('overview');
+      setSidebarOpen(false);
+  };
+  const goMobileContracts = () => {
+      setActiveTab('contracts');
+      setMobileDashboardMode('overview');
+      setSidebarOpen(false);
+  };
+  const goMobileFinance = () => {
+      if (managerMobileNav) {
+          setActiveTab('dashboard');
+          setMobileDashboardMode('search');
+          setSidebarOpen(false);
+          return;
+      }
+      setActiveTab('finance');
+      setMobileDashboardMode('overview');
+      setSidebarOpen(false);
+  };
+  const goMobileSearch = () => {
+      setActiveTab('dashboard');
+      setMobileDashboardMode('search');
+      setSidebarOpen(false);
+  };
+  const handleMobileKpiScopeChange = (scope: string) => {
+      React.startTransition(() => {
+          setMobileKpiScope(scope);
+          setActiveTab('dashboard');
+          setMobileDashboardMode('overview');
+          setSidebarOpen(false);
+      });
+      if (projectSwitchTimerRef.current) {
+          clearTimeout(projectSwitchTimerRef.current);
+          projectSwitchTimerRef.current = null;
+      }
+      if (scope !== MOBILE_TOTAL_SCOPE) {
+          projectSwitchTimerRef.current = setTimeout(() => {
+              projectSwitchTimerRef.current = null;
+              void switchProject(scope);
+          }, PROJECT_SWITCH_DEBOUNCE_MS);
+      }
+  };
+  const mobileBottomNavItems = managerMobileNav ? [
+      {
+          key: 'overview',
+          label: '工作台',
+          icon: <LayoutDashboard size={18} />,
+          active: activeTab === 'dashboard' && mobileDashboardMode === 'overview',
+          onClick: goMobileOverview,
+      },
+      {
+          key: 'contracts',
+          label: '合同',
+          icon: <FileText size={18} />,
+          active: activeTab === 'contracts',
+          onClick: goMobileContracts,
+      },
+      {
+          key: 'search',
+          label: '收款',
+          icon: <Search size={18} />,
+          active: activeTab === 'dashboard' && mobileDashboardMode === 'search',
+          onClick: goMobileSearch,
+      },
+  ] : [
+      {
+          key: 'overview',
+          label: '工作台',
+          icon: <LayoutDashboard size={18} />,
+          active: activeTab === 'dashboard' && mobileDashboardMode === 'overview',
+          onClick: goMobileOverview,
+      },
+      {
+          key: 'contracts',
+          label: '合同',
+          icon: <FileText size={18} />,
+          active: activeTab === 'contracts',
+          onClick: goMobileContracts,
+      },
+      {
+          key: 'finance',
+          label: '核销',
+          icon: <CheckCircle2 size={18} />,
+          active: activeTab === 'finance',
+          onClick: goMobileFinance,
+      },
+      {
+          key: 'search',
+          label: '查询',
+          icon: <Search size={18} />,
+          active: activeTab === 'dashboard' && mobileDashboardMode === 'search',
+          onClick: goMobileSearch,
+      },
+  ];
+
   return (
     <DirtyTrackerProvider recordMeta={recordMeta} tracker={dirtyTrackerRef.current}>
-    <div className="min-h-screen bg-slate-50 flex font-sans text-slate-900">
+    <div className="min-h-screen bg-gradient-to-b from-sky-50 via-slate-50 to-emerald-50 md:bg-none md:bg-slate-50 flex font-sans text-slate-900">
       <div className={`fixed inset-0 bg-black/50 z-30 lg:hidden transition-opacity duration-300 ${isSidebarOpen ? 'opacity-100' : 'opacity-0 pointer-events-none'}`} onClick={() => setSidebarOpen(false)} />
       
       <aside className={`fixed inset-y-0 left-0 z-40 bg-white border-r border-slate-200 transition-transform duration-300 flex flex-col h-screen shadow-xl w-64 ${isSidebarOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0 lg:w-64'}`}>
@@ -2780,12 +3814,20 @@ const App: React.FC = () => {
         </div>
 
         <nav className="flex-1 py-3 space-y-0.5 overflow-y-auto scrollbar-hide">
-          <SidebarItem icon={<LayoutDashboard size={22} />} label="工作台" isOpen={true} active={activeTab === 'dashboard'} onClick={() => { setActiveTab('dashboard'); if(window.innerWidth < 1024) setSidebarOpen(false); }} />
+          <SidebarItem icon={<LayoutDashboard size={22} />} label="工作台" isOpen={true} active={activeTab === 'dashboard' && (!mobileNavLayout || mobileDashboardMode === 'overview')} onClick={() => { setActiveTab('dashboard'); setMobileDashboardMode('overview'); if(window.innerWidth < 1024) setSidebarOpen(false); }} />
           {mobileNavLayout ? (
-            <>
-              <SidebarItem icon={<Users size={22} />} label="合同录入" isOpen={true} active={activeTab === 'contracts'} onClick={() => { setActiveTab('contracts'); if(window.innerWidth < 1024) setSidebarOpen(false); }} />
-              <SidebarItem icon={<PieChart size={22} />} label="收款核销" isOpen={true} active={activeTab === 'finance'} onClick={() => { setActiveTab('finance'); if(window.innerWidth < 1024) setSidebarOpen(false); }} />
-            </>
+            managerMobileNav ? (
+              <>
+                <SidebarItem icon={<Users size={22} />} label="合同查询" isOpen={true} active={activeTab === 'contracts'} onClick={goMobileContracts} />
+                <SidebarItem icon={<Search size={22} />} label="收款查询" isOpen={true} active={activeTab === 'dashboard' && mobileDashboardMode === 'search'} onClick={goMobileSearch} />
+              </>
+            ) : (
+              <>
+                <SidebarItem icon={<Users size={22} />} label="合同录入" isOpen={true} active={activeTab === 'contracts'} onClick={goMobileContracts} />
+                <SidebarItem icon={<PieChart size={22} />} label="收款核销" isOpen={true} active={activeTab === 'finance'} onClick={goMobileFinance} />
+                <SidebarItem icon={<Search size={22} />} label="快速查询" isOpen={true} active={activeTab === 'dashboard' && mobileDashboardMode === 'search'} onClick={goMobileSearch} />
+              </>
+            )
           ) : (
             <>
               <SidebarItem icon={<Building2 size={22} />} label="楼宇资管" isOpen={true} active={activeTab === 'buildings'} onClick={() => { setActiveTab('buildings'); if(window.innerWidth < 1024) setSidebarOpen(false); }} />
@@ -2805,8 +3847,16 @@ const App: React.FC = () => {
       <main className="flex-1 transition-all duration-300 w-full min-w-0 flex flex-col lg:pl-64">
         <header className="min-h-14 lg:min-h-16 bg-white border-b border-slate-200 sticky top-0 z-20 px-3 sm:px-4 py-2 lg:py-0 flex items-center justify-between gap-2 shadow-sm">
           <div className="flex items-center gap-2 sm:gap-3 min-w-0 flex-1">
-            <button onClick={() => setSidebarOpen(true)} className="p-2 -ml-2 hover:bg-slate-100 rounded-lg text-slate-600 lg:hidden shrink-0"><Menu size={20} /></button>
-            <h1 className="text-sm sm:text-base lg:text-xl font-bold text-slate-800 truncate min-w-0">{activeTab === 'dashboard' ? '金蝶地产——招商管理系统' : activeTab === 'buildings' ? '楼宇资产管理' : activeTab === 'contracts' ? (mobileNavLayout ? '合同录入' : '客户合同中心') : activeTab === 'finance' ? (mobileNavLayout ? '收款核销' : '财务收款报表') : activeTab === 'budget' ? '招商预算管理' : activeTab === 'initData' ? '初始化数据' : '系统设置'}</h1>
+            <button
+              onClick={() => setSidebarOpen(true)}
+              className={`p-2 -ml-2 hover:bg-slate-100 rounded-lg text-slate-600 lg:hidden shrink-0 ${mobileNavLayout ? 'hidden' : ''}`}
+            >
+              <Menu size={20} />
+            </button>
+            <h1 className="min-w-0 truncate text-base font-black text-slate-900 sm:text-base lg:text-xl">
+              <span className="hidden sm:inline">{pageTitle}</span>
+              <span className="sm:hidden">{mobilePageTitle}</span>
+            </h1>
           </div>
           <div className="flex items-center gap-1.5 sm:gap-2 flex-shrink-0 flex-wrap justify-end">
              <button
@@ -2838,7 +3888,7 @@ const App: React.FC = () => {
                </div>
              ) : (
                <span className="hidden sm:inline-flex text-xs text-slate-600 bg-slate-50 border border-slate-200 rounded-lg px-2 py-1.5">
-                 {authorizedParks.find(park => park.projectId === cloudConfig.projectId)?.name || cloudConfig.projectId}
+                 {currentParkDisplayName}
                </span>
              )}
              <button
@@ -2875,53 +3925,80 @@ const App: React.FC = () => {
           </div>
         </header>
 
-        <div className="p-3 md:p-6 max-w-7xl mx-auto w-full min-w-0">
+        <div className="mx-auto w-full max-w-7xl min-w-0 px-3 pb-20 pt-3 md:px-6 md:pb-24 md:pt-6 lg:p-6">
           {activeTab === 'dashboard' && (
             <div className="space-y-4 md:space-y-6">
-               <DashboardAlerts tenants={data.tenants} invoices={data.invoices} />
-               <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between bg-white p-3 rounded-xl border border-slate-100 shadow-sm min-w-0">
-                   <div className="flex items-center gap-2 min-w-0">
-                       <Calendar className="text-blue-500 shrink-0" size={18}/>
-                       <span className="font-bold text-slate-700 text-sm md:text-base truncate">统计年度: {selectedYear}</span>
-                   </div>
-                   <div className="flex items-center justify-center sm:justify-end bg-slate-50 rounded-lg p-1 border border-slate-200 shrink-0 self-stretch sm:self-auto">
-                       <button onClick={() => handleYearChange(selectedYear - 1)} className="p-1.5 hover:bg-white hover:shadow-sm rounded transition-all text-slate-600"><ChevronLeft size={16}/></button>
-                       <span className="px-3 font-mono font-medium text-slate-800">{selectedYear}</span>
-                       <button onClick={() => handleYearChange(selectedYear + 1)} className="p-1.5 hover:bg-white hover:shadow-sm rounded transition-all text-slate-600"><ChevronRight size={16}/></button>
-                   </div>
-               </div>
-
-               <StatsCards
+               <MobileDashboardFocus
                   data={data}
                   selectedYear={selectedYear}
-                  onEditTargets={openTargetModal}
-                  tenants={data.tenants}
                   projectId={cloudConfig.projectId}
-                  authUser={authUser}
+                  parkName={currentParkDisplayName}
+                  isCloudConnected={isCloudConnected}
+                  isSyncing={isSyncing}
+                  lastSaved={lastSaved}
+                  mode={mobileDashboardMode}
+                  isManagerView={isManagerMobileView}
+                  isGlobalAdminView={isGlobalAdmin()}
+                  managerKpi={mobileSelectedManagerKpi}
+                  managerParkKpis={mobileManagerParkKpis}
+                  managerKpiScope={mobileKpiScope}
+                  isLoadingManagerKpis={isLoadingMobileParkKpis}
+                  searchQuery={mobileSearchQuery}
+                  searchResults={mobileSearchResults}
+                  onSearchQueryChange={setMobileSearchQuery}
+                  onYearChange={handleYearChange}
+                  onGoContracts={goMobileContracts}
+                  onGoFinance={goMobileFinance}
+                  onGoSearch={goMobileSearch}
+                  onBackToOverview={goMobileOverview}
+                  onManagerKpiScopeChange={handleMobileKpiScopeChange}
                />
-               <AnnualMetricComparisonTable
-                  data={annualComparisonData}
-                  showManagementFee={isManagementFeeBillingEnabled(cloudConfig.projectId || data.tenants?.[0]?.projectId)}
-               />
-               <RecentActivityTable data={data} />
-               {showDashboardBillingTable && dashboardBillingReady && dashboardBillingData ? (
-                   <BillingTable
-                      data={dashboardBillingData}
-                      selectedMonth={billingSelectedMonth}
-                      onMonthChange={setBillingSelectedMonth}
-                      onUpdateRentRemark={updateRentCollectionRemark}
+               <div className="hidden space-y-6 md:block">
+                   <DashboardAlerts tenants={data.tenants} invoices={data.invoices} />
+                   <div className="hidden md:flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between bg-white p-3 rounded-xl border border-slate-100 shadow-sm min-w-0">
+                       <div className="flex items-center gap-2 min-w-0">
+                           <Calendar className="text-blue-500 shrink-0" size={18}/>
+                           <span className="font-bold text-slate-700 text-sm md:text-base truncate">统计年度: {selectedYear}</span>
+                       </div>
+                       <div className="flex items-center justify-center sm:justify-end bg-slate-50 rounded-lg p-1 border border-slate-200 shrink-0 self-stretch sm:self-auto">
+                           <button onClick={() => handleYearChange(selectedYear - 1)} className="p-1.5 hover:bg-white hover:shadow-sm rounded transition-all text-slate-600"><ChevronLeft size={16}/></button>
+                           <span className="px-3 font-mono font-medium text-slate-800">{selectedYear}</span>
+                           <button onClick={() => handleYearChange(selectedYear + 1)} className="p-1.5 hover:bg-white hover:shadow-sm rounded transition-all text-slate-600"><ChevronRight size={16}/></button>
+                       </div>
+                   </div>
+
+                   <StatsCards
+                      data={data}
+                      selectedYear={selectedYear}
+                      onEditTargets={openTargetModal}
+                      tenants={data.tenants}
                       projectId={cloudConfig.projectId}
                       authUser={authUser}
                    />
-               ) : dashboardBillingError ? (
-                   <div className="bg-white rounded-xl shadow-sm border border-rose-100 p-8 text-center text-sm text-rose-500">
-                       账单明细计算失败：{dashboardBillingError}
-                   </div>
-               ) : (
-                   <div className="bg-white rounded-xl shadow-sm border border-slate-100 p-8 text-center text-sm text-slate-400">
-                       账单明细加载中…
-                   </div>
-               )}
+                   <AnnualMetricComparisonTable
+                      data={annualComparisonData}
+                      showManagementFee={isManagementFeeBillingEnabled(cloudConfig.projectId || data.tenants?.[0]?.projectId)}
+                   />
+                   <RecentActivityTable data={data} />
+                   {showDashboardBillingTable && dashboardBillingReady && dashboardBillingData ? (
+                       <BillingTable
+                          data={dashboardBillingData}
+                          selectedMonth={billingSelectedMonth}
+                          onMonthChange={setBillingSelectedMonth}
+                          onUpdateRentRemark={updateRentCollectionRemark}
+                          projectId={cloudConfig.projectId}
+                          authUser={authUser}
+                       />
+                   ) : dashboardBillingError ? (
+                       <div className="bg-white rounded-xl shadow-sm border border-rose-100 p-8 text-center text-sm text-rose-500">
+                           账单明细计算失败：{dashboardBillingError}
+                       </div>
+                   ) : (
+                       <div className="bg-white rounded-xl shadow-sm border border-slate-100 p-8 text-center text-sm text-slate-400">
+                           账单明细加载中…
+                       </div>
+                   )}
+               </div>
             </div>
           )}
 
@@ -2932,7 +4009,7 @@ const App: React.FC = () => {
           )}
           {activeTab === 'contracts' && (
             <Suspense fallback={<LazyPanelFallback />}>
-              <div className="animate-in fade-in zoom-in-50 duration-300"><ContractManager tenants={data.tenants} buildings={data.buildings} onUpdateTenants={updateTenants} dashboardData={data} payments={data.payments} onUpdatePayments={updatePayments} budgetAdjustments={data.budgetAdjustments} onUpdateAdjustments={updateBudgetAdjustments} mobileEntryMode={mobileNavLayout} authUser={authUser} projectId={cloudConfig.projectId} /></div>
+              <div className="animate-in fade-in zoom-in-50 duration-300"><ContractManager tenants={data.tenants} buildings={data.buildings} onUpdateTenants={updateTenants} dashboardData={data} payments={data.payments} onUpdatePayments={updatePayments} budgetAdjustments={data.budgetAdjustments} onUpdateAdjustments={updateBudgetAdjustments} mobileEntryMode={mobileNavLayout} mobileQueryOnly={managerMobileNav} authUser={authUser} projectId={cloudConfig.projectId} /></div>
             </Suspense>
           )}
           {activeTab === 'finance' && (
@@ -3041,6 +4118,7 @@ const App: React.FC = () => {
                   signupRequestsError={signupRequestsError}
                   isLoadingSignupRequests={isLoadingSignupRequests}
                   onApproveSignupRequest={(req) => void handleApproveSignupRequest(req)}
+                  onRejectSignupRequest={(req) => void handleRejectSignupRequest(req)}
                   onDeleteSignupRequest={(req) => void handleDeleteSignupRequest(req)}
                   approvedSignupByPark={approvedSignupByPark}
                   userManageTarget={userManageTarget}
@@ -3072,6 +4150,28 @@ const App: React.FC = () => {
 
         </div>
       </main>
+
+      {mobileNavLayout && (
+        <nav className="fixed inset-x-0 bottom-0 z-30 border-t border-slate-200 bg-white/95 px-2 pb-[calc(env(safe-area-inset-bottom)+0.3rem)] pt-1 shadow-[0_-8px_24px_rgba(15,23,42,0.08)] backdrop-blur lg:hidden">
+          <div className={`mx-auto grid max-w-md gap-1 ${mobileBottomNavItems.length === 3 ? 'grid-cols-3' : 'grid-cols-4'}`}>
+            {mobileBottomNavItems.map((item) => (
+              <button
+                key={item.key}
+                type="button"
+                onClick={item.onClick}
+                className={`mobile-pressable flex min-h-11 flex-col items-center justify-center gap-0.5 rounded-xl text-[11px] font-black ${
+                  item.active
+                    ? 'bg-gradient-to-r from-sky-500 to-emerald-400 text-white shadow-lg shadow-sky-300/30'
+                    : 'text-slate-500 hover:bg-sky-50 hover:text-sky-700'
+                }`}
+              >
+                {item.icon}
+                <span>{item.label}</span>
+              </button>
+            ))}
+          </div>
+        </nav>
+      )}
 
       <AssistantPanel isOpen={isAssistantOpen} onClose={() => setAssistantOpen(false)} data={data} />
       {isAIDialogOpen && (

@@ -69,6 +69,33 @@ describe('computeParkAreaMetrics', () => {
         expect(
             isTenantLeasedAtDate(
                 {
+                    id: 'signed-renewal',
+                    status: ContractStatus.Active,
+                    unitIds: ['u1'],
+                    signingDate: '2026-05-01',
+                    leaseStart: '2026-06-01',
+                    leaseEnd: '2027-05-31',
+                } as any,
+                ref,
+                selfUse,
+            ),
+        ).toBe(false);
+        expect(
+            isTenantLeasedAtDate(
+                {
+                    id: 'ended',
+                    status: ContractStatus.Active,
+                    unitIds: ['u1'],
+                    leaseStart: '2025-01-01',
+                    leaseEnd: '2026-05-01',
+                } as any,
+                ref,
+                selfUse,
+            ),
+        ).toBe(false);
+        expect(
+            isTenantLeasedAtDate(
+                {
                     id: 'terminated',
                     status: ContractStatus.Terminated,
                     unitIds: ['u1'],
@@ -79,5 +106,41 @@ describe('computeParkAreaMetrics', () => {
                 selfUse,
             ),
         ).toBe(false);
+    });
+
+    it('deduplicates renewal contracts for the same physical unit', () => {
+        const ref = new Date('2026-06-18T12:00:00');
+        const metrics = computeParkAreaMetrics(
+            [building],
+            [
+                {
+                    id: 'original',
+                    name: '原合同',
+                    buildingId: 'b1',
+                    unitIds: ['u1'],
+                    totalArea: 100,
+                    leaseStart: '2023-07-21',
+                    leaseEnd: '2026-07-20',
+                    signingDate: '2023-07-20',
+                    status: ContractStatus.Active,
+                } as any,
+                {
+                    id: 'renewal',
+                    name: '续签合同',
+                    buildingId: 'b1',
+                    unitIds: ['u1'],
+                    totalArea: 100,
+                    leaseStart: '2026-07-21',
+                    leaseEnd: '2029-07-20',
+                    signingDate: '2026-06-02',
+                    status: ContractStatus.Active,
+                } as any,
+            ],
+            { referenceDate: ref },
+        );
+
+        expect(metrics.leasedArea).toBe(100);
+        expect(metrics.vacantArea).toBe(50);
+        expect(metrics.occupancyRate).toBe(66.67);
     });
 });

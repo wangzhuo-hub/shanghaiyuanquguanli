@@ -438,6 +438,124 @@ export async function deletePaymentLikeFrontend(
   };
 }
 
+function hasOwnField(data: Record<string, unknown>, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(data, key);
+}
+
+function readTenantField(
+  data: Record<string, unknown>,
+  camelKey: string,
+  snakeKey: string = camelKey,
+): unknown {
+  if (hasOwnField(data, camelKey)) return data[camelKey];
+  if (snakeKey !== camelKey && hasOwnField(data, snakeKey)) return data[snakeKey];
+  return undefined;
+}
+
+function setTenantField(
+  row: Record<string, unknown>,
+  field: string,
+  data: Record<string, unknown>,
+  camelKey: string,
+  snakeKey: string,
+  options: { applyDefaults: boolean; defaultValue?: unknown | (() => unknown) },
+): void {
+  const value = readTenantField(data, camelKey, snakeKey);
+  if (value !== undefined) {
+    row[field] = value;
+    return;
+  }
+  if (!options.applyDefaults) return;
+  row[field] = typeof options.defaultValue === 'function'
+    ? (options.defaultValue as () => unknown)()
+    : options.defaultValue;
+}
+
+export function mapTenantAppDataToPbTenantRow(
+  data: Record<string, unknown>,
+  originalId: string,
+  projectId: string,
+  options: { applyDefaults?: boolean } = {},
+): Record<string, unknown> {
+  const applyDefaults = options.applyDefaults === true;
+  const row: Record<string, unknown> = {
+    original_id: originalId,
+    project_id: projectId,
+  };
+
+  setTenantField(row, 'root_id', data, 'rootId', 'root_id', { applyDefaults, defaultValue: '' });
+  setTenantField(row, 'name', data, 'name', 'name', { applyDefaults, defaultValue: '' });
+  setTenantField(row, 'source_agent_name', data, 'sourceAgentName', 'source_agent_name', { applyDefaults, defaultValue: '' });
+  setTenantField(row, 'contact_info', data, 'contactInfo', 'contact_info', { applyDefaults, defaultValue: '' });
+  setTenantField(row, 'industry', data, 'industry', 'industry', { applyDefaults, defaultValue: '' });
+  setTenantField(row, 'founding_date', data, 'foundingDate', 'founding_date', { applyDefaults, defaultValue: '' });
+  setTenantField(row, 'legal_rep_name', data, 'legalRepName', 'legal_rep_name', { applyDefaults, defaultValue: '' });
+  setTenantField(row, 'legal_rep_birthday', data, 'legalRepBirthday', 'legal_rep_birthday', { applyDefaults, defaultValue: '' });
+  setTenantField(row, 'contact_name', data, 'contactName', 'contact_name', { applyDefaults, defaultValue: '' });
+  setTenantField(row, 'contact_birthday', data, 'contactBirthday', 'contact_birthday', { applyDefaults, defaultValue: '' });
+  setTenantField(row, 'building_id', data, 'buildingId', 'building_id', { applyDefaults, defaultValue: '' });
+  setTenantField(row, 'unit_ids', data, 'unitIds', 'unit_ids', { applyDefaults, defaultValue: () => [] });
+  setTenantField(row, 'total_area', data, 'totalArea', 'total_area', { applyDefaults, defaultValue: 0 });
+  setTenantField(row, 'signing_date', data, 'signingDate', 'signing_date', { applyDefaults, defaultValue: '' });
+  setTenantField(row, 'lease_start', data, 'leaseStart', 'lease_start', { applyDefaults, defaultValue: '' });
+  setTenantField(row, 'lease_end', data, 'leaseEnd', 'lease_end', { applyDefaults, defaultValue: '' });
+  setTenantField(row, 'move_in_date', data, 'moveInDate', 'move_in_date', { applyDefaults, defaultValue: '' });
+  setTenantField(row, 'unit_price', data, 'unitPrice', 'unit_price', { applyDefaults, defaultValue: 0 });
+  setTenantField(row, 'unit_price_mode', data, 'unitPriceMode', 'unit_price_mode', { applyDefaults, defaultValue: 'daily' });
+  setTenantField(row, 'monthly_rent', data, 'monthlyRent', 'monthly_rent', { applyDefaults, defaultValue: 0 });
+  setTenantField(row, 'rent_free_periods', data, 'rentFreePeriods', 'rent_free_periods', { applyDefaults, defaultValue: () => [] });
+  setTenantField(row, 'rent_reductions', data, 'rentReductions', 'rent_reductions', { applyDefaults, defaultValue: () => [] });
+  setTenantField(row, 'payment_cycle', data, 'paymentCycle', 'payment_cycle', { applyDefaults, defaultValue: 'Monthly' });
+
+  const unitTerms = readTenantField(data, 'unitTerms', 'payment_terms');
+  if (unitTerms !== undefined) {
+    row.payment_terms = unitTerms;
+  } else {
+    setTenantField(row, 'payment_terms', data, 'paymentTerms', 'payment_terms', { applyDefaults, defaultValue: () => [] });
+  }
+
+  setTenantField(row, 'payment_cycle_months', data, 'paymentCycleMonths', 'payment_cycle_months', { applyDefaults, defaultValue: null });
+  setTenantField(row, 'first_payment_date', data, 'firstPaymentDate', 'first_payment_date', { applyDefaults, defaultValue: '' });
+  setTenantField(row, 'first_payment_months', data, 'firstPaymentMonths', 'first_payment_months', { applyDefaults, defaultValue: null });
+  setTenantField(row, 'first_receivable_amount', data, 'firstReceivableAmount', 'first_receivable_amount', { applyDefaults, defaultValue: null });
+  setTenantField(row, 'first_receivable_start_date', data, 'firstReceivableStartDate', 'first_receivable_start_date', { applyDefaults, defaultValue: '' });
+  setTenantField(row, 'first_receivable_end_date', data, 'firstReceivableEndDate', 'first_receivable_end_date', { applyDefaults, defaultValue: '' });
+  setTenantField(row, 'free_rent_handling', data, 'freeRentHandling', 'free_rent_handling', { applyDefaults, defaultValue: null });
+  setTenantField(row, 'deposit_amount', data, 'depositAmount', 'deposit_amount', { applyDefaults, defaultValue: 0 });
+  setTenantField(row, 'deposit_status', data, 'depositStatus', 'deposit_status', { applyDefaults, defaultValue: 'Unpaid' });
+  setTenantField(row, 'status', data, 'status', 'status', { applyDefaults, defaultValue: 'Active' });
+  setTenantField(row, 'termination_date', data, 'terminationDate', 'termination_date', { applyDefaults, defaultValue: '' });
+  setTenantField(row, 'termination_type', data, 'terminationType', 'termination_type', { applyDefaults, defaultValue: null });
+  setTenantField(row, 'termination_reason', data, 'terminationReason', 'termination_reason', { applyDefaults, defaultValue: '' });
+  setTenantField(row, 'parent_contract_id', data, 'parentContractId', 'parent_contract_id', { applyDefaults, defaultValue: '' });
+  setTenantField(row, 'early_termination_fr_clawback_override', data, 'earlyTerminationFreeRentClawbackOverride', 'early_termination_fr_clawback_override', { applyDefaults, defaultValue: null });
+  setTenantField(row, 'early_termination_deposit_deduction', data, 'earlyTerminationDepositDeduction', 'early_termination_deposit_deduction', { applyDefaults, defaultValue: null });
+  setTenantField(row, 'early_termination_other_adjustment', data, 'earlyTerminationOtherAdjustment', 'early_termination_other_adjustment', { applyDefaults, defaultValue: null });
+  setTenantField(row, 'special_requirements', data, 'specialRequirements', 'special_requirements', { applyDefaults, defaultValue: '' });
+  setTenantField(row, 'is_risk', data, 'isRisk', 'is_risk', { applyDefaults, defaultValue: false });
+  setTenantField(row, 'is_special_business', data, 'isSpecialBusiness', 'is_special_business', { applyDefaults, defaultValue: false });
+  setTenantField(row, 'contract_parking_spaces', data, 'contractParkingSpaces', 'contract_parking_spaces', { applyDefaults, defaultValue: 0 });
+  setTenantField(row, 'actual_parking_spaces', data, 'actualParkingSpaces', 'actual_parking_spaces', { applyDefaults, defaultValue: 0 });
+  setTenantField(row, 'parking_unit_price', data, 'parkingUnitPrice', 'parking_unit_price', { applyDefaults, defaultValue: 0 });
+  setTenantField(row, 'key_moments', data, 'keyMoments', 'key_moments', { applyDefaults, defaultValue: () => [] });
+  setTenantField(row, 'name_history', data, 'nameHistory', 'name_history', { applyDefaults, defaultValue: () => [] });
+  setTenantField(row, 'payment_cycle_changes', data, 'paymentCycleChanges', 'payment_cycle_changes', { applyDefaults, defaultValue: () => [] });
+  setTenantField(row, 'payment_period_adjustments', data, 'paymentPeriodAdjustments', 'payment_period_adjustments', { applyDefaults, defaultValue: () => [] });
+  setTenantField(row, 'payment_period_shift_months', data, 'paymentPeriodShiftMonths', 'payment_period_shift_months', { applyDefaults, defaultValue: 0 });
+  setTenantField(row, 'management_fee_enabled', data, 'managementFeeEnabled', 'management_fee_enabled', { applyDefaults, defaultValue: null });
+  setTenantField(row, 'management_fee_exempt', data, 'managementFeeExempt', 'management_fee_exempt', { applyDefaults, defaultValue: null });
+  setTenantField(row, 'management_fee_free_periods', data, 'managementFeeFreePeriods', 'management_fee_free_periods', { applyDefaults, defaultValue: () => [] });
+  setTenantField(row, 'management_fee_unit_price', data, 'managementFeeUnitPrice', 'management_fee_unit_price', { applyDefaults, defaultValue: null });
+  setTenantField(row, 'management_fee_unit_price_mode', data, 'managementFeeUnitPriceMode', 'management_fee_unit_price_mode', { applyDefaults, defaultValue: 'monthly' });
+  setTenantField(row, 'management_fee_monthly_amount', data, 'managementFeeMonthlyAmount', 'management_fee_monthly_amount', { applyDefaults, defaultValue: null });
+  setTenantField(row, 'management_fee_first_payment_date', data, 'managementFeeFirstPaymentDate', 'management_fee_first_payment_date', { applyDefaults, defaultValue: '' });
+  setTenantField(row, 'management_fee_start_with_occupancy', data, 'managementFeeStartWithOccupancy', 'management_fee_start_with_occupancy', { applyDefaults, defaultValue: null });
+  setTenantField(row, 'management_fee_start_date', data, 'managementFeeStartDate', 'management_fee_start_date', { applyDefaults, defaultValue: '' });
+  setTenantField(row, 'type', data, 'type', 'type', { applyDefaults, defaultValue: undefined });
+
+  return row;
+}
+
 export async function saveTenantLikeFrontend(
   params: {
     original_id?: string;
@@ -463,25 +581,9 @@ export async function saveTenantLikeFrontend(
   });
   const isUpdate = existing.items.length > 0;
 
-  // 构建 PB 行数据（与 dashboardDataToPbRecords 中 tenant 映射对齐）
-  const d = params.data;
-  const tenantData: Record<string, unknown> = {
-    original_id: oid,
-    project_id: projectId,
-    name: d.name,
-    building_id: d.buildingId || d.building_id,
-    unit_ids: d.unitIds || d.unit_ids,
-    total_area: d.totalArea,
-    monthly_rent: d.monthlyRent,
-    unit_price: d.unitPrice || d.unit_price,
-    payment_cycle: d.paymentCycle || d.payment_cycle,
-    lease_start: d.leaseStart || d.lease_start,
-    lease_end: d.leaseEnd || d.lease_end,
-    status: d.status,
-    signing_date: d.signingDate || d.signing_date,
-    deposit_status: d.depositStatus || d.deposit_status || 'Unpaid',
-    type: d.type,
-  };
+  const tenantData = mapTenantAppDataToPbTenantRow(params.data, oid, projectId, {
+    applyDefaults: !isUpdate || params.mode === 'create',
+  });
 
   const payload: DirtyPayload = {
     pb_tenants: isUpdate

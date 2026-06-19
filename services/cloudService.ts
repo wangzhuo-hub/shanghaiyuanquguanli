@@ -105,6 +105,13 @@ export const approveCloudSignupRequest = async (
     return pocketbaseService.approveSignupRequest(requestId, reviewerNote);
 };
 
+export const rejectCloudSignupRequest = async (
+    requestId: string,
+    reviewerNote: string = ''
+): Promise<{ success: boolean; message: string }> => {
+    return pocketbaseService.rejectSignupRequest(requestId, reviewerNote);
+};
+
 export const createManagedCloudUser = async (
     input: CreateManagedUserInput
 ): Promise<{ success: boolean; user?: ManagedUserAccount; message: string }> => {
@@ -148,6 +155,28 @@ export type SaveToCloudResult = {
     newVersion?: number;
 };
 
+type CloudBackupResult = {
+    success: boolean;
+    data?: DashboardData;
+    message: string;
+    recordMeta?: RecordMeta;
+};
+
+const inFlightCloudBackups = new Map<string, Promise<CloudBackupResult>>();
+const inFlightKpiSnapshots = new Map<string, Promise<{ success: boolean; snapshot?: KpiSnapshot; message: string }>>();
+
+const backupRequestKey = (
+    config: CloudConfig,
+    backupId: string,
+    options?: { year?: number; sinceYear?: number },
+) => [
+    config.pocketbaseUrl || '',
+    config.projectId || '',
+    backupId || '',
+    options?.year ?? '',
+    options?.sinceYear ?? '',
+].join('|');
+
 export const saveToCloud = async (
     data: DashboardData,
     config: CloudConfig,
@@ -170,9 +199,17 @@ export const fetchCloudBackup = async (
     config: CloudConfig,
     backupId: string,
     options?: { year?: number; sinceYear?: number }
-): Promise<{ success: boolean; data?: DashboardData; message: string; recordMeta?: RecordMeta }> => {
+): Promise<CloudBackupResult> => {
     void backupId;
-    return pocketbaseService.fetchPocketBaseBackup(config.projectId, options);
+    const key = backupRequestKey(config, backupId, options);
+    const existing = inFlightCloudBackups.get(key);
+    if (existing) return existing;
+    const request = pocketbaseService.fetchPocketBaseBackup(config.projectId, options)
+        .finally(() => {
+            inFlightCloudBackups.delete(key);
+        });
+    inFlightCloudBackups.set(key, request);
+    return request;
 };
 
 /**
@@ -219,7 +256,15 @@ export const fetchCloudKpiSnapshot = async (
     config: CloudConfig,
     year: number
 ): Promise<{ success: boolean; snapshot?: KpiSnapshot; message: string }> => {
-    return pocketbaseService.fetchKpiSnapshot(config.projectId, year);
+    const key = `${config.pocketbaseUrl || ''}|${config.projectId || ''}|${Math.floor(year)}`;
+    const existing = inFlightKpiSnapshots.get(key);
+    if (existing) return existing;
+    const request = pocketbaseService.fetchKpiSnapshot(config.projectId, year)
+        .finally(() => {
+            inFlightKpiSnapshots.delete(key);
+        });
+    inFlightKpiSnapshots.set(key, request);
+    return request;
 };
 
 // upsertCloudKpiSnapshot 已删除：KPI 快照唯一作者收敛为服务端 compute-engine（compute/refresh），

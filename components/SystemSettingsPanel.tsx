@@ -71,6 +71,7 @@ export type SystemSettingsPanelProps = {
     signupRequestsError: string | null;
     isLoadingSignupRequests: boolean;
     onApproveSignupRequest: (req: SignupRequestRecord) => void;
+    onRejectSignupRequest: (req: SignupRequestRecord) => void;
     onDeleteSignupRequest: (req: SignupRequestRecord) => void;
     approvedSignupByPark: ApprovedSignupByPark;
     userManageTarget: ManagedUserAccount | null;
@@ -205,6 +206,7 @@ export const SystemSettingsPanel: React.FC<SystemSettingsPanelProps> = (props) =
         signupRequestsError,
         isLoadingSignupRequests,
         onApproveSignupRequest,
+        onRejectSignupRequest,
         onDeleteSignupRequest,
         approvedSignupByPark,
         userManageTarget,
@@ -234,6 +236,7 @@ export const SystemSettingsPanel: React.FC<SystemSettingsPanelProps> = (props) =
     const pendingUsers = managedUsers.filter((u) => !u.enabled);
     const activeUsers = managedUsers.filter((u) => u.enabled);
     const pendingSignups = signupRequests.filter((r) => r.status === 'pending');
+    const rejectedSignups = signupRequests.filter((r) => r.status === 'rejected');
     const pendingTotal = pendingUsers.length + pendingSignups.length;
 
     const handleAutoSyncChange = (checked: boolean) => {
@@ -482,12 +485,27 @@ export const SystemSettingsPanel: React.FC<SystemSettingsPanelProps> = (props) =
                                                             <span className="font-mono text-slate-600">{req.password}</span>
                                                         </div>
                                                     ) : null}
-                                                    <div className="flex justify-end">
+                                                    <div className="flex flex-wrap justify-end gap-2">
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => onDeleteSignupRequest(req)}
+                                                            className="inline-flex items-center gap-1 rounded-lg border border-rose-200 px-3 py-1.5 text-xs text-rose-700 hover:bg-rose-50"
+                                                        >
+                                                            <Trash2 size={13} /> 删除申请
+                                                        </button>
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => onRejectSignupRequest(req)}
+                                                            className="inline-flex items-center gap-1 rounded-lg border border-amber-200 px-3 py-1.5 text-xs text-amber-700 hover:bg-amber-50"
+                                                        >
+                                                            <RotateCcw size={13} /> 退回
+                                                        </button>
                                                         <button
                                                             type="button"
                                                             onClick={() => onApproveSignupRequest(req)}
-                                                            className="rounded-lg bg-sky-600 px-3 py-1.5 text-xs text-white hover:bg-sky-700"
+                                                            className="inline-flex items-center gap-1 rounded-lg bg-sky-600 px-3 py-1.5 text-xs text-white hover:bg-sky-700"
                                                         >
+                                                            <CheckCircle2 size={13} />
                                                             审批通过
                                                         </button>
                                                     </div>
@@ -554,69 +572,103 @@ export const SystemSettingsPanel: React.FC<SystemSettingsPanelProps> = (props) =
                                 <div className="max-h-96 overflow-y-auto rounded-lg border border-slate-200">
                                     {isLoadingSignupRequests ? (
                                         <EmptyRow>加载中…</EmptyRow>
-                                    ) : approvedSignupByPark.parkOrder.length === 0 ? (
+                                    ) : approvedSignupByPark.parkOrder.length === 0 && rejectedSignups.length === 0 ? (
                                         <EmptyRow>暂无线上注册审批记录</EmptyRow>
                                     ) : (
-                                        approvedSignupByPark.parkOrder.map((projectId) => {
-                                            const parkTitle =
-                                                authorizedParks.find((p) => p.projectId === projectId)?.name ||
-                                                projectId;
-                                            const rows = approvedSignupByPark.byPark.get(projectId) || [];
-                                            return (
-                                                <div key={projectId}>
-                                                    <div className="border-t border-slate-200 bg-slate-50 px-4 py-2 text-sm font-medium text-slate-800 first:border-t-0">
-                                                        {parkTitle}
+                                        <>
+                                            {approvedSignupByPark.parkOrder.map((projectId) => {
+                                                const parkTitle =
+                                                    authorizedParks.find((p) => p.projectId === projectId)?.name ||
+                                                    projectId;
+                                                const rows = approvedSignupByPark.byPark.get(projectId) || [];
+                                                return (
+                                                    <div key={projectId}>
+                                                        <div className="border-t border-slate-200 bg-slate-50 px-4 py-2 text-sm font-medium text-slate-800 first:border-t-0">
+                                                            {parkTitle}
+                                                        </div>
+                                                        {rows.map((req) => {
+                                                            const linked = req.approvedUserId
+                                                                ? managedUsers.find((x) => x.id === req.approvedUserId)
+                                                                : managedUsers.find(
+                                                                      (x) =>
+                                                                          x.email.trim().toLowerCase() ===
+                                                                          req.email.trim().toLowerCase()
+                                                                  );
+                                                            return (
+                                                                <div
+                                                                    key={`${req.id}-${projectId}`}
+                                                                    className="border-t border-slate-100 px-4 py-2.5 text-sm"
+                                                                >
+                                                                    <div className="font-medium text-slate-800">
+                                                                        {req.applicantName || '（未填姓名）'}
+                                                                    </div>
+                                                                    <div className="text-xs text-slate-500">{req.email}</div>
+                                                                    <div className="mt-2 flex flex-wrap justify-end gap-1">
+                                                                        {linked && (
+                                                                            <>
+                                                                                <button
+                                                                                    type="button"
+                                                                                    onClick={() => onOpenUserManage(linked)}
+                                                                                    className="rounded border border-slate-200 px-2 py-0.5 text-[11px] hover:bg-slate-50"
+                                                                                >
+                                                                                    编辑
+                                                                                </button>
+                                                                                <button
+                                                                                    type="button"
+                                                                                    onClick={() => onDeleteManagedUser(linked)}
+                                                                                    className="rounded border border-rose-200 px-2 py-0.5 text-[11px] text-rose-700 hover:bg-rose-50"
+                                                                                >
+                                                                                    删除账号
+                                                                                </button>
+                                                                            </>
+                                                                        )}
+                                                                        <button
+                                                                            type="button"
+                                                                            onClick={() => onDeleteSignupRequest(req)}
+                                                                            className="rounded border border-amber-200 px-2 py-0.5 text-[11px] text-amber-700 hover:bg-amber-50"
+                                                                        >
+                                                                            清理记录
+                                                                        </button>
+                                                                    </div>
+                                                                </div>
+                                                            );
+                                                        })}
                                                     </div>
-                                                    {rows.map((req) => {
-                                                        const linked = req.approvedUserId
-                                                            ? managedUsers.find((x) => x.id === req.approvedUserId)
-                                                            : managedUsers.find(
-                                                                  (x) =>
-                                                                      x.email.trim().toLowerCase() ===
-                                                                      req.email.trim().toLowerCase()
-                                                              );
-                                                        return (
-                                                            <div
-                                                                key={`${req.id}-${projectId}`}
-                                                                className="border-t border-slate-100 px-4 py-2.5 text-sm"
-                                                            >
-                                                                <div className="font-medium text-slate-800">
-                                                                    {req.applicantName || '（未填姓名）'}
-                                                                </div>
-                                                                <div className="text-xs text-slate-500">{req.email}</div>
-                                                                <div className="mt-2 flex flex-wrap justify-end gap-1">
-                                                                    {linked && (
-                                                                        <>
-                                                                            <button
-                                                                                type="button"
-                                                                                onClick={() => onOpenUserManage(linked)}
-                                                                                className="rounded border border-slate-200 px-2 py-0.5 text-[11px] hover:bg-slate-50"
-                                                                            >
-                                                                                编辑
-                                                                            </button>
-                                                                            <button
-                                                                                type="button"
-                                                                                onClick={() => onDeleteManagedUser(linked)}
-                                                                                className="rounded border border-rose-200 px-2 py-0.5 text-[11px] text-rose-700 hover:bg-rose-50"
-                                                                            >
-                                                                                删除账号
-                                                                            </button>
-                                                                        </>
-                                                                    )}
-                                                                    <button
-                                                                        type="button"
-                                                                        onClick={() => onDeleteSignupRequest(req)}
-                                                                        className="rounded border border-amber-200 px-2 py-0.5 text-[11px] text-amber-700 hover:bg-amber-50"
-                                                                    >
-                                                                        清理记录
-                                                                    </button>
-                                                                </div>
+                                                );
+                                            })}
+                                            {rejectedSignups.length > 0 ? (
+                                                <div>
+                                                    <div className="border-t border-slate-200 bg-amber-50 px-4 py-2 text-sm font-medium text-amber-800">
+                                                        已退回申请 · {rejectedSignups.length}
+                                                    </div>
+                                                    {rejectedSignups.map((req) => (
+                                                        <div
+                                                            key={req.id}
+                                                            className="border-t border-amber-100 px-4 py-2.5 text-sm"
+                                                        >
+                                                            <div className="font-medium text-slate-800">
+                                                                {req.applicantName || '（未填姓名）'}
                                                             </div>
-                                                        );
-                                                    })}
+                                                            <div className="text-xs text-slate-500">{req.email}</div>
+                                                            {req.reviewNote ? (
+                                                                <div className="mt-1 text-xs text-amber-700">
+                                                                    {req.reviewNote}
+                                                                </div>
+                                                            ) : null}
+                                                            <div className="mt-2 flex justify-end">
+                                                                <button
+                                                                    type="button"
+                                                                    onClick={() => onDeleteSignupRequest(req)}
+                                                                    className="rounded border border-amber-200 px-2 py-0.5 text-[11px] text-amber-700 hover:bg-amber-50"
+                                                                >
+                                                                    清理记录
+                                                                </button>
+                                                            </div>
+                                                        </div>
+                                                    ))}
                                                 </div>
-                                            );
-                                        })
+                                            ) : null}
+                                        </>
                                     )}
                                 </div>
                             )}

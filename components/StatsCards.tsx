@@ -379,7 +379,7 @@ export const StatsCards: React.FC<StatsCardsProps> = ({
             {/* Monthly Breakdown Table - Integrated Budget Execution */}
             <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,2fr)_minmax(0,1fr)] gap-4 items-stretch">
                 {/* Left: Table */}
-                <div className="bg-white rounded-xl shadow-sm border border-slate-100 overflow-hidden min-w-0 flex flex-col hover:shadow-md transition-shadow duration-300">
+                <div className="order-1 lg:order-1 bg-white rounded-xl shadow-sm border border-slate-100 overflow-hidden min-w-0 flex flex-col hover:shadow-md transition-shadow duration-300">
                     <div className="bg-gradient-to-r from-emerald-50 to-emerald-100 px-4 sm:px-5 py-2.5 border-b border-emerald-200">
                         <div className="flex flex-wrap items-center justify-between gap-2 text-emerald-800 min-w-0">
                             <div className="flex flex-wrap items-center gap-2 min-w-0">
@@ -509,7 +509,7 @@ export const StatsCards: React.FC<StatsCardsProps> = ({
                 </div>
 
                 {/* Right: Annual Completion Visualization */}
-                <div className="bg-white rounded-xl shadow-sm border border-slate-100 overflow-hidden group flex flex-col min-w-0 hover:shadow-md transition-shadow duration-300">
+                <div className="hidden md:flex order-2 lg:order-2 bg-white rounded-xl shadow-sm border border-slate-100 overflow-hidden group flex-col min-w-0 hover:shadow-md transition-shadow duration-300">
                     <div className="bg-gradient-to-r from-blue-50 to-blue-100 px-3 sm:px-4 py-2.5 border-b border-blue-200 shrink-0">
                         <h3 className="font-semibold text-xs sm:text-sm text-slate-800">年度指标完成率</h3>
                     </div>

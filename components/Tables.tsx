@@ -359,7 +359,59 @@ export const AnnualMetricComparisonTable: React.FC<AnnualMetricComparisonTablePr
                     <p className="text-xs text-slate-500 mt-1">含租金与物业费分项；综合完成率 =（租金实收+物业费实收）÷（租金年初预算+物业费合同应收）</p>
                 )}
             </div>
-            <div className="overflow-x-auto">
+            <div className="md:hidden divide-y divide-slate-100">
+                {data.map((row) => (
+                    <div key={row.year} className="p-4">
+                        <div className="flex items-start justify-between gap-3">
+                            <div>
+                                <div className="text-base font-black text-slate-900">{row.year}年</div>
+                                <div className="mt-0.5 text-xs text-slate-500">年度经营表现</div>
+                            </div>
+                            <span className={`shrink-0 rounded-full px-2 py-1 text-xs font-bold ${row.revenueCompletionRate >= 100 ? 'bg-emerald-100 text-emerald-700' : row.revenueCompletionRate >= 90 ? 'bg-blue-100 text-blue-700' : 'bg-amber-100 text-amber-700'}`}>
+                                租金 {formatPercent(row.revenueCompletionRate, 0)}
+                            </span>
+                        </div>
+                        <div className="mt-4 grid grid-cols-2 gap-3">
+                            <div className="rounded-lg bg-slate-50 p-3">
+                                <div className="text-[11px] font-semibold text-slate-500">年初预算</div>
+                                <div className="mt-1 text-lg font-black tabular-nums text-slate-900">{formatWan(row.revenueTarget, 0)}</div>
+                            </div>
+                            <div className="rounded-lg bg-blue-50 p-3">
+                                <div className="text-[11px] font-semibold text-blue-700">租金实收</div>
+                                <div className="mt-1 text-lg font-black tabular-nums text-blue-900">{formatWan(row.revenueActual, 0)}</div>
+                            </div>
+                        </div>
+                        {showManagementFee && (
+                            <div className="mt-3 grid grid-cols-2 gap-3">
+                                <div className="rounded-lg bg-teal-50 p-3">
+                                    <div className="text-[11px] font-semibold text-teal-700">物业费实收</div>
+                                    <div className="mt-1 text-base font-black tabular-nums text-teal-900">{formatWan(row.managementFeeActual || 0, 0)}</div>
+                                </div>
+                                <div className="rounded-lg bg-indigo-50 p-3">
+                                    <div className="text-[11px] font-semibold text-indigo-700">综合完成率</div>
+                                    <div className="mt-1 text-base font-black tabular-nums text-indigo-900">
+                                        {row.combinedCompletionRate != null ? formatPercent(row.combinedCompletionRate, 0) : '—'}
+                                    </div>
+                                </div>
+                            </div>
+                        )}
+                        <div className="mt-3 flex items-center justify-between gap-3 text-xs">
+                            <span className={`inline-flex items-center gap-1 font-semibold ${row.revenueYoY == null ? 'text-slate-400' : row.revenueYoY >= 0 ? 'text-emerald-600' : 'text-rose-500'}`}>
+                                {row.revenueYoY == null ? (
+                                    '营收同比 —'
+                                ) : (
+                                    <>
+                                        {row.revenueYoY >= 0 ? <TrendingUp size={13}/> : <TrendingDown size={13}/>}
+                                        营收同比 {row.revenueYoY > 0 ? '+' : ''}{formatPercent(row.revenueYoY, 0)}
+                                    </>
+                                )}
+                            </span>
+                            <span className="font-semibold text-blue-700">出租率 {formatPercent(row.occupancyRate, 0)}</span>
+                        </div>
+                    </div>
+                ))}
+            </div>
+            <div className="hidden md:block overflow-x-auto">
                 <table className={`w-full text-sm text-left ${showManagementFee ? 'min-w-[1100px]' : 'min-w-[700px]'}`}>
                     <thead className="bg-slate-50 text-slate-500 font-medium">
                         <tr>

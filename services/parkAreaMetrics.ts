@@ -33,6 +33,12 @@ function endOfLocalDay(date: Date): Date {
     return new Date(date.getFullYear(), date.getMonth(), date.getDate(), 23, 59, 59, 999);
 }
 
+function minValidDate(...dates: Array<Date | null>): Date | null {
+    const valid = dates.filter((date): date is Date => !!date && !Number.isNaN(date.getTime()));
+    if (valid.length === 0) return null;
+    return valid.reduce((min, date) => (date < min ? date : min));
+}
+
 /** 判断租户在 referenceDate 是否计入已租面积（与看板/OpenClaw/资产管理同源） */
 export function isTenantLeasedAtDate(
     tenant: Tenant,
@@ -42,13 +48,16 @@ export function isTenantLeasedAtDate(
     if (!LEASED_STATUSES.has(tenant.status)) return false;
     if (tenant.unitIds.some((uid) => selfUseUnitIds.has(uid))) return false;
 
-    const achievedDate = tenant.signingDate
-        ? parseDateLocal(tenant.signingDate)
-        : parseDateLocal(tenant.leaseStart);
-    if (Number.isNaN(achievedDate.getTime()) || achievedDate > referenceDate) return false;
+    const leaseStart = parseDateLocal(tenant.leaseStart);
+    if (Number.isNaN(leaseStart.getTime()) || leaseStart > referenceDate) return false;
 
     const terminated = tenant.terminationDate ? parseDateLocal(tenant.terminationDate) : null;
-    if (terminated && !Number.isNaN(terminated.getTime()) && terminated <= referenceDate) return false;
+    const leaseEnd = tenant.leaseEnd ? parseDateLocal(tenant.leaseEnd) : null;
+    const effectiveEnd = minValidDate(
+        leaseEnd ? endOfLocalDay(leaseEnd) : null,
+        terminated ? endOfLocalDay(terminated) : null,
+    );
+    if (effectiveEnd && effectiveEnd < referenceDate) return false;
 
     return true;
 }
@@ -92,13 +101,32 @@ export function computeParkAreaMetrics(
         });
     });
 
+    const leasableUnitAreaById = new Map<string, number>();
+    buildings.forEach((building) => {
+        if (building.type === 'Site') return;
+        if (buildingId && building.id !== buildingId) return;
+        building.units.forEach((unit) => {
+            if (!unit.isSelfUse) leasableUnitAreaById.set(unit.id, unit.area || 0);
+        });
+    });
+
     let leasedArea = 0;
+    const leasedUnitIds = new Set<string>();
     tenants.forEach((tenant) => {
         if (buildingId && tenant.buildingId !== buildingId) return;
         const building = buildings.find((b) => b.id === tenant.buildingId);
         if (building?.type === 'Site') return;
         if (isTenantLeasedAtDate(tenant, referenceDate, selfUseUnitIds)) {
-            leasedArea += tenant.totalArea || 0;
+            let hasMatchedUnit = false;
+            tenant.unitIds.forEach((unitId) => {
+                const unitArea = leasableUnitAreaById.get(unitId);
+                if (unitArea === undefined) return;
+                hasMatchedUnit = true;
+                if (leasedUnitIds.has(unitId)) return;
+                leasedUnitIds.add(unitId);
+                leasedArea += unitArea;
+            });
+            if (!hasMatchedUnit) leasedArea += tenant.totalArea || 0;
         }
     });
 

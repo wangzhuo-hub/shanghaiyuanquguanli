@@ -80,10 +80,10 @@ export const DashboardAlerts: React.FC<DashboardAlertsProps> = ({ tenants, invoi
   if (!isVisible || (!hasCurrent && !hasNext && !hasRisks)) return null;
 
   return (
-    <div className="mb-6 space-y-4">
+    <div className="space-y-3 md:mb-6 md:space-y-4">
         {/* Risk Alerts */}
         {hasRisks && (
-            <div className="bg-red-50 border border-red-100 rounded-xl p-4 shadow-sm animate-pulse relative">
+            <div className="bg-red-50 border border-red-100 rounded-xl p-3 md:p-4 shadow-sm relative">
                 <div className="flex items-start gap-3">
                     <div className="bg-red-100 p-2 rounded-lg text-red-600 mt-1">
                         <AlertTriangle size={20} />
@@ -122,13 +122,13 @@ export const DashboardAlerts: React.FC<DashboardAlertsProps> = ({ tenants, invoi
                 
                 {/* Current Month Section */}
                 {hasCurrent && (
-                    <div className="p-4 bg-gradient-to-r from-violet-50 to-indigo-50">
+                    <div className="p-3 md:p-4 bg-gradient-to-r from-violet-50 to-indigo-50">
                         <div className="flex items-start gap-3">
                             <div className="bg-violet-100 p-2 rounded-lg text-violet-600 mt-1 shadow-sm">
                                 <PartyPopper size={20} />
                             </div>
                             <div className="flex-1">
-                                <h3 className="font-bold text-violet-900 text-sm mb-3 flex items-center gap-2">
+                                <h3 className="font-bold text-violet-900 text-sm mb-3 flex flex-wrap items-center gap-2">
                                     本月 ({currentMonth}月) 关键时刻
                                     <span className="text-[10px] font-normal text-violet-600 bg-white/50 px-2 py-0.5 rounded-full">及时送上祝福</span>
                                 </h3>
@@ -205,13 +205,13 @@ export const DashboardAlerts: React.FC<DashboardAlertsProps> = ({ tenants, invoi
 
                 {/* Next Month Section */}
                 {hasNext && (
-                    <div className="p-4 bg-slate-50">
+                    <div className="p-3 md:p-4 bg-slate-50">
                         <div className="flex items-start gap-3">
                             <div className="bg-slate-200 p-2 rounded-lg text-slate-500 mt-1">
                                 <Clock size={20} />
                             </div>
                             <div className="flex-1">
-                                <h3 className="font-bold text-slate-700 text-sm mb-3 flex items-center gap-2">
+                                <h3 className="font-bold text-slate-700 text-sm mb-3 flex flex-wrap items-center gap-2">
                                     下月 ({nextMonth}月) 预告 
                                     <span className="text-[10px] font-normal text-slate-500 bg-white border border-slate-200 px-2 py-0.5 rounded-full flex items-center gap-1">
                                         <ArrowRight size={10} /> 提前准备关怀
@@ -307,7 +307,7 @@ const AlertCard: React.FC<AlertCardProps> = ({ title, icon, iconColor, items, re
         </h4>
         <div className="space-y-1.5 max-h-32 overflow-y-auto pr-1 custom-scrollbar">
             {items.map(t => (
-                <div key={t.id} className="flex justify-between items-center text-xs text-slate-700">
+                <div key={t.id} className="flex items-center justify-between gap-2 text-xs text-slate-700">
                     {renderItem(t)}
                 </div>
             ))}

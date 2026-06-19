@@ -16,7 +16,7 @@ import {
 import { canViewRentPricing, canWriteReceivableScope, assertCanMutatePayment } from '../services/receivablePermissions';
 import { isManagementFeeBillingEnabled } from '../services/parkBillingConfig';
 import { VirtualizedTable } from './VirtualizedTable';
-import { BadgeCheck, Plus, ArrowRightLeft, Check, X, AlertCircle, Banknote, Wallet, TrendingUp, ArrowDownRight, CreditCard, Trash2, Edit2, Download, Upload, FileSpreadsheet, Calendar, ListChecks, Clock, Receipt, RotateCcw, ChevronDown, ChevronUp, ChevronLeft, ChevronRight, FileText, Sparkles, Save, Undo2, Info } from 'lucide-react';
+import { BadgeCheck, Plus, ArrowRightLeft, Check, X, AlertCircle, Banknote, Wallet, TrendingUp, ArrowDownRight, CreditCard, Trash2, Edit2, Download, Upload, FileSpreadsheet, Calendar, ListChecks, Clock, Receipt, RotateCcw, ChevronDown, ChevronUp, ChevronLeft, ChevronRight, FileText, Sparkles, Save, Undo2, Info, Search } from 'lucide-react';
 import {
     getRentCollectionRemark,
     deferReceivableShellClass,
@@ -48,7 +48,7 @@ import {
     billingStatusFromAmounts,
     RECEIVABLE_TAIL_TOLERANCE,
 } from '../services/receivableListHelpers';
-import { formatCurrency, roundMoney2 } from '../services/numberFormat';
+import { formatCurrency, formatWan, roundMoney2 } from '../services/numberFormat';
 import { ContractSummaryModal, type ContractSummaryContent, resolveTenantAssetLabels } from './ContractSummaryModal';
 import { SearchableTenantSelect } from './SearchableTenantSelect';
 import * as XLSX from 'xlsx';
@@ -1459,13 +1459,148 @@ export const FinanceManager: React.FC<FinanceManagerProps> = ({
   const listView = mobileReceivableOnly ? 'Receivables' : activeView;
 
   const showWorkbenchSettlementCard = Math.abs(monthStats.workbenchSettlementDelta) > 0.005;
+  const mobileFirstPendingReceivable = receivableSections.unsettled[0]?.item || null;
+  const mobileSettledCount =
+      receivableSections.settledThisMonth.length + receivableSections.prepaid.length;
+  const mobileVisibleReceivableCount =
+      receivableSections.unsettled.length +
+      receivableSections.deferred.length +
+      mobileSettledCount;
 
   return (
     <div className="space-y-4 md:space-y-6">
+      {mobileReceivableOnly && (
+        <section className="md:hidden overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+          <div className="bg-slate-950 px-3.5 py-3 text-white">
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <div className="text-sm font-black">待处理账款</div>
+                <div className="mt-0.5 text-[11px] font-semibold text-slate-400">
+                  {receivableFeeTab === 'management_fee' ? '物业费应收' : '租金应收'} · {receivableMonth}
+                </div>
+              </div>
+              <div className="flex items-center rounded-full border border-white/10 bg-white/10 p-0.5">
+                <button type="button" onClick={handlePrevMonth} className="rounded-full p-1 text-slate-200 active:bg-white/10" aria-label="上一账期">
+                  <ChevronLeft size={13} />
+                </button>
+                <span className="px-2 text-xs font-black tabular-nums text-white">{receivableMonth}</span>
+                <button type="button" onClick={handleNextMonth} className="rounded-full p-1 text-slate-200 active:bg-white/10" aria-label="下一账期">
+                  <ChevronRight size={13} />
+                </button>
+              </div>
+            </div>
+            {mgmtFeeParkEnabled && viewRentPricing && (
+              <div className="mt-3 grid grid-cols-2 rounded-xl bg-white/10 p-1 text-xs font-black">
+                <button
+                  type="button"
+                  onClick={() => { setReceivableFeeTab('rent'); setBatchSelectedIds(new Set()); }}
+                  className={`rounded-lg py-1.5 ${receivableFeeTab === 'rent' ? 'bg-white text-slate-950' : 'text-slate-300'}`}
+                >
+                  租金
+                </button>
+                <button
+                  type="button"
+                  onClick={() => { setReceivableFeeTab('management_fee'); setBatchSelectedIds(new Set()); }}
+                  className={`rounded-lg py-1.5 ${receivableFeeTab === 'management_fee' ? 'bg-white text-slate-950' : 'text-slate-300'}`}
+                >
+                  物业费
+                </button>
+              </div>
+            )}
+            <div className="mt-2.5 grid grid-cols-2 gap-2">
+              <button
+                type="button"
+                onClick={() => mobileFirstPendingReceivable && openCollectModal(mobileFirstPendingReceivable)}
+                disabled={!mobileFirstPendingReceivable || !canCollectCurrentFeeTab}
+                className="rounded-xl bg-blue-600 px-3 py-2.5 text-left text-white shadow-sm disabled:opacity-45"
+              >
+                <span className="flex items-center gap-1.5 text-sm font-black">
+                  <Receipt size={16} />
+                  核销首笔
+                </span>
+                <span className="mt-0.5 block truncate text-[10px] font-semibold opacity-80">
+                  {mobileFirstPendingReceivable ? mobileFirstPendingReceivable.tenantName : '暂无待核销'}
+                </span>
+              </button>
+              <button
+                type="button"
+                onClick={openBatchPartialModal}
+                disabled={batchSelectedIds.size === 0 || !canCollectCurrentFeeTab}
+                className="rounded-xl bg-white px-3 py-2.5 text-left text-slate-900 shadow-sm disabled:opacity-45"
+              >
+                <span className="flex items-center gap-1.5 text-sm font-black">
+                  <ListChecks size={16} />
+                  批量核销
+                </span>
+                <span className="mt-0.5 block text-[10px] font-semibold text-slate-500">
+                  已选 {batchSelectedIds.size} 条
+                </span>
+              </button>
+            </div>
+            <label className="mt-2 flex items-center gap-2 rounded-xl bg-white px-3 py-2 text-slate-900">
+              <Search size={15} className="shrink-0 text-slate-400" />
+              <input
+                type="search"
+                enterKeyHint="search"
+                value={receivableKeyword}
+                onChange={(event) => setReceivableKeyword(event.target.value)}
+                placeholder="搜索客户"
+                className="min-w-0 flex-1 bg-transparent text-sm font-semibold outline-none placeholder:text-slate-400"
+              />
+            </label>
+          </div>
+          <div className="grid grid-cols-3 divide-x divide-slate-100">
+            <button
+              type="button"
+              onClick={() => setReceivableBucketFilter('pending')}
+              className={`px-3 py-2.5 text-left ${receivableBucketFilter === 'pending' ? 'bg-amber-50' : 'bg-white'}`}
+            >
+              <div className="text-[10px] font-semibold text-slate-500">待核销</div>
+              <div className={`mt-0.5 text-lg font-black tabular-nums ${receivableBucketFilter === 'pending' ? 'text-amber-700' : 'text-slate-900'}`}>
+                {receivableSections.unsettled.length}
+              </div>
+            </button>
+            <button
+              type="button"
+              onClick={() => setReceivableBucketFilter('deferred')}
+              className={`px-3 py-2.5 text-left ${receivableBucketFilter === 'deferred' ? 'bg-indigo-50' : 'bg-white'}`}
+            >
+              <div className="text-[10px] font-semibold text-slate-500">缓缴</div>
+              <div className={`mt-0.5 text-lg font-black tabular-nums ${receivableBucketFilter === 'deferred' ? 'text-indigo-700' : 'text-slate-900'}`}>
+                {receivableSections.deferred.length}
+              </div>
+            </button>
+            <button
+              type="button"
+              onClick={() => setReceivableBucketFilter('all')}
+              className={`px-3 py-2.5 text-left ${receivableBucketFilter === 'all' ? 'bg-blue-50' : 'bg-white'}`}
+            >
+              <div className="text-[10px] font-semibold text-slate-500">全部</div>
+              <div className={`mt-0.5 text-lg font-black tabular-nums ${receivableBucketFilter === 'all' ? 'text-blue-700' : 'text-slate-900'}`}>
+                {mobileVisibleReceivableCount}
+              </div>
+            </button>
+          </div>
+          <div className="grid grid-cols-2 divide-x divide-slate-100 border-t border-slate-100">
+            <div className="px-3 py-2.5">
+              <div className="text-[10px] font-semibold text-slate-500">本月待收</div>
+              <div className="mt-0.5 truncate text-lg font-black text-amber-700 tabular-nums">
+                  {formatWan(Math.max(0, monthStats.pendingCollection), 1)}
+              </div>
+            </div>
+            <div className="px-3 py-2.5">
+              <div className="text-[10px] font-semibold text-slate-500">本月实收</div>
+              <div className="mt-0.5 truncate text-lg font-black text-emerald-700 tabular-nums">
+                  {formatWan(monthStats.actualReceived, 1)}
+              </div>
+            </div>
+          </div>
+        </section>
+      )}
       
       {/* Revised Financial Overview Cards */}
       <div
-          className={`grid grid-cols-2 gap-3 md:gap-4 ${
+          className={`${mobileReceivableOnly ? 'hidden md:grid' : 'grid'} grid-cols-2 gap-3 md:gap-4 ${
               showWorkbenchSettlementCard ? 'md:grid-cols-3 xl:grid-cols-5' : 'md:grid-cols-4'
           }`}
       >
@@ -1551,7 +1686,7 @@ export const FinanceManager: React.FC<FinanceManagerProps> = ({
               </div>
       </div>
 
-      <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-[11px] text-slate-600 leading-relaxed">
+      <div className={`rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-[11px] text-slate-600 leading-relaxed ${mobileReceivableOnly ? 'hidden md:block' : ''}`}>
           <span className="font-semibold text-slate-700">加总核对：</span>
           本月实收{' '}
           <span className="tabular-nums font-medium text-slate-800">{formatCurrency(monthStats.actualReceived)}</span>
@@ -1568,7 +1703,7 @@ export const FinanceManager: React.FC<FinanceManagerProps> = ({
       </div>
 
       {/* Main View Toggle & Toolbar */}
-      <div className="flex flex-col md:flex-row justify-between items-start md:items-center border-b border-slate-200 pb-2 gap-4">
+      <div className={`flex flex-col md:flex-row justify-between items-start md:items-center border-b border-slate-200 pb-2 gap-4 ${mobileReceivableOnly ? 'hidden md:flex' : ''}`}>
         {!mobileReceivableOnly && viewRentPricing && (
         <div className="flex gap-4 w-full md:w-auto overflow-x-auto">
              <button type="button" onClick={() => setActiveView('Receivables')} className={`pb-2 px-2 text-sm font-bold flex items-center gap-2 transition-colors whitespace-nowrap ${activeView === 'Receivables' ? 'text-blue-600 border-b-2 border-blue-600' : 'text-slate-500 hover:text-slate-700'}`}><ListChecks size={18} /> 应收核销</button>
@@ -2339,37 +2474,34 @@ export const FinanceManager: React.FC<FinanceManagerProps> = ({
       </div>
 
       {collectModalDetail && (
-          <div className="fixed inset-0 z-[75] flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
-              <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden animate-in zoom-in-50 duration-200">
-                  <div className="px-5 py-4 border-b border-slate-100 flex justify-between items-center bg-slate-50/80">
-                      <h3 className="text-lg font-bold text-slate-800 flex items-center gap-2"><Receipt size={20} className="text-blue-600" /> 收款核销</h3>
+          <div className="fixed inset-0 z-[75] flex items-end justify-center bg-black/50 backdrop-blur-sm p-0 md:items-center md:p-4">
+              <div className="w-full max-w-md overflow-hidden rounded-t-2xl bg-white shadow-2xl animate-in slide-in-from-bottom-4 duration-200 md:rounded-2xl md:zoom-in-50">
+                  <div className="px-4 py-3 border-b border-slate-100 flex justify-between items-center bg-slate-50/80 md:px-5 md:py-4">
+                      <h3 className="text-base font-bold text-slate-800 flex items-center gap-2 md:text-lg"><Receipt size={20} className="text-blue-600" /> 收款核销</h3>
                       <button type="button" onClick={() => setCollectModalDetail(null)} className="p-1.5 rounded-lg hover:bg-slate-200 text-slate-500"><X size={22} /></button>
                   </div>
-                  <div className="p-5 space-y-3 text-sm text-slate-700">
-                      <p><span className="text-slate-500">客户</span> <span className="font-semibold text-slate-900">{collectModalDetail.tenantName}</span></p>
-                      <p>
-                          <span className="text-slate-500">查看账期</span>{' '}
-                          <span className="font-mono font-semibold">{receivableMonth}</span>
-                      </p>
-                      <p>
-                          <span className="text-slate-500">核销记入账期</span>{' '}
-                          <span className="font-mono font-semibold text-blue-800">
-                              {resolveRentWriteOffPaymentPeriod(
-                                  collectModalDetail,
-                                  receivableMonth,
-                                  (() => {
-                                      const raw = String(collectModalAmount).replace(/,/g, '').trim();
-                                      const n = roundMoney2(Number(raw));
-                                      const rem = getRemainingReceivable(collectModalDetail);
-                                      return Number.isFinite(n) && n > 0 ? n : rem;
-                                  })(),
-                              ).period}
-                          </span>
-                      </p>
-                      <p>
-                          <span className="text-slate-500">待收余额</span>{' '}
-                          <span className="font-mono font-bold text-amber-700">{formatCurrency(getRemainingReceivable(collectModalDetail))}</span>
-                      </p>
+                  <div className="p-4 space-y-3 text-sm text-slate-700 md:p-5">
+                      <div className="rounded-xl border border-slate-100 bg-slate-50 px-3 py-2">
+                          <div className="truncate font-black text-slate-900">{collectModalDetail.tenantName}</div>
+                          <div className="mt-1 flex items-center justify-between gap-2 text-xs text-slate-500">
+                              <span>查看账期 {receivableMonth}</span>
+                              <span className="font-mono font-bold text-blue-800">
+                                  记入 {resolveRentWriteOffPaymentPeriod(
+                                      collectModalDetail,
+                                      receivableMonth,
+                                      (() => {
+                                          const raw = String(collectModalAmount).replace(/,/g, '').trim();
+                                          const n = roundMoney2(Number(raw));
+                                          const rem = getRemainingReceivable(collectModalDetail);
+                                          return Number.isFinite(n) && n > 0 ? n : rem;
+                                      })(),
+                                  ).period}
+                              </span>
+                          </div>
+                          <div className="mt-2 text-xs text-slate-500">
+                              待收 <span className="font-mono font-bold text-amber-700">{formatCurrency(getRemainingReceivable(collectModalDetail))}</span>
+                          </div>
+                      </div>
                       <p className="text-xs text-slate-500 bg-slate-50 border border-slate-100 rounded-lg px-3 py-2">
                           可分次核销；最后一笔若与待收相差 ≤ {RECEIVABLE_TAIL_TOLERANCE} 元，自动视为结清（备注会标注自动核销尾差）。
                       </p>
@@ -2384,22 +2516,22 @@ export const FinanceManager: React.FC<FinanceManagerProps> = ({
                           />
                       </div>
                   </div>
-                  <div className="px-5 py-4 border-t border-slate-100 flex justify-end gap-2 bg-slate-50/50">
-                      <button type="button" onClick={() => setCollectModalDetail(null)} className="px-4 py-2 rounded-lg border border-slate-200 text-slate-600 hover:bg-white text-sm">取消</button>
-                      <button type="button" onClick={submitCollectModal} className="px-4 py-2 rounded-lg bg-blue-600 text-white hover:bg-blue-700 text-sm font-medium">确认收款</button>
+                  <div className="grid grid-cols-2 gap-2 border-t border-slate-100 bg-slate-50/50 px-4 py-3 pb-[calc(env(safe-area-inset-bottom)+0.75rem)] md:flex md:justify-end md:px-5 md:py-4">
+                      <button type="button" onClick={() => setCollectModalDetail(null)} className="rounded-lg border border-slate-200 px-4 py-2.5 text-sm font-bold text-slate-600 hover:bg-white md:py-2">取消</button>
+                      <button type="button" onClick={submitCollectModal} className="rounded-lg bg-blue-600 px-4 py-2.5 text-sm font-bold text-white hover:bg-blue-700 md:py-2">确认收款</button>
                   </div>
               </div>
           </div>
       )}
 
       {batchPartialOpen && (
-          <div className="fixed inset-0 z-[75] flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
-              <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg max-h-[85vh] overflow-hidden flex flex-col animate-in zoom-in-50 duration-200">
-                  <div className="px-5 py-4 border-b border-slate-100 flex justify-between items-center bg-slate-50/80 shrink-0">
-                      <h3 className="text-lg font-bold text-slate-800">批量核销</h3>
+          <div className="fixed inset-0 z-[75] flex items-end justify-center bg-black/50 backdrop-blur-sm p-0 md:items-center md:p-4">
+              <div className="flex max-h-[88vh] w-full max-w-lg flex-col overflow-hidden rounded-t-2xl bg-white shadow-2xl animate-in slide-in-from-bottom-4 duration-200 md:rounded-2xl md:zoom-in-50">
+                  <div className="px-4 py-3 border-b border-slate-100 flex justify-between items-center bg-slate-50/80 shrink-0 md:px-5 md:py-4">
+                      <h3 className="text-base font-bold text-slate-800 md:text-lg">批量核销</h3>
                       <button type="button" onClick={() => setBatchPartialOpen(false)} className="p-1.5 rounded-lg hover:bg-slate-200 text-slate-500"><X size={22} /></button>
                   </div>
-                  <div className="p-5 overflow-y-auto flex-1 space-y-3 text-sm">
+                  <div className="p-4 overflow-y-auto flex-1 space-y-3 text-sm md:p-5">
                       <p className="text-slate-500 text-xs">账期 <span className="font-mono font-semibold text-slate-800">{receivableMonth}</span>，请确认每笔实收金额（默认可改）。可分次核销；最后一笔尾差 ≤ {RECEIVABLE_TAIL_TOLERANCE} 元视为结清。</p>
                       {Array.from(batchSelectedIds).map((tid) => {
                           const row = receivableFiltered.find((r) => receivableRowKey(r) === tid);
@@ -2422,9 +2554,9 @@ export const FinanceManager: React.FC<FinanceManagerProps> = ({
                           );
                       })}
                   </div>
-                  <div className="px-5 py-4 border-t border-slate-100 flex justify-end gap-2 bg-slate-50/50 shrink-0">
-                      <button type="button" onClick={() => setBatchPartialOpen(false)} className="px-4 py-2 rounded-lg border border-slate-200 text-slate-600 text-sm">取消</button>
-                      <button type="button" onClick={handleBatchConfirmCollection} disabled={!canCollectCurrentFeeTab} className="px-4 py-2 rounded-lg bg-blue-600 text-white hover:bg-blue-700 text-sm font-medium disabled:opacity-50 disabled:cursor-not-allowed">确认批量核销</button>
+                  <div className="grid grid-cols-2 gap-2 border-t border-slate-100 bg-slate-50/50 px-4 py-3 pb-[calc(env(safe-area-inset-bottom)+0.75rem)] shrink-0 md:flex md:justify-end md:px-5 md:py-4">
+                      <button type="button" onClick={() => setBatchPartialOpen(false)} className="rounded-lg border border-slate-200 px-4 py-2.5 text-sm font-bold text-slate-600 md:py-2">取消</button>
+                      <button type="button" onClick={handleBatchConfirmCollection} disabled={!canCollectCurrentFeeTab} className="rounded-lg bg-blue-600 px-4 py-2.5 text-sm font-bold text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50 md:py-2">确认批量核销</button>
                   </div>
               </div>
           </div>
