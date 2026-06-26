@@ -25,19 +25,11 @@ echo -e "${BOLD}${CYAN}║       招商看板 — 远程更新                  
 echo -e "${BOLD}${CYAN}╚══════════════════════════════════════════════════════════╝${NC}"
 echo ""
 
-# 1. 构建（从服务器读取 integration token，注入前端 bundle）
+# 1. 构建前端
 echo -e "${YELLOW}[1/3] 构建前端...${NC}"
-INTEGRATION_TOKEN=""
-if INTEGRATION_TOKEN="$(ssh "${SERVER}" "cat ${REMOTE_DIR}/secrets/integration-internal-token 2>/dev/null" | tr -d '\r\n')"; then
-    if [ -n "${INTEGRATION_TOKEN}" ]; then
-        echo -e "${GREEN}  已读取 integration-internal-token${NC}"
-    else
-        echo -e "${RED}  警告: 服务器未配置 ${REMOTE_DIR}/secrets/integration-internal-token，保存后不会触发网关 KPI 重算${NC}"
-    fi
-else
-    echo -e "${RED}  警告: 无法读取 integration token${NC}"
-fi
-VITE_POCKETBASE_URL=/ VITE_INTEGRATION_INTERNAL_TOKEN="${INTEGRATION_TOKEN}" npm run build
+# 安全要求：INTEGRATION_INTERNAL_TOKEN 只能留在服务端 gateway/MCP 环境。
+# 前端用户态计算与刷新请求走 /api/integration/app/* + Authorization: Bearer，不把内部 token 写入公开 bundle。
+VITE_POCKETBASE_URL=/ npm run build
 echo -e "${GREEN}  构建完成${NC}"
 
 # 2. PocketBase 迁移（新字段须先落库，否则保存报 Something went wrong）

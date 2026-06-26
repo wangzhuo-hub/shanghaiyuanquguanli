@@ -11,8 +11,14 @@ import {
 } from './dashboardMetrics';
 import { isManagementFeeBillingEnabled } from './parkBillingConfig';
 import { receivableBudgetDisplay } from './receivableListHelpers';
-import type { BigScreenEvent } from './bigScreenEvents';
-import type { BigScreenAlert } from './bigScreenAlerts';
+import { generateAllEvents, sortEventsByTime, type BigScreenEvent } from './bigScreenEvents';
+import {
+  generateAllAlerts,
+  generateLowCollectionAlerts,
+  generateLowOccupancyAlerts,
+  sortAlertsByLevel,
+  type BigScreenAlert,
+} from './bigScreenAlerts';
 
 const isManagementFeeBill = (b: BillingDetail) => b.feeKind === 'management_fee';
 const isRentBill = (b: BillingDetail) => !isManagementFeeBill(b);
@@ -185,17 +191,13 @@ export interface BigScreenParkData {
   billingDetails: import('../types').BillingDetail[];
 }
 
-export const buildBigScreenParkData = (
+export const buildBigScreenParkDataFromProcessed = (
   park: ParkInfo,
   rawData: DashboardData,
+  processedData: DashboardData,
   year: number,
   billingSelectedMonth: string,
 ): BigScreenParkData => {
-  const { processedData } = calculateDashboardMetrics(rawData, {
-    year,
-    quarter: 'All' as DashboardQuarter,
-    billingSelectedMonth,
-  });
   const summary = buildKpiSummaryFromProcessedData(processedData, year);
   const annualInitialBudget = summary.annualInitialBudget || 0;
   const annualContractReceivable =
@@ -239,6 +241,80 @@ export const buildBigScreenParkData = (
       ...mgmtMetrics,
     },
     billingDetails,
+  };
+};
+
+export const buildBigScreenParkData = (
+  park: ParkInfo,
+  rawData: DashboardData,
+  year: number,
+  billingSelectedMonth: string,
+): BigScreenParkData => {
+  const { processedData } = calculateDashboardMetrics(rawData, {
+    year,
+    quarter: 'All' as DashboardQuarter,
+    billingSelectedMonth,
+  });
+  return buildBigScreenParkDataFromProcessed(park, rawData, processedData, year, billingSelectedMonth);
+};
+
+export interface BigScreenParkInput {
+  park: ParkInfo;
+  rawData: DashboardData;
+  processedData: DashboardData;
+}
+
+export const buildBigScreenDataFromParkInputs = (
+  inputs: BigScreenParkInput[],
+  year: number,
+  billingSelectedMonth: string,
+  refreshedAt: string = new Date().toISOString(),
+): BigScreenData => {
+  const metrics: BigScreenParkMetric[] = [];
+  const allEvents: BigScreenEvent[] = [];
+  const allAlerts: BigScreenAlert[] = [];
+
+  for (const input of inputs) {
+    const parkData = buildBigScreenParkDataFromProcessed(
+      input.park,
+      input.rawData,
+      input.processedData,
+      year,
+      billingSelectedMonth,
+    );
+    metrics.push(parkData.metrics);
+    allEvents.push(
+      ...generateAllEvents(
+        {
+          tenants: input.rawData.tenants || [],
+          payments: input.rawData.payments || [],
+          invoices: input.rawData.invoices || [],
+          billingDetails: parkData.billingDetails,
+        },
+        input.park.projectId,
+        input.park.name || input.park.projectId,
+      ),
+    );
+    allAlerts.push(
+      ...generateAllAlerts(
+        input.rawData.tenants || [],
+        parkData.billingDetails,
+        input.park.projectId,
+        input.park.name || input.park.projectId,
+      ),
+    );
+  }
+
+  allAlerts.push(...generateLowOccupancyAlerts(metrics));
+  allAlerts.push(...generateLowCollectionAlerts(metrics));
+
+  return {
+    year,
+    parks: metrics,
+    totals: computeTotals(metrics),
+    events: sortEventsByTime(allEvents),
+    alerts: sortAlertsByLevel(allAlerts),
+    refreshedAt,
   };
 };
 

@@ -3,6 +3,4564 @@
 @tailwind utilities;
 
 @layer utilities {
+  .ios-liquid-app {
+    --liquid-primary: #2563eb;
+    --liquid-primary-strong: #1d4ed8;
+    --liquid-cyan: #0891b2;
+    --liquid-ink: #0f172a;
+    --liquid-muted: #64748b;
+    --liquid-app-bg-ambient: linear-gradient(115deg, rgba(255, 255, 255, 0) 0%, rgba(219, 234, 254, 0.58) 42%, rgba(255, 255, 255, 0) 73%);
+    --liquid-app-bg-base: linear-gradient(155deg, #f8fbff 0%, #eef6ff 38%, #fff8f1 72%, #f7fbff 100%);
+    --liquid-material-border: rgba(255, 255, 255, 0.68);
+    --liquid-material-fill: linear-gradient(135deg, rgba(255, 255, 255, 0.72), rgba(255, 255, 255, 0.34));
+    --liquid-material-sheen: linear-gradient(180deg, rgba(255, 255, 255, 0.2), rgba(255, 255, 255, 0.05));
+    --liquid-material-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.88), inset 0 -1px 0 rgba(255, 255, 255, 0.22), 0 22px 64px rgba(15, 23, 42, 0.075);
+    --liquid-material-highlight: linear-gradient(118deg, rgba(255, 255, 255, 0.62), rgba(255, 255, 255, 0.08) 42%, rgba(14, 165, 233, 0.07) 100%);
+    --liquid-material-edge-border: rgba(255, 255, 255, 0.42);
+    --liquid-material-edge-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.16), inset 0 -18px 42px rgba(15, 23, 42, 0.03);
+    --liquid-mobile-readable-fill:
+      linear-gradient(145deg, rgba(255, 255, 255, 0.998), rgba(248, 250, 252, 0.982)),
+      linear-gradient(180deg, rgba(219, 234, 254, 0.08), rgba(255, 255, 255, 0.06));
+    --liquid-mobile-readable-border: rgba(148, 163, 184, 0.42);
+    --liquid-mobile-readable-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.96),
+      0 12px 30px rgba(15, 23, 42, 0.07);
+    --mobile-touch-target: 44px;
+    --mobile-bottom-nav-height: 5.75rem;
+    --mobile-sheet-max-height: 92vh;
+    background:
+      var(--liquid-app-bg-ambient),
+      var(--liquid-app-bg-base);
+  }
+
+  :where(button, a, input, select, textarea, [role="button"], [tabindex]) {
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  :where(button, a, summary, label, [role="button"]) {
+    touch-action: manipulation;
+  }
+
+  @media (max-width: 1023px), (pointer: coarse) {
+    :where(
+      button.liquid-pressable,
+      button.mobile-pressable,
+      button.liquid-glass-control,
+      a.liquid-pressable,
+      a.mobile-pressable,
+      summary.liquid-pressable,
+      label.liquid-pressable,
+      [role="button"].liquid-pressable,
+      [role="button"].mobile-pressable,
+      .liquid-mobile-year-step,
+      .liquid-mobile-bottom-item,
+      .liquid-mobile-more-item,
+      .liquid-mobile-search-chip,
+      .liquid-mobile-filter-button,
+      .liquid-mobile-filter-clear,
+      .liquid-mobile-inline-action,
+      .liquid-mobile-inline-action-strong,
+      .liquid-auth-field,
+      .liquid-auth-park-option,
+      .liquid-building-mobile-action-pill
+    ) {
+      min-height: var(--mobile-touch-target) !important;
+      min-width: var(--mobile-touch-target) !important;
+    }
+  }
+
+  :where(.liquid-pressable, .mobile-pressable, .liquid-glass-control, .liquid-mobile-bottom-item, .liquid-mobile-more-item, .liquid-mobile-year-step, .liquid-auth-field, .liquid-auth-park-option):focus-visible {
+    outline: 2px solid rgba(37, 99, 235, 0.72);
+    outline-offset: 3px;
+    box-shadow:
+      0 0 0 5px rgba(37, 99, 235, 0.14),
+      inset 0 1px 0 rgba(255, 255, 255, 0.82);
+  }
+
+  .liquid-auth-park-option:focus-within {
+    outline: 2px solid rgba(37, 99, 235, 0.72);
+    outline-offset: 3px;
+    box-shadow:
+      0 0 0 5px rgba(37, 99, 235, 0.14),
+      inset 0 1px 0 rgba(255, 255, 255, 0.82);
+  }
+
+  :where(.monthly-detail-table-shell, .monthly-detail-mobile-list, .liquid-drawer-panel, .liquid-settings-panel-body, .liquid-contract-list, .liquid-finance-shell) {
+    overscroll-behavior: contain;
+    scrollbar-gutter: stable;
+  }
+
+  :where(
+    .monthly-detail-mobile-list,
+    .liquid-budget-mobile-layout,
+    .liquid-budget-mobile-months,
+    .liquid-budget-mobile-group-body,
+    .liquid-building-mobile-list,
+    .liquid-contract-mobile-list,
+    .liquid-finance-mobile-list,
+    .liquid-invoice-mobile-list,
+    .liquid-mobile-filter-sheet,
+    .liquid-mobile-filter-options,
+    .liquid-mobile-search-chips,
+    .liquid-mobile-custom-fields-track
+  ) {
+    overscroll-behavior: contain;
+    scrollbar-gutter: stable;
+    -webkit-overflow-scrolling: touch;
+    overflow-anchor: auto;
+  }
+
+  :where(.liquid-budget-mobile-layout, .liquid-building-mobile-list, .liquid-contract-mobile-list, .liquid-finance-mobile-list, .liquid-invoice-mobile-list) {
+    padding-bottom: calc(var(--mobile-bottom-nav-height) + env(safe-area-inset-bottom) + 0.75rem);
+  }
+
+  :where(.liquid-budget-mobile-months, .liquid-mobile-filter-months, .liquid-mobile-search-chips, .liquid-building-switcher, .liquid-mobile-custom-fields-track) {
+    scrollbar-width: none;
+    -webkit-mask-image: linear-gradient(90deg, transparent 0, #000 1rem, #000 calc(100% - 1rem), transparent 100%);
+    mask-image: linear-gradient(90deg, transparent 0, #000 1rem, #000 calc(100% - 1rem), transparent 100%);
+  }
+
+  :where(.liquid-budget-mobile-months, .liquid-mobile-filter-months, .liquid-mobile-search-chips, .liquid-building-switcher, .liquid-mobile-custom-fields-track)::-webkit-scrollbar {
+    display: none;
+  }
+
+  @supports (height: 100dvh) {
+    .ios-liquid-app {
+      min-height: 100dvh;
+    }
+
+    .liquid-glass-sidebar {
+      height: 100dvh;
+    }
+
+    .liquid-drawer-panel {
+      max-height: calc(100dvh - 1rem);
+    }
+  }
+
+  .liquid-glass,
+  .liquid-glass-panel,
+  .liquid-glass-toolbar,
+  .liquid-glass-sidebar,
+  .liquid-glass-control,
+  .liquid-glass-subtle,
+  .liquid-glass-readable,
+  .monthly-detail-panel {
+    --glass-blur: 28px;
+    --glass-saturate: 1.58;
+    position: relative;
+    isolation: isolate;
+    overflow: hidden;
+    border: 1px solid var(--liquid-material-border);
+    background:
+      var(--liquid-material-fill),
+      var(--liquid-material-sheen);
+    box-shadow: var(--liquid-material-shadow);
+    backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+    -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+    transition:
+      background-color 220ms cubic-bezier(0.22, 1, 0.36, 1),
+      box-shadow 220ms cubic-bezier(0.22, 1, 0.36, 1),
+      transform 220ms cubic-bezier(0.22, 1, 0.36, 1);
+  }
+
+  .liquid-glass::before,
+  .liquid-glass-panel::before,
+  .liquid-glass-toolbar::before,
+  .liquid-glass-sidebar::before,
+  .liquid-glass-control::before,
+  .liquid-glass-subtle::before,
+  .liquid-glass-readable::before,
+  .monthly-detail-panel::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    z-index: -1;
+    border-radius: inherit;
+    background: var(--liquid-material-highlight);
+    opacity: 0.78;
+    pointer-events: none;
+  }
+
+  .liquid-glass::after,
+  .liquid-glass-panel::after,
+  .liquid-glass-toolbar::after,
+  .liquid-glass-sidebar::after,
+  .liquid-glass-control::after,
+  .liquid-glass-subtle::after,
+  .liquid-glass-readable::after,
+  .monthly-detail-panel::after {
+    content: "";
+    position: absolute;
+    inset: 1px;
+    z-index: -1;
+    border-radius: inherit;
+    border: 1px solid var(--liquid-material-edge-border);
+    box-shadow: var(--liquid-material-edge-shadow);
+    pointer-events: none;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    .ios-liquid-app {
+      color-scheme: dark;
+      --liquid-ink: #e5edf8;
+      --liquid-muted: #9fb0c7;
+      --liquid-app-bg-ambient:
+        radial-gradient(circle at 16% 8%, rgba(59, 130, 246, 0.18), transparent 34%),
+        radial-gradient(circle at 88% 18%, rgba(14, 165, 233, 0.14), transparent 30%);
+      --liquid-app-bg-base: linear-gradient(155deg, #07111f 0%, #0f1c2d 44%, #101827 72%, #08111f 100%);
+      --liquid-material-border: rgba(148, 163, 184, 0.28);
+      --liquid-material-fill: linear-gradient(135deg, rgba(15, 23, 42, 0.72), rgba(15, 23, 42, 0.46));
+      --liquid-material-sheen: linear-gradient(180deg, rgba(255, 255, 255, 0.12), rgba(148, 163, 184, 0.04));
+      --liquid-material-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.14), inset 0 -1px 0 rgba(15, 23, 42, 0.42), 0 26px 76px rgba(0, 0, 0, 0.32);
+      --liquid-material-highlight: linear-gradient(118deg, rgba(255, 255, 255, 0.18), rgba(148, 163, 184, 0.04) 46%, rgba(14, 165, 233, 0.12) 100%);
+      --liquid-material-edge-border: rgba(255, 255, 255, 0.12);
+      --liquid-material-edge-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08), inset 0 -18px 42px rgba(0, 0, 0, 0.2);
+      color: var(--liquid-ink);
+    }
+
+    .ios-liquid-app :where(.liquid-glass-readable, .liquid-mobile-readable, .monthly-detail-panel) {
+      border-color: rgba(148, 163, 184, 0.34);
+      background:
+        linear-gradient(145deg, rgba(15, 23, 42, 0.9), rgba(30, 41, 59, 0.78)),
+        linear-gradient(180deg, rgba(14, 165, 233, 0.08), rgba(15, 23, 42, 0.12));
+      color: var(--liquid-ink);
+    }
+
+    .ios-liquid-app :where(.text-slate-950, .text-slate-900, .text-slate-800, .text-slate-700) {
+      color: var(--liquid-ink);
+    }
+
+    .ios-liquid-app :where(.text-slate-600, .text-slate-500, .text-slate-400) {
+      color: var(--liquid-muted);
+    }
+
+    .ios-liquid-app :where(.border-slate-200\/75, .border-slate-200\/70, .border-slate-200\/60, .border-white\/70, .border-white\/60) {
+      border-color: rgba(148, 163, 184, 0.24);
+    }
+
+    .ios-liquid-app :where(.bg-white\/95, .bg-white\/90, .bg-white\/80, .bg-white\/76, .bg-white\/70, .bg-white\/64, .bg-white\/60) {
+      background-color: rgba(15, 23, 42, 0.78);
+    }
+
+    .ios-liquid-app.mobile-typography-guard :where(
+      .liquid-glass-toolbar,
+      .liquid-mobile-toolbar-shell,
+      .liquid-mobile-dashboard-shell,
+      .liquid-mobile-hero,
+      .liquid-mobile-dashboard-hero,
+      .liquid-mobile-dashboard-section,
+      .liquid-mobile-readable,
+      .liquid-mobile-context-line,
+      .liquid-mobile-park-picker,
+      .liquid-mobile-park-option,
+      .liquid-mobile-focus-cell,
+      .liquid-mobile-primary-metric,
+      .liquid-mobile-micro-card,
+      .mobile-dashboard-custom-fields,
+      .liquid-mobile-custom-field,
+      .liquid-mobile-task-card,
+      .liquid-mobile-task-empty,
+      .liquid-mobile-empty-state,
+      .liquid-mobile-bottom-nav,
+      .liquid-mobile-bottom-readable
+    ) {
+      color: #0f172a !important;
+      border-color: rgba(203, 213, 225, 0.78);
+      background:
+        linear-gradient(145deg, rgba(255, 255, 255, 0.97), rgba(248, 250, 252, 0.9)),
+        linear-gradient(180deg, rgba(219, 234, 254, 0.14), rgba(255, 255, 255, 0.08));
+      box-shadow:
+        inset 0 1px 0 rgba(255, 255, 255, 0.9),
+        0 12px 32px rgba(15, 23, 42, 0.08);
+    }
+
+    .ios-liquid-app.mobile-typography-guard :where(
+      .liquid-glass-toolbar,
+      .liquid-mobile-toolbar-shell,
+      .liquid-mobile-dashboard-shell,
+      .liquid-mobile-hero,
+      .liquid-mobile-dashboard-hero,
+      .liquid-mobile-dashboard-section,
+      .liquid-mobile-readable,
+      .liquid-mobile-context-line,
+      .liquid-mobile-focus-cell,
+      .liquid-mobile-primary-metric,
+      .liquid-mobile-micro-card,
+      .mobile-dashboard-custom-fields,
+      .liquid-mobile-custom-field,
+      .liquid-mobile-task-card,
+      .liquid-mobile-task-empty,
+      .liquid-mobile-empty-state,
+      .liquid-mobile-bottom-nav,
+      .liquid-mobile-bottom-readable
+    ) :where(.text-slate-950, .text-slate-900, .text-slate-800, .text-slate-700) {
+      color: #0f172a !important;
+    }
+
+    .ios-liquid-app.mobile-typography-guard :where(
+      .liquid-glass-toolbar,
+      .liquid-mobile-toolbar-shell,
+      .liquid-mobile-dashboard-shell,
+      .liquid-mobile-hero,
+      .liquid-mobile-dashboard-hero,
+      .liquid-mobile-dashboard-section,
+      .liquid-mobile-readable,
+      .liquid-mobile-context-line,
+      .liquid-mobile-focus-cell,
+      .liquid-mobile-primary-metric,
+      .liquid-mobile-micro-card,
+      .mobile-dashboard-custom-fields,
+      .liquid-mobile-custom-field,
+      .liquid-mobile-task-card,
+      .liquid-mobile-task-empty,
+      .liquid-mobile-empty-state,
+      .liquid-mobile-bottom-nav,
+      .liquid-mobile-bottom-readable
+    ) :where(.text-slate-600, .text-slate-500, .text-slate-400) {
+      color: #475569 !important;
+    }
+
+    .ios-liquid-app.mobile-typography-guard :where(.liquid-mobile-task-action) {
+      color: #1d4ed8 !important;
+      background: rgba(239, 246, 255, 0.92);
+    }
+
+    .ios-liquid-app.mobile-typography-guard :where(.liquid-mobile-top-pill) {
+      color: #1d4ed8 !important;
+      border-color: rgba(191, 219, 254, 0.76);
+      background:
+        linear-gradient(145deg, rgba(255, 255, 255, 0.94), rgba(239, 246, 255, 0.78));
+    }
+
+    .ios-liquid-app.mobile-typography-guard :where(.liquid-mobile-bottom-item-idle) {
+      color: #475569 !important;
+    }
+
+    .ios-liquid-app.mobile-typography-guard :where(.liquid-mobile-bottom-item-active) {
+      color: #fff;
+      border-color: rgba(255, 255, 255, 0.58);
+      background:
+        linear-gradient(145deg, rgba(37, 99, 235, 0.96), rgba(14, 165, 233, 0.8));
+      box-shadow:
+        inset 0 1px 0 rgba(255, 255, 255, 0.38),
+        0 12px 28px rgba(37, 99, 235, 0.24);
+    }
+
+    .ios-liquid-app.mobile-typography-guard :where(.liquid-mobile-bottom-item-active) :where(svg, span) {
+      color: #fff;
+    }
+
+    .ios-liquid-app :where(.liquid-auth-panel) {
+      color: #0f172a;
+      border-color: rgba(226, 232, 240, 0.78);
+      background:
+        linear-gradient(145deg, rgba(255, 255, 255, 0.98), rgba(248, 250, 252, 0.9)),
+        linear-gradient(180deg, rgba(219, 234, 254, 0.16), rgba(255, 255, 255, 0.08));
+      box-shadow:
+        inset 0 1px 0 rgba(255, 255, 255, 0.92),
+        0 34px 92px rgba(0, 0, 0, 0.28);
+    }
+
+    .ios-liquid-app :where(.liquid-auth-panel) :where(.text-slate-950, .text-slate-900, .text-slate-800, .text-slate-700) {
+      color: #0f172a !important;
+    }
+
+    .ios-liquid-app :where(.liquid-auth-panel) :where(.text-slate-600, .text-slate-500, .text-slate-400) {
+      color: #475569 !important;
+    }
+
+    .ios-liquid-app :where(.liquid-auth-panel) :where(.text-blue-700, .text-blue-700\/75, .text-blue-700\/80) {
+      color: #1d4ed8 !important;
+    }
+
+    .ios-liquid-app :where(.liquid-auth-segment, .liquid-auth-field) {
+      color: #0f172a;
+      border-color: rgba(203, 213, 225, 0.78);
+      background:
+        linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(248, 250, 252, 0.92));
+      box-shadow:
+        inset 0 1px 0 rgba(255, 255, 255, 0.94),
+        0 8px 22px rgba(15, 23, 42, 0.08);
+    }
+
+    .ios-liquid-app :where(.liquid-auth-field)::placeholder {
+      color: #64748b;
+      opacity: 1;
+    }
+  }
+
+  .liquid-glass-panel {
+    --glass-blur: 26px;
+    --glass-saturate: 1.45;
+    background:
+      linear-gradient(140deg, rgba(255, 255, 255, 0.62), rgba(255, 255, 255, 0.28)),
+      linear-gradient(180deg, rgba(239, 246, 255, 0.28), rgba(255, 248, 241, 0.12));
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.82),
+      0 34px 96px rgba(15, 23, 42, 0.09);
+  }
+
+  .liquid-glass-toolbar {
+    --glass-blur: 30px;
+    --glass-saturate: 1.68;
+    background:
+      linear-gradient(135deg, rgba(255, 255, 255, 0.78), rgba(255, 255, 255, 0.42)),
+      linear-gradient(90deg, rgba(255, 255, 255, 0.22), rgba(14, 165, 233, 0.06), rgba(245, 158, 11, 0.04));
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.9),
+      0 14px 42px rgba(15, 23, 42, 0.08);
+  }
+
+  .liquid-glass-sidebar {
+    --glass-blur: 30px;
+    --glass-saturate: 1.55;
+    position: fixed;
+    background:
+      linear-gradient(180deg, rgba(255, 255, 255, 0.66), rgba(255, 255, 255, 0.3)),
+      linear-gradient(145deg, rgba(239, 246, 255, 0.36), rgba(255, 248, 241, 0.13));
+    box-shadow:
+      inset -1px 0 0 rgba(255, 255, 255, 0.55),
+      0 24px 78px rgba(15, 23, 42, 0.085);
+  }
+
+  .liquid-glass-control,
+  .liquid-glass-subtle {
+    --glass-blur: 18px;
+    --glass-saturate: 1.45;
+    background:
+      linear-gradient(135deg, rgba(255, 255, 255, 0.68), rgba(255, 255, 255, 0.34)),
+      linear-gradient(180deg, rgba(255, 255, 255, 0.18), rgba(255, 255, 255, 0.04));
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.82),
+      0 8px 26px rgba(15, 23, 42, 0.06);
+  }
+
+  .liquid-glass-subtle {
+    --glass-blur: 14px;
+    --glass-saturate: 1.25;
+    border-color: rgba(255, 255, 255, 0.58);
+    background: rgba(255, 255, 255, 0.48);
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.7),
+      0 10px 28px rgba(15, 23, 42, 0.04);
+  }
+
+  .liquid-glass-readable {
+    --glass-blur: 12px;
+    --glass-saturate: 1.2;
+    border-color: rgba(226, 232, 240, 0.72);
+    background:
+      linear-gradient(145deg, rgba(255, 255, 255, 0.86), rgba(248, 250, 252, 0.68)),
+      linear-gradient(180deg, rgba(255, 255, 255, 0.42), rgba(255, 255, 255, 0.18));
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.92),
+      0 14px 38px rgba(15, 23, 42, 0.06);
+  }
+
+  .liquid-icon-well {
+    background: rgba(255, 255, 255, 0.58);
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.78),
+      0 8px 20px rgba(15, 23, 42, 0.05);
+    backdrop-filter: blur(18px) saturate(1.55);
+    -webkit-backdrop-filter: blur(18px) saturate(1.55);
+  }
+
+  .liquid-nav-active {
+    background:
+      linear-gradient(135deg, rgba(37, 99, 235, 0.18), rgba(255, 255, 255, 0.48));
+    color: #1e3a8a;
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.8),
+      0 10px 28px rgba(37, 99, 235, 0.12);
+  }
+
+  .liquid-action {
+    background:
+      linear-gradient(135deg, rgba(219, 234, 254, 0.68), rgba(255, 255, 255, 0.5));
+    color: #1e40af;
+  }
+
+  .liquid-action-strong {
+    background:
+      linear-gradient(135deg, rgba(37, 99, 235, 0.92), rgba(8, 145, 178, 0.76));
+    color: white;
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.44),
+      0 16px 36px rgba(37, 99, 235, 0.2);
+  }
+
+  .liquid-pressable {
+    transition:
+      transform 220ms cubic-bezier(0.22, 1, 0.36, 1),
+      box-shadow 220ms cubic-bezier(0.22, 1, 0.36, 1),
+      filter 220ms ease;
+    will-change: transform;
+  }
+
+  .liquid-pressable:hover {
+    transform: translateY(-1px);
+  }
+
+  .liquid-pressable:active {
+    transform: translateY(1px) scale(0.985);
+    filter: saturate(1.05);
+  }
+
+  .liquid-dial-button {
+    filter: drop-shadow(0 30px 70px rgba(37, 99, 235, 0.12));
+  }
+
+  .liquid-dial-track,
+  .liquid-dial-progress {
+    -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 38px), #000 calc(100% - 37px));
+    mask: radial-gradient(farthest-side, transparent calc(100% - 38px), #000 calc(100% - 37px));
+  }
+
+  .liquid-dial-track {
+    background:
+      conic-gradient(rgba(255, 255, 255, 0.68), rgba(226, 232, 240, 0.62), rgba(255, 255, 255, 0.74));
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.88),
+      0 22px 64px rgba(15, 23, 42, 0.06);
+  }
+
+  .liquid-dial-progress {
+    background:
+      conic-gradient(var(--liquid-primary) var(--dial-progress, 0deg), rgba(255, 255, 255, 0.12) 0deg);
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.62),
+      0 18px 48px rgba(37, 99, 235, 0.16);
+  }
+
+  .liquid-dial-core {
+    position: absolute;
+    isolation: isolate;
+    overflow: hidden;
+    background:
+      linear-gradient(145deg, rgba(255, 255, 255, 0.78), rgba(255, 255, 255, 0.38)),
+      linear-gradient(180deg, rgba(239, 246, 255, 0.3), rgba(255, 248, 241, 0.12));
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.88),
+      inset 0 -22px 64px rgba(37, 99, 235, 0.055),
+      0 24px 80px rgba(15, 23, 42, 0.07);
+    backdrop-filter: blur(24px) saturate(1.42);
+    -webkit-backdrop-filter: blur(24px) saturate(1.42);
+  }
+
+  .liquid-dial-core::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    z-index: -1;
+    border-radius: inherit;
+    background:
+      linear-gradient(112deg, rgba(255, 255, 255, 0.72), rgba(255, 255, 255, 0.06) 44%, rgba(37, 99, 235, 0.08) 100%);
+    pointer-events: none;
+  }
+
+  .liquid-dial-shine {
+    background:
+      linear-gradient(112deg, rgba(255, 255, 255, 0.48), rgba(255, 255, 255, 0.06) 45%, rgba(14, 165, 233, 0.1));
+    mix-blend-mode: screen;
+    opacity: 0.76;
+  }
+
+  .liquid-metric-strip {
+    background:
+      linear-gradient(135deg, rgba(255, 255, 255, 0.88), rgba(248, 250, 252, 0.7)),
+      linear-gradient(90deg, rgba(219, 234, 254, 0.25), rgba(255, 248, 241, 0.12));
+  }
+
+  .liquid-custom-field {
+    background:
+      linear-gradient(145deg, rgba(255, 255, 255, 0.78), rgba(248, 250, 252, 0.58));
+  }
+
+  .liquid-custom-field:hover {
+    background:
+      linear-gradient(145deg, rgba(255, 255, 255, 0.9), rgba(239, 246, 255, 0.62));
+    transform: translateY(-1px);
+  }
+
+  .liquid-alert {
+    border: 1px solid rgba(251, 191, 36, 0.34);
+    background:
+      linear-gradient(135deg, rgba(255, 251, 235, 0.68), rgba(255, 255, 255, 0.34));
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.72),
+      0 14px 42px rgba(180, 83, 9, 0.08);
+    backdrop-filter: blur(24px) saturate(1.45);
+    -webkit-backdrop-filter: blur(24px) saturate(1.45);
+  }
+
+  .monthly-detail-backdrop {
+    background:
+      linear-gradient(155deg, rgba(248, 251, 255, 0.24), rgba(15, 23, 42, 0.32)),
+      rgba(15, 23, 42, 0.26);
+    backdrop-filter: blur(22px) saturate(1.05);
+    -webkit-backdrop-filter: blur(22px) saturate(1.05);
+  }
+
+  .monthly-detail-panel {
+    --glass-blur: 16px;
+    --glass-saturate: 1.16;
+    border-color: rgba(226, 232, 240, 0.72);
+    background:
+      linear-gradient(140deg, rgba(255, 255, 255, 0.96), rgba(248, 251, 255, 0.9)),
+      linear-gradient(180deg, rgba(239, 246, 255, 0.48), rgba(255, 248, 241, 0.2));
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.96),
+      0 34px 100px rgba(15, 23, 42, 0.18);
+  }
+
+  .monthly-detail-panel::before {
+    background:
+      linear-gradient(120deg, rgba(255, 255, 255, 0.5), rgba(255, 255, 255, 0.1) 46%, rgba(14, 165, 233, 0.06) 100%);
+    opacity: 0.42;
+  }
+
+  .monthly-detail-panel::after {
+    border-color: rgba(148, 163, 184, 0.26);
+    box-shadow:
+      inset 0 0 0 1px rgba(255, 255, 255, 0.55),
+      inset 0 -18px 42px rgba(15, 23, 42, 0.025);
+  }
+
+  .monthly-detail-table-shell {
+    background:
+      linear-gradient(180deg, rgba(255, 255, 255, 0.94), rgba(248, 250, 252, 0.9));
+  }
+
+  .monthly-detail-mobile-card {
+    border: 1px solid rgba(226, 232, 240, 0.78);
+    background:
+      linear-gradient(145deg, rgba(255, 255, 255, 0.92), rgba(248, 250, 252, 0.78)),
+      linear-gradient(180deg, rgba(219, 234, 254, 0.16), rgba(255, 255, 255, 0.06));
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.9),
+      0 10px 28px rgba(15, 23, 42, 0.055);
+  }
+
+  .monthly-detail-mobile-total {
+    border: 1px solid rgba(255, 255, 255, 0.2);
+    background:
+      linear-gradient(135deg, rgba(15, 23, 42, 0.98), rgba(30, 41, 59, 0.94)),
+      linear-gradient(90deg, rgba(37, 99, 235, 0.16), rgba(14, 165, 233, 0.12));
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.1),
+      0 -10px 24px rgba(15, 23, 42, 0.14);
+  }
+
+  .liquid-mobile-card {
+    color: #0f172a;
+    border: 1px solid var(--liquid-mobile-readable-border);
+    background: var(--liquid-mobile-readable-fill);
+    box-shadow: var(--liquid-mobile-readable-shadow);
+    backdrop-filter: blur(18px) saturate(1.28);
+    -webkit-backdrop-filter: blur(18px) saturate(1.28);
+  }
+
+  .liquid-mobile-dashboard-shell {
+    color: #0f172a;
+    border-color: rgba(148, 163, 184, 0.44);
+    background:
+      linear-gradient(145deg, rgba(255, 255, 255, 0.998), rgba(248, 250, 252, 0.986)),
+      radial-gradient(circle at 92% 10%, rgba(219, 234, 254, 0.18), transparent 34%);
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.98),
+      0 16px 36px rgba(15, 23, 42, 0.08);
+  }
+
+  .liquid-mobile-hero {
+    color: #0f172a;
+    border-bottom: 1px solid var(--liquid-mobile-readable-border);
+    background:
+      radial-gradient(circle at 88% 10%, rgba(191, 219, 254, 0.24), transparent 34%),
+      var(--liquid-mobile-readable-fill);
+    box-shadow: inset 0 -1px 0 rgba(255, 255, 255, 0.78);
+  }
+
+  .liquid-mobile-dashboard-hero {
+    color: #0f172a;
+    border-bottom-color: rgba(148, 163, 184, 0.36);
+    background:
+      radial-gradient(circle at 88% 8%, rgba(191, 219, 254, 0.16), transparent 34%),
+      linear-gradient(145deg, rgba(255, 255, 255, 0.998), rgba(248, 250, 252, 0.972));
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.96),
+      inset 0 -1px 0 rgba(203, 213, 225, 0.46);
+  }
+
+  .liquid-mobile-dashboard-section {
+    color: #0f172a;
+    background:
+      linear-gradient(180deg, rgba(255, 255, 255, 0.99), rgba(248, 250, 252, 0.97));
+  }
+
+  .liquid-mobile-toolbar-shell {
+    color: #0f172a;
+  }
+
+  @media (max-width: 640px) {
+    .liquid-mobile-toolbar-shell {
+      border-color: rgba(148, 163, 184, 0.38);
+      background:
+        linear-gradient(145deg, rgba(255, 255, 255, 0.988), rgba(248, 250, 252, 0.94)),
+        linear-gradient(180deg, rgba(219, 234, 254, 0.16), rgba(255, 255, 255, 0.08));
+      box-shadow:
+        inset 0 1px 0 rgba(255, 255, 255, 0.94),
+        0 10px 26px rgba(15, 23, 42, 0.08);
+    }
+  }
+
+  .liquid-mobile-primary-metric {
+    color: #0f172a;
+    border: 1px solid var(--liquid-mobile-readable-border);
+    background:
+      radial-gradient(circle at 90% 6%, rgba(191, 219, 254, 0.24), transparent 36%),
+      var(--liquid-mobile-readable-fill);
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.92),
+      0 14px 34px rgba(15, 23, 42, 0.08);
+    backdrop-filter: blur(10px) saturate(1.16);
+    -webkit-backdrop-filter: blur(10px) saturate(1.16);
+  }
+
+  .liquid-mobile-primary-label {
+    color: #334155;
+  }
+
+  .liquid-mobile-primary-value {
+    color: #1d4ed8;
+  }
+
+  .liquid-mobile-primary-helper {
+    color: #1e293b;
+  }
+
+  .liquid-mobile-primary-badge {
+    color: #1d4ed8;
+    border: 1px solid rgba(191, 219, 254, 0.76);
+    background:
+      linear-gradient(145deg, rgba(239, 246, 255, 0.96), rgba(255, 255, 255, 0.82));
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.84),
+      0 7px 16px rgba(37, 99, 235, 0.12);
+  }
+
+  .liquid-mobile-top-pill {
+    border: 1px solid rgba(186, 230, 253, 0.74);
+    background:
+      linear-gradient(145deg, rgba(255, 255, 255, 0.84), rgba(239, 246, 255, 0.58));
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.84),
+      0 8px 20px rgba(15, 23, 42, 0.05);
+    backdrop-filter: blur(16px) saturate(1.35);
+    -webkit-backdrop-filter: blur(16px) saturate(1.35);
+  }
+
+  .liquid-mobile-park-trigger {
+    max-width: min(42vw, 9.5rem);
+  }
+
+  .liquid-mobile-park-picker {
+    color: #0f172a;
+    border: 1px solid rgba(148, 163, 184, 0.36);
+    background:
+      linear-gradient(145deg, rgba(255, 255, 255, 0.988), rgba(248, 250, 252, 0.94)),
+      radial-gradient(circle at 92% 6%, rgba(191, 219, 254, 0.22), transparent 32%);
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.94),
+      0 18px 52px rgba(15, 23, 42, 0.16);
+    backdrop-filter: blur(24px) saturate(1.42);
+    -webkit-backdrop-filter: blur(24px) saturate(1.42);
+  }
+
+  .liquid-mobile-park-option {
+    color: #0f172a;
+    border: 1px solid rgba(148, 163, 184, 0.3);
+    background:
+      linear-gradient(145deg, rgba(255, 255, 255, 0.98), rgba(248, 250, 252, 0.9)),
+      linear-gradient(180deg, rgba(219, 234, 254, 0.1), rgba(255, 255, 255, 0.05));
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.9),
+      0 9px 22px rgba(15, 23, 42, 0.06);
+  }
+
+  .liquid-mobile-park-option-active {
+    border-color: rgba(147, 197, 253, 0.8);
+    background:
+      linear-gradient(145deg, rgba(219, 234, 254, 0.96), rgba(255, 255, 255, 0.9)),
+      linear-gradient(180deg, rgba(14, 165, 233, 0.14), rgba(255, 255, 255, 0.05));
+  }
+
+  .liquid-mobile-toolbar-title {
+    color: #0f172a;
+    line-height: 1.25rem;
+  }
+
+  .liquid-mobile-context-line {
+    width: fit-content;
+    max-width: 100%;
+    border: 1px solid rgba(203, 213, 225, 0.82);
+    color: #334155;
+    background: var(--liquid-mobile-readable-fill);
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.84),
+      0 6px 16px rgba(15, 23, 42, 0.04);
+    backdrop-filter: blur(10px) saturate(1.16);
+    -webkit-backdrop-filter: blur(10px) saturate(1.16);
+  }
+
+  .liquid-mobile-control {
+    border: 1px solid rgba(191, 219, 254, 0.68);
+    background:
+      linear-gradient(145deg, rgba(255, 255, 255, 0.88), rgba(239, 246, 255, 0.66));
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.78),
+      0 8px 20px rgba(37, 99, 235, 0.08);
+    backdrop-filter: blur(12px) saturate(1.22);
+    -webkit-backdrop-filter: blur(12px) saturate(1.22);
+  }
+
+  .liquid-mobile-readable {
+    color: #0f172a;
+    border: 1px solid var(--liquid-mobile-readable-border);
+    background: var(--liquid-mobile-readable-fill);
+    box-shadow: var(--liquid-mobile-readable-shadow);
+  }
+
+  .liquid-mobile-focus-cell {
+    min-height: var(--mobile-touch-target);
+    color: #0f172a;
+    border-color: rgba(148, 163, 184, 0.34);
+    background:
+      linear-gradient(145deg, rgba(255, 255, 255, 0.995), rgba(248, 250, 252, 0.96)),
+      linear-gradient(180deg, rgba(219, 234, 254, 0.12), rgba(255, 255, 255, 0.08));
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.95),
+      0 10px 24px rgba(15, 23, 42, 0.065);
+    backdrop-filter: blur(10px) saturate(1.16);
+    -webkit-backdrop-filter: blur(10px) saturate(1.16);
+  }
+
+  .liquid-mobile-custom-field {
+    color: #0f172a;
+    border: 1px solid rgba(148, 163, 184, 0.34);
+    background:
+      linear-gradient(145deg, rgba(255, 255, 255, 0.995), rgba(248, 250, 252, 0.96)),
+      linear-gradient(180deg, rgba(219, 234, 254, 0.12), rgba(255, 255, 255, 0.08));
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.95),
+      0 10px 24px rgba(15, 23, 42, 0.065);
+    backdrop-filter: blur(10px) saturate(1.16);
+    -webkit-backdrop-filter: blur(10px) saturate(1.16);
+  }
+
+  .mobile-dashboard-custom-fields {
+    color: #0f172a;
+    border-color: var(--liquid-mobile-readable-border);
+    background:
+      linear-gradient(145deg, rgba(255, 255, 255, 0.99), rgba(248, 250, 252, 0.955)),
+      linear-gradient(180deg, rgba(219, 234, 254, 0.1), rgba(255, 255, 255, 0.08));
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.9),
+      0 -8px 24px rgba(15, 23, 42, 0.055);
+  }
+
+  .liquid-mobile-task-card,
+  .liquid-mobile-task-empty,
+  .liquid-mobile-empty-state {
+    border: 1px solid var(--liquid-mobile-readable-border);
+    color: #0f172a;
+    background: var(--liquid-mobile-readable-fill);
+    box-shadow: var(--liquid-mobile-readable-shadow);
+    backdrop-filter: blur(10px) saturate(1.16);
+    -webkit-backdrop-filter: blur(10px) saturate(1.16);
+  }
+
+  .liquid-mobile-empty-state {
+    background:
+      radial-gradient(circle at 82% 6%, rgba(186, 230, 253, 0.28), transparent 34%),
+      linear-gradient(145deg, rgba(255, 255, 255, 0.93), rgba(248, 250, 252, 0.74)),
+      linear-gradient(180deg, rgba(219, 234, 254, 0.14), rgba(255, 255, 255, 0.04));
+  }
+
+  .liquid-mobile-task-card--blue {
+    border-color: rgba(147, 197, 253, 0.58);
+  }
+
+  .liquid-mobile-task-card--cyan {
+    border-color: rgba(125, 211, 252, 0.58);
+  }
+
+  .liquid-mobile-task-card--amber {
+    border-color: rgba(251, 191, 36, 0.5);
+    background:
+      linear-gradient(145deg, rgba(255, 251, 235, 0.98), rgba(255, 255, 255, 0.92)),
+      linear-gradient(180deg, rgba(251, 191, 36, 0.12), rgba(255, 255, 255, 0.08));
+  }
+
+  .liquid-mobile-task-card--rose {
+    border-color: rgba(251, 113, 133, 0.46);
+    background:
+      linear-gradient(145deg, rgba(255, 241, 242, 0.99), rgba(255, 255, 255, 0.92)),
+      linear-gradient(180deg, rgba(251, 113, 133, 0.12), rgba(255, 255, 255, 0.08));
+  }
+
+  .liquid-mobile-task-icon {
+    color: #1d4ed8;
+    border: 1px solid rgba(191, 219, 254, 0.64);
+    background:
+      linear-gradient(145deg, rgba(239, 246, 255, 0.92), rgba(255, 255, 255, 0.68));
+  }
+
+  .liquid-mobile-task-card--amber .liquid-mobile-task-icon {
+    color: #b45309;
+    border-color: rgba(251, 191, 36, 0.54);
+    background:
+      linear-gradient(145deg, rgba(254, 243, 199, 0.82), rgba(255, 255, 255, 0.68));
+  }
+
+  .liquid-mobile-task-card--rose .liquid-mobile-task-icon {
+    color: #be123c;
+    border-color: rgba(251, 113, 133, 0.46);
+    background:
+      linear-gradient(145deg, rgba(255, 228, 230, 0.88), rgba(255, 255, 255, 0.7));
+  }
+
+  .liquid-mobile-task-action {
+    color: #1d4ed8;
+    border: 1px solid rgba(191, 219, 254, 0.7);
+    background: rgba(239, 246, 255, 0.84);
+  }
+
+  .liquid-mobile-search-chip {
+    color: #475569;
+    border: 1px solid rgba(203, 213, 225, 0.72);
+    background:
+      linear-gradient(145deg, rgba(255, 255, 255, 0.9), rgba(239, 246, 255, 0.66));
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.82),
+      0 6px 16px rgba(15, 23, 42, 0.045);
+  }
+
+  .liquid-mobile-search-chip-active {
+    color: #1d4ed8;
+    border-color: rgba(255, 255, 255, 0.86);
+    background:
+      linear-gradient(145deg, rgba(255, 255, 255, 0.92), rgba(239, 246, 255, 0.82));
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.92),
+      0 8px 18px rgba(15, 23, 42, 0.1);
+  }
+
+  .liquid-mobile-filter-button {
+    color: #1d4ed8;
+    border: 1px solid rgba(191, 219, 254, 0.76);
+    background:
+      linear-gradient(145deg, rgba(255, 255, 255, 0.92), rgba(239, 246, 255, 0.72));
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.84),
+      0 8px 18px rgba(37, 99, 235, 0.08);
+  }
+
+  .liquid-mobile-filter-count {
+    color: #1d4ed8;
+    background: rgba(219, 234, 254, 0.92);
+  }
+
+  .liquid-mobile-filter-clear {
+    color: #1d4ed8;
+    border: 1px solid rgba(191, 219, 254, 0.72);
+    background:
+      linear-gradient(145deg, rgba(255, 255, 255, 0.92), rgba(239, 246, 255, 0.7));
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.86),
+      0 6px 14px rgba(37, 99, 235, 0.08);
+  }
+
+  .liquid-mobile-filter-backdrop {
+    background:
+      linear-gradient(155deg, rgba(248, 251, 255, 0.16), rgba(15, 23, 42, 0.26)),
+      rgba(15, 23, 42, 0.2);
+    backdrop-filter: blur(14px) saturate(1.08);
+    -webkit-backdrop-filter: blur(14px) saturate(1.08);
+  }
+
+  .liquid-mobile-filter-sheet {
+    border: 1px solid rgba(255, 255, 255, 0.76);
+    background:
+      linear-gradient(145deg, rgba(255, 255, 255, 0.94), rgba(239, 246, 255, 0.76)),
+      linear-gradient(180deg, rgba(255, 255, 255, 0.34), rgba(255, 255, 255, 0.12));
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.96),
+      0 26px 70px rgba(15, 23, 42, 0.22);
+    backdrop-filter: blur(24px) saturate(1.36);
+    -webkit-backdrop-filter: blur(24px) saturate(1.36);
+  }
+
+  .liquid-mobile-filter-options,
+  .liquid-mobile-filter-option {
+    border: 1px solid rgba(226, 232, 240, 0.68);
+    background:
+      linear-gradient(145deg, rgba(255, 255, 255, 0.78), rgba(248, 251, 255, 0.54));
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.8);
+  }
+
+  .liquid-mobile-filter-option {
+    color: #334155;
+  }
+
+  .liquid-mobile-filter-option-active {
+    color: #1d4ed8;
+    border-color: rgba(147, 197, 253, 0.82);
+    background:
+      linear-gradient(145deg, rgba(219, 234, 254, 0.88), rgba(255, 255, 255, 0.76)),
+      linear-gradient(180deg, rgba(14, 165, 233, 0.14), rgba(255, 255, 255, 0.04));
+  }
+
+  .liquid-mobile-action,
+  .liquid-mobile-inline-action,
+  .liquid-mobile-inline-action-strong,
+  .liquid-mobile-year-control,
+  .liquid-mobile-search-chip,
+  .liquid-mobile-filter-button,
+  .liquid-mobile-filter-clear,
+  .liquid-mobile-filter-sheet,
+  .liquid-mobile-filter-option,
+  .liquid-mobile-micro-card,
+  .liquid-mobile-bottom-nav,
+  .liquid-mobile-bottom-item-active {
+    backdrop-filter: blur(18px) saturate(1.45);
+    -webkit-backdrop-filter: blur(18px) saturate(1.45);
+  }
+
+  .liquid-mobile-action {
+    border: 1px solid rgba(255, 255, 255, 0.54);
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.5),
+      0 10px 24px rgba(15, 23, 42, 0.095);
+  }
+
+  .liquid-mobile-action-blue {
+    color: #fff;
+    background:
+      linear-gradient(145deg, rgba(37, 99, 235, 0.92), rgba(14, 165, 233, 0.74)),
+      linear-gradient(180deg, rgba(255, 255, 255, 0.22), rgba(255, 255, 255, 0.04));
+  }
+
+  .liquid-mobile-action-cyan {
+    color: #fff;
+    background:
+      linear-gradient(145deg, rgba(29, 78, 216, 0.84), rgba(6, 182, 212, 0.72)),
+      linear-gradient(180deg, rgba(255, 255, 255, 0.22), rgba(255, 255, 255, 0.04));
+  }
+
+  .liquid-mobile-action-amber {
+    color: #0f172a;
+    background:
+      linear-gradient(145deg, rgba(254, 243, 199, 0.92), rgba(251, 191, 36, 0.58)),
+      linear-gradient(180deg, rgba(255, 255, 255, 0.4), rgba(255, 255, 255, 0.1));
+  }
+
+  .liquid-mobile-action-helper {
+    color: currentColor;
+    opacity: 1;
+  }
+
+  .liquid-mobile-action-blue .liquid-mobile-action-helper,
+  .liquid-mobile-action-cyan .liquid-mobile-action-helper {
+    color: rgba(255, 255, 255, 0.94);
+  }
+
+  .liquid-mobile-action-amber .liquid-mobile-action-helper,
+  .liquid-mobile-action-slate .liquid-mobile-action-helper {
+    color: #334155;
+  }
+
+  .liquid-mobile-action-slate,
+  .liquid-mobile-inline-action {
+    color: #075985;
+    border-color: rgba(186, 230, 253, 0.7);
+    background:
+      linear-gradient(145deg, rgba(255, 255, 255, 0.86), rgba(240, 249, 255, 0.62));
+  }
+
+  .liquid-mobile-inline-action,
+  .liquid-mobile-inline-action-strong {
+    border: 1px solid rgba(186, 230, 253, 0.72);
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.78),
+      0 8px 18px rgba(15, 23, 42, 0.06);
+  }
+
+  .liquid-mobile-inline-action-strong {
+    color: #fff;
+    background:
+      linear-gradient(145deg, rgba(37, 99, 235, 0.9), rgba(14, 165, 233, 0.76));
+  }
+
+  .liquid-mobile-chip-blue,
+  .liquid-mobile-chip-cyan,
+  .liquid-mobile-chip-amber,
+  .liquid-mobile-chip-rose {
+    border: 1px solid rgba(255, 255, 255, 0.68);
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.72),
+      0 5px 14px rgba(15, 23, 42, 0.045);
+  }
+
+  .liquid-mobile-chip-blue {
+    color: #0369a1;
+    background: linear-gradient(145deg, rgba(219, 234, 254, 0.76), rgba(255, 255, 255, 0.72));
+  }
+
+  .liquid-mobile-chip-cyan {
+    color: #0e7490;
+    background: linear-gradient(145deg, rgba(207, 250, 254, 0.76), rgba(255, 255, 255, 0.7));
+  }
+
+  .liquid-mobile-chip-amber {
+    color: #92400e;
+    background: linear-gradient(145deg, rgba(254, 243, 199, 0.84), rgba(255, 255, 255, 0.72));
+  }
+
+  .liquid-mobile-chip-rose {
+    color: #be123c;
+    background: linear-gradient(145deg, rgba(255, 228, 230, 0.86), rgba(255, 255, 255, 0.72));
+  }
+
+  .liquid-mobile-year-control,
+  .liquid-mobile-micro-card {
+    color: #0f172a;
+    border: 1px solid var(--liquid-mobile-readable-border);
+    background: var(--liquid-mobile-readable-fill);
+    box-shadow: var(--liquid-mobile-readable-shadow);
+  }
+
+  .liquid-mobile-progress-track {
+    background: rgba(191, 219, 254, 0.62);
+    box-shadow: inset 0 1px 2px rgba(15, 23, 42, 0.08);
+  }
+
+  .liquid-mobile-progress-fill {
+    background: linear-gradient(90deg, #2563eb, #0891b2);
+    box-shadow: 0 0 14px rgba(37, 99, 235, 0.28);
+  }
+
+  .liquid-mobile-year-step:hover {
+    background: rgba(219, 234, 254, 0.78);
+  }
+
+  .liquid-mobile-bottom-nav {
+    border: 1px solid rgba(226, 232, 240, 0.74);
+    background:
+      linear-gradient(145deg, rgba(255, 255, 255, 0.96), rgba(239, 246, 255, 0.84)),
+      linear-gradient(180deg, rgba(255, 255, 255, 0.48), rgba(255, 255, 255, 0.22));
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.9),
+      0 -10px 34px rgba(15, 23, 42, 0.12);
+  }
+
+  .liquid-mobile-bottom-readable {
+    color: #334155;
+    border-color: rgba(148, 163, 184, 0.4);
+    background:
+      linear-gradient(145deg, rgba(255, 255, 255, 0.988), rgba(248, 250, 252, 0.94)),
+      linear-gradient(180deg, rgba(219, 234, 254, 0.18), rgba(255, 255, 255, 0.08));
+  }
+
+  .liquid-mobile-bottom-item {
+    border: 1px solid transparent;
+  }
+
+  .liquid-mobile-bottom-item-active {
+    color: #fff;
+    border-color: rgba(255, 255, 255, 0.5);
+    background:
+      linear-gradient(145deg, rgba(37, 99, 235, 0.92), rgba(14, 165, 233, 0.74));
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.35),
+      0 12px 24px rgba(37, 99, 235, 0.2);
+  }
+
+  .liquid-mobile-bottom-item-idle {
+    color: #334155;
+  }
+
+  .liquid-mobile-bottom-item-idle:hover {
+    color: #1d4ed8;
+    background: rgba(255, 255, 255, 0.68);
+  }
+
+  .liquid-mobile-more-sheet {
+    border: 1px solid rgba(148, 163, 184, 0.34);
+    background:
+      linear-gradient(145deg, rgba(255, 255, 255, 0.975), rgba(248, 250, 252, 0.92)),
+      linear-gradient(180deg, rgba(219, 234, 254, 0.14), rgba(255, 255, 255, 0.08));
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.94),
+      0 24px 64px rgba(15, 23, 42, 0.16);
+    backdrop-filter: blur(22px) saturate(1.42);
+    -webkit-backdrop-filter: blur(22px) saturate(1.42);
+  }
+
+  .liquid-mobile-more-item {
+    border: 1px solid rgba(148, 163, 184, 0.32);
+    background:
+      linear-gradient(145deg, rgba(255, 255, 255, 0.97), rgba(248, 250, 252, 0.88)),
+      linear-gradient(180deg, rgba(219, 234, 254, 0.1), rgba(255, 255, 255, 0.06));
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.9),
+      0 10px 24px rgba(15, 23, 42, 0.065);
+  }
+
+  .liquid-mobile-more-item-active {
+    border-color: rgba(147, 197, 253, 0.8);
+    background:
+      linear-gradient(145deg, rgba(219, 234, 254, 0.94), rgba(255, 255, 255, 0.88)),
+      linear-gradient(180deg, rgba(14, 165, 233, 0.16), rgba(255, 255, 255, 0.04));
+  }
+
+  .liquid-mobile-more-icon {
+    color: #1d4ed8;
+    border: 1px solid rgba(191, 219, 254, 0.66);
+    background:
+      linear-gradient(145deg, rgba(239, 246, 255, 0.98), rgba(255, 255, 255, 0.82));
+  }
+
+  @media (max-width: 640px) {
+    .mobile-typography-guard :where(
+      .liquid-finance-mobile-card,
+      .liquid-contract-mobile-card,
+      .liquid-building-mobile-unit,
+      .liquid-budget-mobile-card,
+      .liquid-mobile-toolbar-shell,
+      .liquid-mobile-dashboard-shell,
+      .liquid-mobile-dashboard-hero,
+      .liquid-mobile-dashboard-section,
+      .liquid-mobile-readable,
+      .liquid-mobile-task-card,
+      .liquid-mobile-task-empty,
+      .liquid-mobile-park-picker,
+      .liquid-mobile-park-option,
+      .mobile-dashboard-custom-fields,
+      .liquid-mobile-custom-field,
+      .monthly-detail-mobile-card,
+      .liquid-mobile-context-line,
+      .liquid-mobile-top-pill,
+      .liquid-mobile-bottom-readable,
+      .liquid-mobile-micro-card,
+      .liquid-mobile-primary-metric
+    ) :is(.text-\[9px\], .text-\[10px\], .text-\[11px\]) {
+      font-size: 0.75rem;
+      line-height: 1.15rem;
+    }
+
+    .mobile-typography-guard :where(
+      .liquid-mobile-card,
+      .liquid-mobile-toolbar-shell,
+      .liquid-mobile-dashboard-shell,
+      .liquid-mobile-hero,
+      .liquid-mobile-dashboard-hero,
+      .liquid-mobile-dashboard-section,
+      .liquid-mobile-readable,
+      .liquid-mobile-context-line,
+      .liquid-mobile-park-picker,
+      .liquid-mobile-park-option,
+      .liquid-mobile-primary-metric,
+      .liquid-mobile-focus-cell,
+      .liquid-mobile-micro-card,
+      .mobile-dashboard-custom-fields,
+      .liquid-mobile-custom-field,
+      .liquid-mobile-task-card,
+      .liquid-mobile-task-empty,
+      .liquid-mobile-bottom-nav,
+      .liquid-mobile-bottom-readable
+    ) :where(.text-slate-500, .text-slate-400) {
+      color: #475569 !important;
+      opacity: 1;
+    }
+
+    .mobile-typography-guard :where(
+      .liquid-mobile-card,
+      .liquid-mobile-toolbar-shell,
+      .liquid-mobile-dashboard-shell,
+      .liquid-mobile-hero,
+      .liquid-mobile-dashboard-hero,
+      .liquid-mobile-dashboard-section,
+      .liquid-mobile-readable,
+      .liquid-mobile-context-line,
+      .liquid-mobile-park-picker,
+      .liquid-mobile-park-option,
+      .liquid-mobile-primary-metric,
+      .liquid-mobile-focus-cell,
+      .liquid-mobile-micro-card,
+      .mobile-dashboard-custom-fields,
+      .liquid-mobile-custom-field,
+      .liquid-mobile-task-card,
+      .liquid-mobile-task-empty,
+      .liquid-mobile-bottom-nav,
+      .liquid-mobile-bottom-readable
+    ) :where(.text-slate-950, .text-slate-900, .text-slate-800, .text-slate-700) {
+      color: #0f172a !important;
+      opacity: 1;
+    }
+
+    .mobile-typography-guard :where(.liquid-mobile-bottom-item span) {
+      font-size: 0.75rem;
+      line-height: 1rem;
+    }
+
+    .mobile-typography-guard :where(.liquid-mobile-context-line, .liquid-mobile-top-pill) {
+      font-size: 0.75rem;
+      line-height: 1.05rem;
+    }
+
+    .mobile-typography-guard :where(.liquid-mobile-toolbar-title) {
+      font-size: 1rem;
+      line-height: 1.25rem;
+    }
+
+    .mobile-typography-guard :where(.liquid-mobile-primary-value) {
+      font-size: clamp(2.25rem, 11vw, 2.85rem);
+      line-height: 0.95;
+    }
+
+    .liquid-mobile-hero {
+      padding-top: 0.65rem !important;
+      padding-bottom: 0.65rem !important;
+    }
+
+    .liquid-mobile-hero :where(.mt-2\.5) {
+      margin-top: 0.5rem !important;
+    }
+
+    .liquid-mobile-hero :where(.mt-2) {
+      margin-top: 0.45rem !important;
+    }
+
+    .liquid-mobile-hero :where(.mt-1\.5) {
+      margin-top: 0.3rem !important;
+    }
+
+    .liquid-mobile-hero :where(.min-h-\[96px\]) {
+      min-height: 4.9rem !important;
+    }
+
+    .liquid-mobile-focus-cell {
+      padding-top: 0.6rem !important;
+      padding-bottom: 0.6rem !important;
+    }
+
+    .liquid-mobile-task-card {
+      min-height: 4rem !important;
+      padding-top: 0.6rem !important;
+      padding-bottom: 0.6rem !important;
+    }
+
+    .liquid-mobile-task-icon {
+      width: 2.25rem !important;
+      height: 2.25rem !important;
+      border-radius: 0.875rem !important;
+    }
+
+  }
+
+  @media (max-width: 640px) {
+    .mobile-dashboard-custom-fields {
+      margin-top: max(
+        calc(var(--mobile-bottom-nav-height) + env(safe-area-inset-bottom) + 0.75rem),
+        calc(100dvh - 45rem)
+      );
+    }
+  }
+
+  @media (max-width: 1023px) {
+    .liquid-glass-toolbar,
+    .liquid-glass-sidebar,
+    .liquid-glass-panel,
+    .liquid-glass-control,
+    .liquid-glass-readable {
+      --glass-blur: 18px;
+      --glass-saturate: 1.28;
+    }
+
+    .liquid-mobile-card,
+    .liquid-mobile-bottom-nav,
+    .liquid-mobile-more-sheet,
+    .liquid-mobile-filter-sheet,
+    .liquid-mobile-empty-state,
+    .liquid-building-mobile-floor-section,
+    .monthly-detail-panel,
+    .liquid-drawer-panel {
+      backdrop-filter: blur(16px) saturate(1.28);
+      -webkit-backdrop-filter: blur(16px) saturate(1.28);
+    }
+
+    .liquid-mobile-filter-backdrop,
+    .monthly-detail-backdrop {
+      backdrop-filter: blur(12px) saturate(1.05);
+      -webkit-backdrop-filter: blur(12px) saturate(1.05);
+    }
+
+    .liquid-mobile-card,
+    .liquid-mobile-bottom-nav,
+    .liquid-mobile-more-sheet,
+    .liquid-mobile-filter-backdrop,
+    .liquid-mobile-filter-sheet,
+    .liquid-mobile-empty-state,
+    .liquid-building-mobile-floor-section,
+    .liquid-mobile-park-picker,
+    .monthly-detail-backdrop,
+    .monthly-detail-panel,
+    .liquid-drawer-panel {
+      contain: paint;
+    }
+
+    .liquid-drawer-panel {
+      border-left: 0;
+      border-top: 1px solid rgba(255, 255, 255, 0.78);
+      box-shadow:
+        inset 0 1px 0 rgba(255, 255, 255, 0.86),
+        0 -24px 72px rgba(15, 23, 42, 0.18);
+    }
+
+  }
+
+  @media (min-width: 641px) and (max-width: 1023px) {
+    .liquid-mobile-card {
+      max-width: 760px;
+      margin-inline: auto;
+    }
+
+    .liquid-mobile-bottom-nav {
+      left: max(1rem, calc((100vw - 560px) / 2));
+      right: max(1rem, calc((100vw - 560px) / 2));
+    }
+
+    .monthly-detail-panel {
+      max-width: min(760px, calc(100vw - 2rem));
+    }
+
+    .monthly-detail-mobile-list {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      align-content: start;
+      gap: 0.75rem;
+    }
+
+    .monthly-detail-mobile-list > * {
+      margin-top: 0 !important;
+    }
+
+    .monthly-detail-mobile-total {
+      grid-column: 1 / -1;
+    }
+
+    .liquid-budget-mobile-layout,
+    .liquid-building-mobile-list,
+    .liquid-building-mobile-batch-toolbar,
+    .liquid-contract-mobile-list,
+    .liquid-finance-mobile-list,
+    .liquid-invoice-mobile-list {
+      max-width: 920px;
+      margin-inline: auto;
+    }
+
+    .liquid-contract-mobile-list--master-detail {
+      max-width: min(1120px, calc(100vw - 2rem));
+    }
+
+    .liquid-finance-mobile-list--master-detail {
+      max-width: min(1120px, calc(100vw - 2rem));
+    }
+
+    .liquid-invoice-mobile-list--master-detail {
+      max-width: min(1120px, calc(100vw - 2rem));
+    }
+
+    .liquid-contract-tablet-master-detail,
+    .liquid-finance-tablet-master-detail,
+    .liquid-invoice-tablet-master-detail {
+      display: grid;
+      grid-template-columns: minmax(0, 1.08fr) minmax(280px, 0.92fr);
+      align-items: start;
+      gap: 0.85rem;
+    }
+
+    .liquid-contract-tablet-preview,
+    .liquid-finance-tablet-preview,
+    .liquid-invoice-tablet-preview {
+      position: sticky;
+      top: 1rem;
+      max-height: calc(100dvh - 7.5rem);
+      overflow: auto;
+    }
+
+    .liquid-budget-mobile-layout {
+      padding-inline: 1rem;
+    }
+
+    .liquid-budget-mobile-group-body,
+    .liquid-building-mobile-list {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 0.75rem;
+    }
+
+    .liquid-budget-mobile-group-body > * {
+      margin-top: 0 !important;
+    }
+
+    .liquid-finance-mobile-list--grid,
+    .liquid-invoice-mobile-list:not(.liquid-invoice-mobile-list--master-detail) {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 0.75rem;
+    }
+
+    .liquid-finance-mobile-list--grid > *,
+    .liquid-invoice-mobile-list:not(.liquid-invoice-mobile-list--master-detail) > * {
+      margin-top: 0 !important;
+    }
+
+    .liquid-drawer-panel {
+      left: 1rem;
+      right: 1rem;
+      max-width: 760px;
+      margin-inline: auto;
+      border-radius: 30px 30px 0 0;
+    }
+  }
+
+  .liquid-mobile-stat-active {
+    background:
+      linear-gradient(145deg, rgba(219, 234, 254, 0.82), rgba(255, 255, 255, 0.82));
+  }
+
+  .liquid-mobile-stat-idle {
+    background:
+      linear-gradient(145deg, rgba(255, 255, 255, 0.66), rgba(248, 251, 255, 0.42));
+  }
+
+  .liquid-mobile-stat-warn {
+    background:
+      linear-gradient(145deg, rgba(254, 243, 199, 0.88), rgba(255, 255, 255, 0.72));
+  }
+
+  .liquid-mobile-stat-danger {
+    background:
+      linear-gradient(145deg, rgba(255, 228, 230, 0.9), rgba(255, 255, 255, 0.72));
+  }
+
+  .liquid-workbench-card {
+    border: 1px solid rgba(226, 232, 240, 0.72);
+    background:
+      radial-gradient(circle at 86% 8%, rgba(14, 165, 233, 0.16), transparent 30%),
+      linear-gradient(145deg, rgba(255, 255, 255, 0.9), rgba(248, 251, 255, 0.68)),
+      linear-gradient(180deg, rgba(219, 234, 254, 0.2), rgba(255, 248, 241, 0.08));
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.92),
+      0 18px 56px rgba(15, 23, 42, 0.068);
+    backdrop-filter: blur(18px) saturate(1.24);
+    -webkit-backdrop-filter: blur(18px) saturate(1.24);
+  }
+
+  .liquid-workbench-header {
+    border-bottom: 1px solid rgba(226, 232, 240, 0.68);
+    background:
+      linear-gradient(135deg, rgba(255, 255, 255, 0.82), rgba(239, 246, 255, 0.54)),
+      linear-gradient(90deg, rgba(219, 234, 254, 0.28), rgba(236, 254, 255, 0.16));
+    backdrop-filter: blur(16px) saturate(1.22);
+    -webkit-backdrop-filter: blur(16px) saturate(1.22);
+  }
+
+  .liquid-workbench-table {
+    background:
+      linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(248, 250, 252, 0.92));
+  }
+
+  .liquid-workbench-sticky {
+    background:
+      linear-gradient(180deg, rgba(248, 250, 252, 0.98), rgba(241, 245, 249, 0.94));
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.9),
+      inset 0 -1px 0 rgba(203, 213, 225, 0.6);
+  }
+
+  .liquid-workbench-head-cell {
+    box-shadow: inset -1px 0 0 rgba(226, 232, 240, 0.58);
+  }
+
+  .liquid-workbench-head-cell:last-child {
+    box-shadow: none;
+  }
+
+  .liquid-workbench-head-cell[data-tone="amber"],
+  .liquid-workbench-cell[data-tone="amber"] {
+    background:
+      linear-gradient(180deg, rgba(255, 251, 235, 0.52), rgba(255, 255, 255, 0.34));
+  }
+
+  .liquid-workbench-head-cell[data-tone="blue"],
+  .liquid-workbench-cell[data-tone="blue"] {
+    background:
+      linear-gradient(180deg, rgba(239, 246, 255, 0.58), rgba(255, 255, 255, 0.34));
+  }
+
+  .liquid-workbench-head-cell[data-tone="cyan"],
+  .liquid-workbench-cell[data-tone="cyan"] {
+    background:
+      linear-gradient(180deg, rgba(236, 254, 255, 0.62), rgba(255, 255, 255, 0.34));
+  }
+
+  .liquid-workbench-cell {
+    border-top: 1px solid rgba(226, 232, 240, 0.58);
+    transition:
+      background-color 160ms ease,
+      box-shadow 160ms ease;
+  }
+
+  .liquid-workbench-cell[data-divider="left"] {
+    box-shadow: inset 1px 0 0 rgba(226, 232, 240, 0.64);
+  }
+
+  .liquid-workbench-row:hover .liquid-workbench-cell {
+    background:
+      linear-gradient(90deg, rgba(239, 246, 255, 0.62), rgba(255, 255, 255, 0.48));
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.82);
+  }
+
+  .liquid-workbench-row:hover .liquid-workbench-cell[data-divider="left"] {
+    box-shadow:
+      inset 1px 0 0 rgba(191, 219, 254, 0.78),
+      inset 0 1px 0 rgba(255, 255, 255, 0.82);
+  }
+
+  .liquid-workbench-rate-pill {
+    border: 1px solid rgba(255, 255, 255, 0.72);
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.82),
+      0 8px 18px rgba(15, 23, 42, 0.045);
+    backdrop-filter: blur(10px) saturate(1.14);
+    -webkit-backdrop-filter: blur(10px) saturate(1.14);
+  }
+
+  .liquid-workbench-rate-pill--strong {
+    background: rgba(207, 250, 254, 0.78);
+    color: #0e7490;
+  }
+
+  .liquid-workbench-rate-pill--good {
+    background: rgba(219, 234, 254, 0.82);
+    color: #1d4ed8;
+  }
+
+  .liquid-workbench-rate-pill--warn {
+    background: rgba(254, 243, 199, 0.84);
+    color: #b45309;
+  }
+
+  .liquid-workbench-rate-pill--neutral {
+    background: rgba(241, 245, 249, 0.82);
+    color: #475569;
+  }
+
+  .liquid-workbench-rate-pill--empty {
+    background: rgba(248, 250, 252, 0.58);
+    color: #94a3b8;
+  }
+
+  .liquid-workbench-total-row,
+  .liquid-workbench-mobile-total {
+    background:
+      linear-gradient(135deg, rgba(15, 23, 42, 0.97), rgba(30, 41, 59, 0.94)),
+      radial-gradient(circle at 80% 0%, rgba(14, 165, 233, 0.32), transparent 42%);
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.12),
+      0 -10px 28px rgba(15, 23, 42, 0.08);
+  }
+
+  .liquid-workbench-total-cell {
+    box-shadow: inset -1px 0 0 rgba(255, 255, 255, 0.08);
+  }
+
+  .liquid-workbench-total-cell[data-divider="left"] {
+    box-shadow:
+      inset 1px 0 0 rgba(255, 255, 255, 0.12),
+      inset -1px 0 0 rgba(255, 255, 255, 0.08);
+  }
+
+  .liquid-workbench-total-cell[data-tone="amber"] {
+    background: rgba(245, 158, 11, 0.12);
+  }
+
+  .liquid-workbench-total-cell[data-tone="blue"] {
+    background: rgba(37, 99, 235, 0.12);
+  }
+
+  .liquid-workbench-total-cell[data-tone="cyan"] {
+    background: rgba(34, 211, 238, 0.12);
+  }
+
+  .liquid-workbench-total-pill {
+    background: rgba(255, 255, 255, 0.16);
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.18),
+      0 8px 18px rgba(15, 23, 42, 0.12);
+  }
+
+  .liquid-workbench-month-card {
+    border: 1px solid rgba(226, 232, 240, 0.72);
+    background:
+      linear-gradient(145deg, rgba(255, 255, 255, 0.9), rgba(248, 251, 255, 0.72)),
+      radial-gradient(circle at 92% 0%, rgba(14, 165, 233, 0.14), transparent 34%);
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.9),
+      0 12px 30px rgba(15, 23, 42, 0.055);
+    backdrop-filter: blur(14px) saturate(1.16);
+    -webkit-backdrop-filter: blur(14px) saturate(1.16);
+  }
+
+  .liquid-workbench-month-field {
+    border: 1px solid rgba(226, 232, 240, 0.62);
+    background:
+      linear-gradient(145deg, rgba(255, 255, 255, 0.78), rgba(248, 250, 252, 0.58));
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.76);
+  }
+
+  .liquid-workbench-month-field[data-tone="amber"] {
+    border-color: rgba(252, 211, 77, 0.42);
+    background:
+      linear-gradient(145deg, rgba(255, 251, 235, 0.82), rgba(255, 255, 255, 0.58));
+  }
+
+  .liquid-workbench-month-field[data-tone="blue"] {
+    border-color: rgba(147, 197, 253, 0.5);
+    background:
+      linear-gradient(145deg, rgba(239, 246, 255, 0.88), rgba(255, 255, 255, 0.58));
+  }
+
+  .liquid-workbench-month-field[data-tone="cyan"] {
+    border-color: rgba(103, 232, 249, 0.48);
+    background:
+      linear-gradient(145deg, rgba(236, 254, 255, 0.9), rgba(255, 255, 255, 0.6));
+  }
+
+  .liquid-shared-table-head {
+    background:
+      linear-gradient(180deg, rgba(248, 250, 252, 0.96), rgba(239, 246, 255, 0.84));
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.9),
+      inset 0 -1px 0 rgba(203, 213, 225, 0.62);
+    backdrop-filter: blur(14px) saturate(1.18);
+    -webkit-backdrop-filter: blur(14px) saturate(1.18);
+  }
+
+  .liquid-shared-sticky-cell {
+    background:
+      linear-gradient(90deg, rgba(255, 255, 255, 0.96), rgba(239, 246, 255, 0.9));
+    box-shadow:
+      inset -1px 0 0 rgba(226, 232, 240, 0.72),
+      8px 0 20px -20px rgba(15, 23, 42, 0.55);
+    backdrop-filter: blur(14px) saturate(1.18);
+    -webkit-backdrop-filter: blur(14px) saturate(1.18);
+  }
+
+  .liquid-shared-total-row {
+    background:
+      linear-gradient(135deg, rgba(15, 23, 42, 0.96), rgba(30, 41, 59, 0.92));
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.1),
+      0 -10px 28px rgba(15, 23, 42, 0.08);
+  }
+
+  .liquid-shared-year-cell {
+    background:
+      linear-gradient(90deg, rgba(255, 255, 255, 0.94), rgba(239, 246, 255, 0.82));
+    backdrop-filter: blur(14px) saturate(1.16);
+    -webkit-backdrop-filter: blur(14px) saturate(1.16);
+  }
+
+  .liquid-shared-empty {
+    background:
+      linear-gradient(145deg, rgba(255, 255, 255, 0.82), rgba(248, 250, 252, 0.66));
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.86);
+  }
+
+  .liquid-workbench-mini-card {
+    border: 1px solid rgba(226, 232, 240, 0.68);
+    background:
+      linear-gradient(145deg, rgba(255, 255, 255, 0.88), rgba(248, 251, 255, 0.7));
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.9),
+      0 10px 28px rgba(15, 23, 42, 0.045);
+  }
+
+  .liquid-workbench-segment {
+    border: 1px solid rgba(191, 219, 254, 0.62);
+    background:
+      linear-gradient(145deg, rgba(255, 255, 255, 0.7), rgba(239, 246, 255, 0.46));
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.82),
+      0 8px 22px rgba(37, 99, 235, 0.06);
+    backdrop-filter: blur(14px) saturate(1.2);
+    -webkit-backdrop-filter: blur(14px) saturate(1.2);
+  }
+
+  .liquid-workbench-progress {
+    background: rgba(226, 232, 240, 0.62);
+    box-shadow:
+      inset 0 1px 2px rgba(15, 23, 42, 0.08),
+      inset 0 1px 0 rgba(255, 255, 255, 0.72);
+  }
+
+  .liquid-workbench-hero-positive {
+    background:
+      radial-gradient(circle at 86% 12%, rgba(255, 255, 255, 0.28), transparent 26%),
+      linear-gradient(135deg, rgba(37, 99, 235, 0.96), rgba(8, 145, 178, 0.88));
+  }
+
+  .liquid-workbench-hero-negative {
+    background:
+      radial-gradient(circle at 86% 12%, rgba(255, 255, 255, 0.24), transparent 26%),
+      linear-gradient(135deg, rgba(234, 88, 12, 0.94), rgba(244, 114, 182, 0.76));
+  }
+
+  .liquid-building-overview-hero {
+    border: 1px solid rgba(147, 197, 253, 0.5);
+    background:
+      radial-gradient(circle at 86% 14%, rgba(255, 255, 255, 0.26), transparent 30%),
+      linear-gradient(135deg, rgba(37, 99, 235, 0.96), rgba(8, 145, 178, 0.88));
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.34),
+      0 22px 46px rgba(37, 99, 235, 0.18);
+  }
+
+  .liquid-building-overview-card {
+    border: 1px solid rgba(226, 232, 240, 0.68);
+    background:
+      linear-gradient(145deg, rgba(255, 255, 255, 0.78), rgba(248, 251, 255, 0.54));
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.86),
+      0 12px 28px rgba(15, 23, 42, 0.045);
+    backdrop-filter: blur(14px) saturate(1.18);
+    -webkit-backdrop-filter: blur(14px) saturate(1.18);
+  }
+
+  .liquid-building-overview-card[data-tone="leasable"] {
+    border-color: rgba(147, 197, 253, 0.62);
+  }
+
+  .liquid-building-overview-card[data-tone="occupied"] {
+    border-color: rgba(103, 232, 249, 0.58);
+  }
+
+  .liquid-building-overview-card[data-tone="vacant"] {
+    border-color: rgba(251, 191, 36, 0.5);
+  }
+
+  .liquid-building-overview-dot,
+  .liquid-building-unit-dot {
+    display: inline-flex;
+    width: 0.55rem;
+    height: 0.55rem;
+    flex: 0 0 auto;
+    border-radius: 999px;
+    background: #60a5fa;
+    box-shadow: 0 0 0 3px rgba(96, 165, 250, 0.14);
+  }
+
+  .liquid-building-overview-card[data-tone="occupied"] .liquid-building-overview-dot,
+  .liquid-building-unit-dot[data-status="occupied"] {
+    background: #0891b2;
+    box-shadow: 0 0 0 3px rgba(8, 145, 178, 0.14);
+  }
+
+  .liquid-building-overview-card[data-tone="vacant"] .liquid-building-overview-dot,
+  .liquid-building-unit-dot[data-status="reserved"] {
+    background: #d97706;
+    box-shadow: 0 0 0 3px rgba(217, 119, 6, 0.14);
+  }
+
+  .liquid-building-unit-dot[data-status="self"] {
+    background: #64748b;
+    box-shadow: 0 0 0 3px rgba(100, 116, 139, 0.14);
+  }
+
+  .liquid-building-unit-dot[data-status="vacant"] {
+    background: #94a3b8;
+    box-shadow: 0 0 0 3px rgba(148, 163, 184, 0.14);
+  }
+
+  .liquid-building-tools summary::-webkit-details-marker {
+    display: none;
+  }
+
+  .liquid-building-tools-menu {
+    border: 1px solid rgba(226, 232, 240, 0.72);
+    background:
+      linear-gradient(145deg, rgba(255, 255, 255, 0.9), rgba(248, 251, 255, 0.72));
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.86),
+      0 18px 42px rgba(15, 23, 42, 0.12);
+    backdrop-filter: blur(18px) saturate(1.18);
+    -webkit-backdrop-filter: blur(18px) saturate(1.18);
+  }
+
+  .liquid-building-tools-item {
+    display: flex;
+    min-height: 2.35rem;
+    align-items: center;
+    gap: 0.5rem;
+    border-radius: 0.85rem;
+    padding: 0.55rem 0.7rem;
+    color: #334155;
+    font-size: 0.8125rem;
+    font-weight: 800;
+    text-align: left;
+    transition: background-color 160ms ease, color 160ms ease;
+  }
+
+  .liquid-building-tools-item:hover {
+    background: rgba(239, 246, 255, 0.78);
+    color: #1d4ed8;
+  }
+
+  .liquid-building-switcher {
+    border: 1px solid rgba(226, 232, 240, 0.66);
+    background: rgba(255, 255, 255, 0.46);
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.78),
+      0 10px 28px rgba(15, 23, 42, 0.045);
+    backdrop-filter: blur(12px) saturate(1.16);
+    -webkit-backdrop-filter: blur(12px) saturate(1.16);
+  }
+
+  .liquid-building-tab {
+    border: 1px solid transparent;
+    color: #475569;
+    background: rgba(255, 255, 255, 0.38);
+  }
+
+  .liquid-building-tab:hover {
+    border-color: rgba(147, 197, 253, 0.46);
+    background: rgba(255, 255, 255, 0.62);
+    color: #1d4ed8;
+  }
+
+  .liquid-building-tab--active {
+    border-color: rgba(96, 165, 250, 0.64);
+    background:
+      linear-gradient(145deg, rgba(239, 246, 255, 0.86), rgba(255, 255, 255, 0.7));
+    color: #1e3a8a;
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.9),
+      0 10px 24px rgba(37, 99, 235, 0.075);
+  }
+
+  .liquid-building-content-panel {
+    border: 1px solid rgba(226, 232, 240, 0.72);
+    background:
+      linear-gradient(145deg, rgba(255, 255, 255, 0.74), rgba(239, 246, 255, 0.34));
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.86),
+      0 18px 44px rgba(15, 23, 42, 0.055);
+    backdrop-filter: blur(18px) saturate(1.16);
+    -webkit-backdrop-filter: blur(18px) saturate(1.16);
+  }
+
+  .liquid-building-view-toggle {
+    border: 1px solid rgba(226, 232, 240, 0.64);
+    background: rgba(255, 255, 255, 0.56);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.78);
+  }
+
+  .liquid-building-legend-pill {
+    border: 1px solid rgba(226, 232, 240, 0.64);
+    background: rgba(255, 255, 255, 0.62);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.76);
+  }
+
+  .liquid-building-floor-row {
+    border: 1px solid rgba(226, 232, 240, 0.62);
+    background: rgba(255, 255, 255, 0.34);
+    transition: border-color 160ms ease, background-color 160ms ease, box-shadow 160ms ease;
+  }
+
+  .liquid-building-floor-row:hover {
+    border-color: rgba(147, 197, 253, 0.54);
+    background: rgba(255, 255, 255, 0.5);
+    box-shadow: 0 12px 28px rgba(37, 99, 235, 0.045);
+  }
+
+  .liquid-building-floor-label {
+    border: 1px solid rgba(226, 232, 240, 0.58);
+    background:
+      linear-gradient(145deg, rgba(255, 255, 255, 0.72), rgba(248, 250, 252, 0.52));
+  }
+
+  .liquid-building-floor {
+    border: 1px solid rgba(203, 213, 225, 0.52);
+    background:
+      linear-gradient(145deg, rgba(255, 255, 255, 0.48), rgba(248, 251, 255, 0.26));
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.62);
+  }
+
+  .liquid-building-unit {
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.74),
+      0 8px 16px rgba(15, 23, 42, 0.04);
+  }
+
+  .liquid-building-unit-vacant {
+    border-color: rgba(203, 213, 225, 0.68);
+    background:
+      linear-gradient(145deg, rgba(255, 255, 255, 0.82), rgba(248, 250, 252, 0.58));
+  }
+
+  .liquid-building-unit-occupied {
+    border-color: rgba(103, 232, 249, 0.64);
+    background:
+      linear-gradient(145deg, rgba(224, 242, 254, 0.78), rgba(255, 255, 255, 0.62));
+  }
+
+  .liquid-building-unit-reserved {
+    border-color: rgba(251, 191, 36, 0.62);
+    background:
+      linear-gradient(145deg, rgba(254, 243, 199, 0.76), rgba(255, 255, 255, 0.6));
+  }
+
+  .liquid-building-unit-self {
+    border-color: rgba(148, 163, 184, 0.66);
+    background:
+      linear-gradient(145deg, rgba(226, 232, 240, 0.78), rgba(248, 250, 252, 0.58));
+  }
+
+  .liquid-building-add-slot {
+    border: 1px dashed rgba(147, 197, 253, 0.66);
+    background:
+      linear-gradient(145deg, rgba(239, 246, 255, 0.62), rgba(255, 255, 255, 0.44));
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.76);
+    opacity: 0.58;
+  }
+
+  .liquid-building-floor-row:hover .liquid-building-add-slot,
+  .liquid-building-add-slot:hover,
+  .liquid-building-add-slot:focus-visible {
+    opacity: 1;
+  }
+
+  .liquid-building-metric-chip {
+    border: 1px solid rgba(226, 232, 240, 0.64);
+    background: rgba(255, 255, 255, 0.58);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.78);
+  }
+
+  .liquid-building-table-head {
+    background:
+      linear-gradient(180deg, rgba(248, 250, 252, 0.98), rgba(241, 245, 249, 0.94));
+  }
+
+  .liquid-building-table-row {
+    background: rgba(255, 255, 255, 0.5);
+    transition: background-color 160ms ease, box-shadow 160ms ease;
+  }
+
+  .liquid-building-table-row:hover {
+    background: rgba(239, 246, 255, 0.72);
+    box-shadow: inset 3px 0 0 rgba(37, 99, 235, 0.3);
+  }
+
+  .liquid-building-mobile-unit {
+    border: 1px solid rgba(226, 232, 240, 0.72);
+    background:
+      radial-gradient(circle at 88% 10%, rgba(255, 255, 255, 0.74), transparent 30%),
+      linear-gradient(145deg, rgba(255, 255, 255, 0.84), rgba(239, 246, 255, 0.54));
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.88),
+      0 16px 32px rgba(15, 23, 42, 0.07);
+    backdrop-filter: blur(16px) saturate(1.22);
+    -webkit-backdrop-filter: blur(16px) saturate(1.22);
+  }
+
+  .liquid-building-mobile-unit:hover {
+    border-color: rgba(147, 197, 253, 0.82);
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.9),
+      0 18px 38px rgba(37, 99, 235, 0.1);
+  }
+
+  .liquid-building-mobile-floor-section {
+    border: 1px solid rgba(226, 232, 240, 0.62);
+    background:
+      linear-gradient(145deg, rgba(255, 255, 255, 0.56), rgba(239, 246, 255, 0.34));
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.82),
+      0 14px 32px rgba(15, 23, 42, 0.045);
+    backdrop-filter: blur(14px) saturate(1.16);
+    -webkit-backdrop-filter: blur(14px) saturate(1.16);
+  }
+
+  .liquid-building-mobile-floor-header {
+    border: 1px solid rgba(255, 255, 255, 0.72);
+    background:
+      linear-gradient(145deg, rgba(255, 255, 255, 0.76), rgba(248, 251, 255, 0.5));
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.84);
+  }
+
+  .liquid-building-mobile-unit-main {
+    position: relative;
+    overflow: hidden;
+    border: 1px solid rgba(255, 255, 255, 0.7);
+    background:
+      radial-gradient(circle at 92% 12%, rgba(255, 255, 255, 0.66), transparent 30%),
+      linear-gradient(145deg, rgba(255, 255, 255, 0.7), rgba(239, 246, 255, 0.42));
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.82);
+  }
+
+  .liquid-building-mobile-unit-main::before {
+    content: "";
+    position: absolute;
+    inset: 0 auto 0 0;
+    width: 0.26rem;
+    background: #94a3b8;
+  }
+
+  .liquid-building-mobile-unit-main[data-status="occupied"]::before {
+    background: #0891b2;
+  }
+
+  .liquid-building-mobile-unit-main[data-status="reserved"]::before {
+    background: #d97706;
+  }
+
+  .liquid-building-mobile-unit-main[data-status="self"]::before {
+    background: #64748b;
+  }
+
+  .liquid-building-mobile-unit[data-status="occupied"] {
+    border-color: rgba(125, 211, 252, 0.7);
+    background:
+      radial-gradient(circle at 88% 10%, rgba(224, 242, 254, 0.72), transparent 32%),
+      linear-gradient(145deg, rgba(255, 255, 255, 0.86), rgba(224, 242, 254, 0.56));
+  }
+
+  .liquid-building-mobile-unit[data-status="reserved"] {
+    border-color: rgba(251, 191, 36, 0.68);
+    background:
+      radial-gradient(circle at 88% 10%, rgba(254, 243, 199, 0.72), transparent 32%),
+      linear-gradient(145deg, rgba(255, 255, 255, 0.86), rgba(254, 243, 199, 0.54));
+  }
+
+  .liquid-building-mobile-unit[data-status="self"] {
+    border-color: rgba(148, 163, 184, 0.72);
+    background:
+      radial-gradient(circle at 88% 10%, rgba(241, 245, 249, 0.72), transparent 32%),
+      linear-gradient(145deg, rgba(255, 255, 255, 0.86), rgba(226, 232, 240, 0.5));
+  }
+
+  .liquid-building-mobile-unit[data-selected="true"] {
+    border-color: rgba(96, 165, 250, 0.9);
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.9),
+      0 0 0 2px rgba(96, 165, 250, 0.24),
+      0 18px 42px rgba(37, 99, 235, 0.14);
+  }
+
+  .liquid-building-mobile-unit[data-batch-locked="true"][data-selected="false"] {
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.84),
+      0 10px 26px rgba(15, 23, 42, 0.045);
+  }
+
+  .liquid-building-mobile-meta {
+    border: 1px solid rgba(226, 232, 240, 0.68);
+    background: rgba(255, 255, 255, 0.62);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.82);
+  }
+
+  .liquid-building-mobile-batch-toolbar,
+  .liquid-building-mobile-actionbar,
+  .liquid-building-mobile-quick-panel,
+  .liquid-building-mobile-action,
+  .liquid-building-mobile-action-pill,
+  .liquid-building-mobile-select {
+    border: 1px solid rgba(255, 255, 255, 0.72);
+    background:
+      linear-gradient(145deg, rgba(255, 255, 255, 0.78), rgba(239, 246, 255, 0.52)),
+      linear-gradient(180deg, rgba(255, 255, 255, 0.2), rgba(255, 255, 255, 0.05));
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.86),
+      0 10px 26px rgba(15, 23, 42, 0.055);
+    backdrop-filter: blur(16px) saturate(1.24);
+    -webkit-backdrop-filter: blur(16px) saturate(1.24);
+  }
+
+  .liquid-building-mobile-batch-toolbar {
+    background:
+      radial-gradient(circle at 95% 12%, rgba(191, 219, 254, 0.58), transparent 34%),
+      linear-gradient(145deg, rgba(255, 255, 255, 0.8), rgba(239, 246, 255, 0.56));
+  }
+
+  .liquid-building-mobile-action-pill {
+    background:
+      linear-gradient(145deg, rgba(255, 255, 255, 0.82), rgba(239, 246, 255, 0.56));
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.86),
+      0 8px 18px rgba(15, 23, 42, 0.045);
+  }
+
+  .liquid-building-mobile-action-pill:hover {
+    border-color: rgba(147, 197, 253, 0.78);
+    background:
+      linear-gradient(145deg, rgba(255, 255, 255, 0.9), rgba(219, 234, 254, 0.62));
+  }
+
+  .liquid-building-mobile-action {
+    color: #475569;
+  }
+
+  .liquid-building-mobile-select {
+    color: #475569;
+    background:
+      linear-gradient(145deg, rgba(255, 255, 255, 0.78), rgba(241, 245, 249, 0.54));
+  }
+
+  .liquid-building-mobile-select-active {
+    border-color: rgba(96, 165, 250, 0.82);
+    background:
+      linear-gradient(145deg, rgba(37, 99, 235, 0.92), rgba(14, 165, 233, 0.78));
+    color: #ffffff;
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.45),
+      0 12px 24px rgba(37, 99, 235, 0.16);
+  }
+
+  .liquid-building-mobile-action-active {
+    border-color: rgba(96, 165, 250, 0.82);
+    background:
+      linear-gradient(145deg, rgba(37, 99, 235, 0.92), rgba(14, 165, 233, 0.78));
+    color: #ffffff;
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.45),
+      0 12px 26px rgba(37, 99, 235, 0.18);
+  }
+
+  .liquid-building-status {
+    border: 1px solid rgba(226, 232, 240, 0.7);
+    background: rgba(255, 255, 255, 0.7);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.82);
+  }
+
+  .liquid-building-status[data-status="vacant"] {
+    border-color: rgba(203, 213, 225, 0.78);
+    background: linear-gradient(145deg, rgba(255, 255, 255, 0.86), rgba(248, 250, 252, 0.74));
+    color: #475569;
+  }
+
+  .liquid-building-status[data-status="self"] {
+    border-color: rgba(148, 163, 184, 0.78);
+    background: linear-gradient(145deg, rgba(241, 245, 249, 0.9), rgba(255, 255, 255, 0.72));
+    color: #334155;
+  }
+
+  .liquid-building-status[data-status="occupied"] {
+    border-color: rgba(125, 211, 252, 0.78);
+    background: linear-gradient(145deg, rgba(224, 242, 254, 0.88), rgba(255, 255, 255, 0.72));
+    color: #075985;
+  }
+
+  .liquid-building-status[data-status="reserved"] {
+    border-color: rgba(251, 191, 36, 0.68);
+    background: linear-gradient(145deg, rgba(254, 243, 199, 0.88), rgba(255, 255, 255, 0.72));
+    color: #92400e;
+  }
+
+  .liquid-building-import-head {
+    background:
+      linear-gradient(180deg, rgba(248, 250, 252, 0.97), rgba(239, 246, 255, 0.9));
+    box-shadow: inset 0 -1px 0 rgba(255, 255, 255, 0.72);
+  }
+
+  .liquid-building-import-body {
+    background:
+      linear-gradient(145deg, rgba(255, 255, 255, 0.74), rgba(241, 245, 249, 0.48));
+  }
+
+  .liquid-building-import-row {
+    transition: background-color 160ms ease;
+  }
+
+  .liquid-building-import-row:hover {
+    background: rgba(239, 246, 255, 0.68);
+  }
+
+  .liquid-building-import-success {
+    border: 1px solid rgba(147, 197, 253, 0.62);
+    background:
+      linear-gradient(145deg, rgba(239, 246, 255, 0.82), rgba(255, 255, 255, 0.66));
+    color: #1d4ed8;
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.86),
+      0 14px 30px rgba(37, 99, 235, 0.055);
+  }
+
+  .liquid-building-danger-action {
+    border: 1px solid rgba(254, 205, 211, 0.82);
+    background:
+      linear-gradient(145deg, rgba(255, 241, 242, 0.86), rgba(255, 255, 255, 0.64));
+    color: #be123c;
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.86),
+      0 10px 24px rgba(190, 18, 60, 0.06);
+  }
+
+  .liquid-building-field {
+    border: 1px solid rgba(203, 213, 225, 0.78);
+    background: rgba(255, 255, 255, 0.82);
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.9),
+      0 4px 12px rgba(15, 23, 42, 0.035);
+  }
+
+  .liquid-drawer-backdrop {
+    background:
+      linear-gradient(155deg, rgba(248, 251, 255, 0.2), rgba(15, 23, 42, 0.3)),
+      rgba(15, 23, 42, 0.24);
+    backdrop-filter: blur(18px) saturate(1.08);
+    -webkit-backdrop-filter: blur(18px) saturate(1.08);
+  }
+
+  .liquid-drawer-panel {
+    border-left: 1px solid rgba(255, 255, 255, 0.72);
+    background:
+      linear-gradient(145deg, rgba(255, 255, 255, 0.92), rgba(248, 251, 255, 0.82)),
+      linear-gradient(180deg, rgba(219, 234, 254, 0.28), rgba(255, 248, 241, 0.12));
+    box-shadow:
+      inset 1px 0 0 rgba(255, 255, 255, 0.84),
+      -28px 0 86px rgba(15, 23, 42, 0.18);
+    backdrop-filter: blur(24px) saturate(1.34);
+    -webkit-backdrop-filter: blur(24px) saturate(1.34);
+  }
+
+  @media (max-width: 767px) {
+    .liquid-drawer-panel {
+      border-left: 0;
+      border-top: 1px solid rgba(255, 255, 255, 0.78);
+      box-shadow:
+        inset 0 1px 0 rgba(255, 255, 255, 0.86),
+        0 -24px 72px rgba(15, 23, 42, 0.18);
+    }
+
+    .liquid-building-unit-sheet :where(input, select, textarea) {
+      min-height: var(--mobile-touch-target);
+      font-size: 16px;
+    }
+  }
+
+  .liquid-budget-shell {
+    border: 1px solid rgba(255, 255, 255, 0.72);
+    background:
+      linear-gradient(145deg, rgba(255, 255, 255, 0.82), rgba(248, 251, 255, 0.62)),
+      linear-gradient(180deg, rgba(219, 234, 254, 0.22), rgba(255, 248, 241, 0.1));
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.86),
+      0 22px 64px rgba(15, 23, 42, 0.075);
+    backdrop-filter: blur(20px) saturate(1.36);
+    -webkit-backdrop-filter: blur(20px) saturate(1.36);
+  }
+
+  .liquid-budget-table {
+    background:
+      linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(248, 250, 252, 0.92));
+  }
+
+  .liquid-budget-mobile-summary,
+  .liquid-budget-mobile-card,
+  .liquid-budget-mobile-group,
+  .liquid-budget-mobile-month,
+  .liquid-budget-mobile-metric {
+    border: 1px solid rgba(255, 255, 255, 0.72);
+    background:
+      linear-gradient(145deg, rgba(255, 255, 255, 0.86), rgba(239, 246, 255, 0.62)),
+      linear-gradient(180deg, rgba(255, 255, 255, 0.26), rgba(255, 255, 255, 0.08));
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.9),
+      0 12px 30px rgba(15, 23, 42, 0.07);
+    backdrop-filter: blur(18px) saturate(1.32);
+    -webkit-backdrop-filter: blur(18px) saturate(1.32);
+  }
+
+  .liquid-budget-mobile-summary {
+    background:
+      linear-gradient(135deg, rgba(255, 255, 255, 0.9), rgba(219, 234, 254, 0.66)),
+      linear-gradient(180deg, rgba(125, 211, 252, 0.16), rgba(255, 255, 255, 0.06));
+  }
+
+  .liquid-budget-mobile-card-risk {
+    border-color: rgba(251, 113, 133, 0.38);
+    background:
+      linear-gradient(145deg, rgba(255, 241, 242, 0.9), rgba(255, 255, 255, 0.72));
+  }
+
+  .liquid-budget-mobile-card-new {
+    border-color: rgba(125, 211, 252, 0.46);
+    background:
+      linear-gradient(145deg, rgba(224, 242, 254, 0.86), rgba(255, 255, 255, 0.72));
+  }
+
+  .liquid-budget-mobile-month {
+    min-width: 6.35rem;
+  }
+
+  .liquid-budget-mobile-group summary::-webkit-details-marker {
+    display: none;
+  }
+
+  .liquid-budget-mobile-group[open] summary svg {
+    transform: rotate(180deg);
+  }
+
+  .liquid-budget-sticky {
+    background:
+      linear-gradient(180deg, rgba(248, 250, 252, 0.97), rgba(241, 245, 249, 0.94));
+  }
+
+  .liquid-budget-group {
+    background:
+      linear-gradient(90deg, rgba(239, 246, 255, 0.82), rgba(255, 255, 255, 0.8));
+  }
+
+  .liquid-budget-field {
+    border: 1px solid rgba(203, 213, 225, 0.7);
+    background:
+      linear-gradient(145deg, rgba(255, 255, 255, 0.88), rgba(239, 246, 255, 0.68)),
+      linear-gradient(180deg, rgba(255, 255, 255, 0.48), rgba(219, 234, 254, 0.18));
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.92),
+      0 8px 22px rgba(15, 23, 42, 0.045);
+    backdrop-filter: blur(12px) saturate(1.22);
+    -webkit-backdrop-filter: blur(12px) saturate(1.22);
+  }
+
+  .liquid-budget-row-head {
+    background:
+      linear-gradient(90deg, rgba(255, 255, 255, 0.92), rgba(248, 251, 255, 0.82));
+  }
+
+  .liquid-budget-row-new {
+    background:
+      linear-gradient(90deg, rgba(224, 242, 254, 0.48), rgba(255, 255, 255, 0.42));
+  }
+
+  .liquid-budget-row-new-head {
+    background:
+      linear-gradient(90deg, rgba(224, 242, 254, 0.88), rgba(255, 255, 255, 0.84));
+  }
+
+  .liquid-budget-data-cell {
+    background:
+      linear-gradient(180deg, rgba(255, 255, 255, 0.76), rgba(248, 250, 252, 0.68));
+  }
+
+  .liquid-budget-adjusted-out {
+    background:
+      linear-gradient(145deg, rgba(255, 237, 213, 0.88), rgba(255, 255, 255, 0.64));
+    box-shadow: inset 0 0 0 1px rgba(234, 88, 12, 0.3);
+  }
+
+  .liquid-budget-adjusted-in {
+    background:
+      linear-gradient(145deg, rgba(219, 234, 254, 0.9), rgba(255, 255, 255, 0.64));
+    box-shadow: inset 0 0 0 1px rgba(37, 99, 235, 0.28);
+  }
+
+  .liquid-budget-adjusted-note {
+    background:
+      linear-gradient(145deg, rgba(207, 250, 254, 0.86), rgba(255, 255, 255, 0.66));
+    box-shadow: inset 0 0 0 1px rgba(8, 145, 178, 0.26);
+  }
+
+  .liquid-budget-subtotal,
+  .liquid-budget-subtotal-cell {
+    background:
+      linear-gradient(90deg, rgba(239, 246, 255, 0.9), rgba(255, 255, 255, 0.82));
+  }
+
+  .liquid-budget-total-cell {
+    background:
+      linear-gradient(135deg, rgba(219, 234, 254, 0.9), rgba(207, 250, 254, 0.74));
+  }
+
+  .liquid-budget-summary-row {
+    border-top: 1px solid rgba(96, 165, 250, 0.36);
+    background:
+      linear-gradient(135deg, rgba(15, 23, 42, 0.94), rgba(30, 64, 175, 0.82)),
+      linear-gradient(180deg, rgba(255, 255, 255, 0.09), rgba(255, 255, 255, 0.02));
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.12),
+      0 -10px 28px rgba(15, 23, 42, 0.1);
+  }
+
+  .liquid-budget-summary-sticky {
+    background:
+      linear-gradient(135deg, rgba(15, 23, 42, 0.97), rgba(30, 64, 175, 0.88));
+    backdrop-filter: blur(16px) saturate(1.18);
+    -webkit-backdrop-filter: blur(16px) saturate(1.18);
+  }
+
+  .liquid-budget-occupancy-row {
+    border-top: 1px solid rgba(125, 211, 252, 0.48);
+    background:
+      linear-gradient(90deg, rgba(224, 242, 254, 0.9), rgba(255, 255, 255, 0.76));
+  }
+
+  .liquid-budget-occupancy-sticky {
+    background:
+      linear-gradient(135deg, rgba(224, 242, 254, 0.98), rgba(219, 234, 254, 0.9));
+    backdrop-filter: blur(14px) saturate(1.12);
+    -webkit-backdrop-filter: blur(14px) saturate(1.12);
+  }
+
+  .liquid-budget-import-head {
+    background:
+      linear-gradient(90deg, rgba(239, 246, 255, 0.9), rgba(248, 250, 252, 0.84));
+  }
+
+  .liquid-budget-import-body {
+    background:
+      linear-gradient(180deg, rgba(255, 255, 255, 0.82), rgba(248, 250, 252, 0.76));
+  }
+
+  .liquid-budget-dialog {
+    position: relative;
+    isolation: isolate;
+    overflow: hidden;
+    border: 1px solid rgba(226, 232, 240, 0.72);
+    background:
+      linear-gradient(145deg, rgba(255, 255, 255, 0.96), rgba(248, 251, 255, 0.9)),
+      linear-gradient(180deg, rgba(219, 234, 254, 0.36), rgba(255, 248, 241, 0.12));
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.96),
+      0 34px 100px rgba(15, 23, 42, 0.2);
+    backdrop-filter: blur(18px) saturate(1.18);
+    -webkit-backdrop-filter: blur(18px) saturate(1.18);
+  }
+
+  .liquid-init-shell {
+    border: 1px solid rgba(255, 255, 255, 0.74);
+    background:
+      linear-gradient(145deg, rgba(255, 255, 255, 0.82), rgba(248, 251, 255, 0.62)),
+      linear-gradient(180deg, rgba(219, 234, 254, 0.24), rgba(255, 248, 241, 0.1));
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.88),
+      0 26px 76px rgba(15, 23, 42, 0.08);
+    backdrop-filter: blur(22px) saturate(1.36);
+    -webkit-backdrop-filter: blur(22px) saturate(1.36);
+  }
+
+  .liquid-init-table {
+    background:
+      linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(248, 250, 252, 0.92));
+  }
+
+  .liquid-init-sticky {
+    background:
+      linear-gradient(180deg, rgba(248, 250, 252, 0.98), rgba(241, 245, 249, 0.95));
+  }
+
+  .liquid-init-dialog {
+    position: relative;
+    isolation: isolate;
+    overflow: hidden;
+    border: 1px solid rgba(226, 232, 240, 0.74);
+    background:
+      linear-gradient(145deg, rgba(255, 255, 255, 0.96), rgba(248, 251, 255, 0.91)),
+      linear-gradient(180deg, rgba(219, 234, 254, 0.3), rgba(255, 248, 241, 0.12));
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.96),
+      0 34px 100px rgba(15, 23, 42, 0.2);
+    backdrop-filter: blur(18px) saturate(1.18);
+    -webkit-backdrop-filter: blur(18px) saturate(1.18);
+  }
+
+  .liquid-init-mobile-card {
+    border: 1px solid rgba(226, 232, 240, 0.72);
+    background:
+      linear-gradient(145deg, rgba(255, 255, 255, 0.92), rgba(248, 251, 255, 0.76)),
+      linear-gradient(180deg, rgba(219, 234, 254, 0.18), rgba(255, 248, 241, 0.08));
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.94),
+      0 12px 30px rgba(15, 23, 42, 0.05);
+    backdrop-filter: blur(14px) saturate(1.16);
+    -webkit-backdrop-filter: blur(14px) saturate(1.16);
+  }
+
+  .liquid-init-field {
+    min-height: 44px;
+    border: 1px solid rgba(203, 213, 225, 0.78);
+    background:
+      linear-gradient(180deg, rgba(255, 255, 255, 0.95), rgba(248, 250, 252, 0.88));
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.92),
+      0 8px 20px rgba(15, 23, 42, 0.035);
+    backdrop-filter: blur(10px) saturate(1.12);
+    -webkit-backdrop-filter: blur(10px) saturate(1.12);
+  }
+
+  .liquid-init-field:disabled {
+    border-color: rgba(226, 232, 240, 0.92);
+    background: rgba(241, 245, 249, 0.82);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.72);
+  }
+
+  .liquid-init-year-segment {
+    border: 1px solid rgba(255, 255, 255, 0.62);
+    background:
+      linear-gradient(145deg, rgba(255, 255, 255, 0.68), rgba(239, 246, 255, 0.42));
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.86),
+      0 10px 24px rgba(15, 23, 42, 0.045);
+    backdrop-filter: blur(14px) saturate(1.18);
+    -webkit-backdrop-filter: blur(14px) saturate(1.18);
+  }
+
+  @media (max-width: 640px) {
+    .liquid-init-dialog {
+      box-shadow:
+        inset 0 1px 0 rgba(255, 255, 255, 0.96),
+        0 -18px 58px rgba(15, 23, 42, 0.16);
+    }
+
+    .liquid-init-field {
+      font-size: 16px;
+    }
+  }
+
+  .liquid-settings-hero,
+  .liquid-settings-card {
+    border: 1px solid rgba(255, 255, 255, 0.74);
+    background:
+      linear-gradient(145deg, rgba(255, 255, 255, 0.86), rgba(248, 251, 255, 0.66)),
+      linear-gradient(180deg, rgba(219, 234, 254, 0.22), rgba(236, 254, 255, 0.1));
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.9),
+      0 18px 54px rgba(15, 23, 42, 0.065);
+    backdrop-filter: blur(20px) saturate(1.24);
+    -webkit-backdrop-filter: blur(20px) saturate(1.24);
+  }
+
+  .liquid-settings-hero {
+    background:
+      radial-gradient(circle at 12% 6%, rgba(219, 234, 254, 0.34), transparent 34%),
+      linear-gradient(145deg, rgba(255, 255, 255, 0.84), rgba(248, 251, 255, 0.64)),
+      linear-gradient(180deg, rgba(219, 234, 254, 0.2), rgba(255, 248, 241, 0.08));
+  }
+
+  .liquid-settings-field {
+    border: 1px solid rgba(226, 232, 240, 0.76);
+    background:
+      linear-gradient(180deg, rgba(255, 255, 255, 0.94), rgba(248, 250, 252, 0.88));
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.92),
+      0 8px 22px rgba(15, 23, 42, 0.035);
+    backdrop-filter: blur(10px) saturate(1.12);
+    -webkit-backdrop-filter: blur(10px) saturate(1.12);
+  }
+
+  .liquid-settings-table {
+    border: 1px solid rgba(226, 232, 240, 0.72);
+    background:
+      linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(248, 250, 252, 0.9));
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.92),
+      0 14px 38px rgba(15, 23, 42, 0.045);
+    backdrop-filter: blur(12px) saturate(1.14);
+    -webkit-backdrop-filter: blur(12px) saturate(1.14);
+  }
+
+  .liquid-settings-table-head,
+  .liquid-settings-group-head,
+  .liquid-settings-panel-body {
+    border-top: 1px solid rgba(255, 255, 255, 0.68);
+    border-bottom: 1px solid rgba(226, 232, 240, 0.58);
+    background:
+      linear-gradient(135deg, rgba(255, 255, 255, 0.78), rgba(239, 246, 255, 0.52)),
+      linear-gradient(90deg, rgba(219, 234, 254, 0.2), rgba(236, 254, 255, 0.12));
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.82);
+    backdrop-filter: blur(14px) saturate(1.18);
+    -webkit-backdrop-filter: blur(14px) saturate(1.18);
+  }
+
+  .liquid-settings-table-head:first-child,
+  .liquid-settings-group-head:first-child {
+    border-top: 0;
+  }
+
+  .liquid-settings-group-head--warning {
+    border-color: rgba(252, 211, 77, 0.44);
+    background:
+      linear-gradient(135deg, rgba(255, 251, 235, 0.88), rgba(255, 255, 255, 0.68));
+    color: #92400e;
+  }
+
+  .liquid-settings-row,
+  .liquid-settings-row-compact {
+    border-top: 1px solid rgba(226, 232, 240, 0.58);
+    transition:
+      background-color 160ms ease,
+      box-shadow 160ms ease;
+  }
+
+  .liquid-settings-row:hover,
+  .liquid-settings-row-compact:hover {
+    background:
+      linear-gradient(90deg, rgba(239, 246, 255, 0.54), rgba(255, 255, 255, 0.42));
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.76);
+  }
+
+  .liquid-settings-row--warning {
+    border-top-color: rgba(252, 211, 77, 0.38);
+    background:
+      linear-gradient(90deg, rgba(255, 251, 235, 0.42), rgba(255, 255, 255, 0.28));
+  }
+
+  .liquid-settings-action,
+  .liquid-settings-status-pill,
+  .liquid-settings-notice,
+  .liquid-settings-maintenance-row {
+    border: 1px solid rgba(226, 232, 240, 0.66);
+    background:
+      linear-gradient(145deg, rgba(255, 255, 255, 0.8), rgba(248, 251, 255, 0.58));
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.82),
+      0 10px 24px rgba(15, 23, 42, 0.04);
+    backdrop-filter: blur(12px) saturate(1.14);
+    -webkit-backdrop-filter: blur(12px) saturate(1.14);
+  }
+
+  .liquid-settings-action--neutral {
+    color: #334155;
+  }
+
+  .liquid-settings-action--neutral:hover {
+    border-color: rgba(147, 197, 253, 0.68);
+    background:
+      linear-gradient(145deg, rgba(239, 246, 255, 0.86), rgba(255, 255, 255, 0.7));
+    color: #1d4ed8;
+  }
+
+  .liquid-settings-action--danger,
+  .liquid-settings-notice[data-tone="danger"],
+  .liquid-settings-status-pill[data-state="disconnected"],
+  .liquid-settings-maintenance-row--danger {
+    border-color: rgba(251, 113, 133, 0.46);
+    background:
+      linear-gradient(145deg, rgba(255, 241, 242, 0.9), rgba(255, 255, 255, 0.7));
+    color: #be123c;
+  }
+
+  .liquid-settings-action--danger:hover {
+    border-color: rgba(244, 63, 94, 0.62);
+    background:
+      linear-gradient(145deg, rgba(255, 228, 230, 0.94), rgba(255, 255, 255, 0.74));
+  }
+
+  .liquid-settings-action--warning,
+  .liquid-settings-notice[data-tone="warning"] {
+    border-color: rgba(252, 211, 77, 0.52);
+    background:
+      linear-gradient(145deg, rgba(255, 251, 235, 0.9), rgba(255, 255, 255, 0.7));
+    color: #b45309;
+  }
+
+  .liquid-settings-action--warning:hover {
+    border-color: rgba(245, 158, 11, 0.58);
+    background:
+      linear-gradient(145deg, rgba(254, 243, 199, 0.94), rgba(255, 255, 255, 0.74));
+  }
+
+  .liquid-settings-notice[data-tone="success"],
+  .liquid-settings-notice[data-tone="info"],
+  .liquid-settings-status-pill[data-state="connected"],
+  .liquid-settings-status-pill[data-state="enabled"] {
+    border-color: rgba(125, 211, 252, 0.58);
+    background:
+      linear-gradient(145deg, rgba(236, 254, 255, 0.9), rgba(255, 255, 255, 0.7));
+    color: #0e7490;
+  }
+
+  .liquid-settings-status-pill[data-state="muted"] {
+    border-color: rgba(203, 213, 225, 0.72);
+    background:
+      linear-gradient(145deg, rgba(248, 250, 252, 0.86), rgba(255, 255, 255, 0.66));
+    color: #64748b;
+  }
+
+  .liquid-settings-maintenance-row {
+    color: #334155;
+  }
+
+  .liquid-settings-card,
+  .liquid-settings-table {
+    overflow-wrap: anywhere;
+  }
+
+  @media (max-width: 640px) {
+    .liquid-settings-hero,
+    .liquid-settings-card {
+      border-radius: 22px;
+      box-shadow:
+        inset 0 1px 0 rgba(255, 255, 255, 0.9),
+        0 14px 34px rgba(15, 23, 42, 0.055);
+    }
+
+    .liquid-settings-table {
+      border-radius: 18px;
+      box-shadow:
+        inset 0 1px 0 rgba(255, 255, 255, 0.9),
+        0 10px 26px rgba(15, 23, 42, 0.04);
+    }
+
+    .liquid-settings-field {
+      font-size: 16px;
+    }
+  }
+
+  .liquid-auth-panel {
+    border: 1px solid rgba(255, 255, 255, 0.76);
+    background:
+      linear-gradient(145deg, rgba(255, 255, 255, 0.9), rgba(248, 251, 255, 0.7)),
+      linear-gradient(180deg, rgba(219, 234, 254, 0.22), rgba(255, 248, 241, 0.08));
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.92),
+      0 34px 92px rgba(15, 23, 42, 0.1);
+    backdrop-filter: blur(24px) saturate(1.28);
+    -webkit-backdrop-filter: blur(24px) saturate(1.28);
+  }
+
+  .liquid-auth-segment {
+    border: 1px solid rgba(255, 255, 255, 0.7);
+    background:
+      linear-gradient(135deg, rgba(255, 255, 255, 0.64), rgba(239, 246, 255, 0.36)),
+      rgba(255, 255, 255, 0.32);
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.88),
+      0 10px 26px rgba(15, 23, 42, 0.05);
+    backdrop-filter: blur(16px) saturate(1.22);
+    -webkit-backdrop-filter: blur(16px) saturate(1.22);
+  }
+
+  .liquid-auth-field {
+    border: 1px solid rgba(226, 232, 240, 0.78);
+    background:
+      linear-gradient(180deg, rgba(255, 255, 255, 0.94), rgba(248, 250, 252, 0.88));
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.92),
+      0 8px 22px rgba(15, 23, 42, 0.035);
+    backdrop-filter: blur(10px) saturate(1.12);
+    -webkit-backdrop-filter: blur(10px) saturate(1.12);
+  }
+
+  .liquid-auth-park-option {
+    border: 1px solid transparent;
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.48);
+  }
+
+  .liquid-contract-editor {
+    background:
+      radial-gradient(circle at 64% 18%, rgba(219, 234, 254, 0.34), transparent 36%),
+      linear-gradient(145deg, rgba(255, 255, 255, 0.88), rgba(248, 251, 255, 0.7)),
+      linear-gradient(180deg, rgba(219, 234, 254, 0.24), rgba(255, 248, 241, 0.1));
+  }
+
+  .liquid-contract-editor section {
+    border: 1px solid rgba(255, 255, 255, 0.72);
+    border-radius: 24px;
+    background:
+      linear-gradient(145deg, rgba(255, 255, 255, 0.9), rgba(248, 251, 255, 0.72)),
+      linear-gradient(180deg, rgba(219, 234, 254, 0.16), rgba(255, 248, 241, 0.06));
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.92),
+      0 16px 44px rgba(15, 23, 42, 0.055);
+    backdrop-filter: blur(18px) saturate(1.18);
+    -webkit-backdrop-filter: blur(18px) saturate(1.18);
+  }
+
+  .liquid-contract-editor label {
+    font-weight: 800;
+    color: #475569;
+  }
+
+  .liquid-contract-editor input:not([type="checkbox"]):not([type="radio"]):not([type="file"]),
+  .liquid-contract-editor select,
+  .liquid-contract-editor textarea {
+    border-color: rgba(203, 213, 225, 0.82);
+    border-radius: 16px;
+    background:
+      linear-gradient(180deg, rgba(255, 255, 255, 0.95), rgba(248, 250, 252, 0.88));
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.92),
+      0 8px 22px rgba(15, 23, 42, 0.03);
+    color: #0f172a;
+    font-weight: 650;
+    outline: none;
+    transition:
+      border-color 180ms ease,
+      box-shadow 180ms ease,
+      background-color 180ms ease;
+  }
+
+  .liquid-contract-editor input:not([type="checkbox"]):not([type="radio"]):not([type="file"]):focus,
+  .liquid-contract-editor select:focus,
+  .liquid-contract-editor textarea:focus {
+    border-color: rgba(37, 99, 235, 0.48);
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.92),
+      0 0 0 4px rgba(37, 99, 235, 0.1),
+      0 10px 26px rgba(15, 23, 42, 0.04);
+  }
+
+  .liquid-contract-editor input:not([type="checkbox"]):not([type="radio"]):not([type="file"]):disabled,
+  .liquid-contract-editor select:disabled,
+  .liquid-contract-editor textarea:disabled,
+  .liquid-contract-editor input[readonly],
+  .liquid-contract-editor textarea[readonly] {
+    border-color: rgba(226, 232, 240, 0.9);
+    background: rgba(241, 245, 249, 0.78);
+    color: #64748b;
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.72);
+  }
+
+  .liquid-contract-editor table {
+    background: rgba(255, 255, 255, 0.76);
+  }
+
+  .liquid-contract-editor thead {
+    background:
+      linear-gradient(180deg, rgba(248, 250, 252, 0.98), rgba(239, 246, 255, 0.9));
+  }
+
+  .liquid-contract-init-panel {
+    border: 1px solid rgba(226, 232, 240, 0.74);
+    background:
+      linear-gradient(145deg, rgba(255, 255, 255, 0.96), rgba(248, 251, 255, 0.9)),
+      linear-gradient(180deg, rgba(219, 234, 254, 0.3), rgba(255, 248, 241, 0.12));
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.96),
+      0 34px 100px rgba(15, 23, 42, 0.2);
+    backdrop-filter: blur(18px) saturate(1.18);
+    -webkit-backdrop-filter: blur(18px) saturate(1.18);
+  }
+
+  .liquid-contract-init-note {
+    border: 1px solid rgba(191, 219, 254, 0.62);
+    background:
+      linear-gradient(145deg, rgba(239, 246, 255, 0.86), rgba(255, 255, 255, 0.72)),
+      linear-gradient(180deg, rgba(255, 255, 255, 0.38), rgba(219, 234, 254, 0.14));
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.9),
+      0 10px 26px rgba(37, 99, 235, 0.055);
+  }
+
+  .liquid-contract-init-field {
+    min-height: 46px;
+    border: 1px solid rgba(203, 213, 225, 0.78);
+    background:
+      linear-gradient(180deg, rgba(255, 255, 255, 0.95), rgba(248, 250, 252, 0.88));
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.92),
+      0 8px 20px rgba(15, 23, 42, 0.035);
+    backdrop-filter: blur(10px) saturate(1.12);
+    -webkit-backdrop-filter: blur(10px) saturate(1.12);
+  }
+
+  @media (max-width: 640px) {
+    .liquid-contract-init-panel {
+      box-shadow:
+        inset 0 1px 0 rgba(255, 255, 255, 0.96),
+        0 -18px 58px rgba(15, 23, 42, 0.16);
+      }
+  }
+
+  .liquid-contract-termination-panel {
+    border: 1px solid rgba(226, 232, 240, 0.74);
+    background:
+      linear-gradient(145deg, rgba(255, 255, 255, 0.96), rgba(248, 251, 255, 0.9)),
+      linear-gradient(180deg, rgba(254, 243, 199, 0.22), rgba(219, 234, 254, 0.12));
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.96),
+      0 34px 100px rgba(15, 23, 42, 0.2);
+    backdrop-filter: blur(18px) saturate(1.18);
+    -webkit-backdrop-filter: blur(18px) saturate(1.18);
+  }
+
+  .liquid-contract-termination-card {
+    border: 1px solid rgba(226, 232, 240, 0.72);
+    background:
+      linear-gradient(145deg, rgba(255, 255, 255, 0.88), rgba(248, 251, 255, 0.68)),
+      linear-gradient(180deg, rgba(254, 243, 199, 0.16), rgba(255, 255, 255, 0.08));
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.9),
+      0 12px 32px rgba(15, 23, 42, 0.052);
+    backdrop-filter: blur(14px) saturate(1.14);
+    -webkit-backdrop-filter: blur(14px) saturate(1.14);
+  }
+
+  .liquid-contract-termination-field {
+    min-height: 46px;
+    border: 1px solid rgba(203, 213, 225, 0.78);
+    background:
+      linear-gradient(180deg, rgba(255, 255, 255, 0.95), rgba(248, 250, 252, 0.88));
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.92),
+      0 8px 20px rgba(15, 23, 42, 0.035);
+    backdrop-filter: blur(10px) saturate(1.12);
+    -webkit-backdrop-filter: blur(10px) saturate(1.12);
+  }
+
+  @media (max-width: 640px) {
+    .liquid-contract-termination-panel {
+      box-shadow:
+        inset 0 1px 0 rgba(255, 255, 255, 0.96),
+        0 -18px 58px rgba(15, 23, 42, 0.16);
+    }
+  }
+
+  .liquid-contract-toolbar {
+    border: 1px solid rgba(255, 255, 255, 0.72);
+    background:
+      linear-gradient(145deg, rgba(255, 255, 255, 0.84), rgba(248, 251, 255, 0.66)),
+      linear-gradient(180deg, rgba(219, 234, 254, 0.24), rgba(255, 248, 241, 0.1));
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.88),
+      0 22px 64px rgba(15, 23, 42, 0.075);
+    backdrop-filter: blur(22px) saturate(1.34);
+    -webkit-backdrop-filter: blur(22px) saturate(1.34);
+  }
+
+  .liquid-contract-list {
+    border: 1px solid rgba(226, 232, 240, 0.68);
+    background:
+      linear-gradient(180deg, rgba(255, 255, 255, 0.94), rgba(248, 250, 252, 0.9)),
+      linear-gradient(145deg, rgba(219, 234, 254, 0.16), rgba(255, 248, 241, 0.08));
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.92),
+      0 18px 52px rgba(15, 23, 42, 0.06);
+    backdrop-filter: blur(16px) saturate(1.18);
+    -webkit-backdrop-filter: blur(16px) saturate(1.18);
+  }
+
+  .liquid-contract-card {
+    background:
+      linear-gradient(145deg, rgba(255, 255, 255, 0.92), rgba(248, 251, 255, 0.74)),
+      linear-gradient(180deg, rgba(219, 234, 254, 0.14), rgba(255, 248, 241, 0.08));
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.92),
+      0 14px 38px rgba(15, 23, 42, 0.055);
+    backdrop-filter: blur(12px) saturate(1.18);
+    -webkit-backdrop-filter: blur(12px) saturate(1.18);
+  }
+
+  .liquid-contract-mobile-card {
+    border: 1px solid rgba(226, 232, 240, 0.72);
+    background:
+      linear-gradient(145deg, rgba(255, 255, 255, 0.94), rgba(248, 251, 255, 0.78)),
+      linear-gradient(180deg, rgba(219, 234, 254, 0.15), rgba(255, 248, 241, 0.08));
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.94),
+      0 12px 30px rgba(15, 23, 42, 0.05);
+  }
+
+  .liquid-contract-mobile-card[data-selected="true"] {
+    border-color: rgba(37, 99, 235, 0.42);
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.96),
+      inset 3px 0 0 rgba(37, 99, 235, 0.42),
+      0 16px 40px rgba(37, 99, 235, 0.12);
+  }
+
+  .liquid-contract-tablet-preview {
+    border: 1px solid rgba(226, 232, 240, 0.72);
+    background:
+      radial-gradient(circle at 88% 0%, rgba(14, 165, 233, 0.14), transparent 30%),
+      linear-gradient(145deg, rgba(255, 255, 255, 0.94), rgba(248, 251, 255, 0.8));
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.94),
+      0 18px 52px rgba(15, 23, 42, 0.08);
+    backdrop-filter: blur(16px) saturate(1.18);
+    -webkit-backdrop-filter: blur(16px) saturate(1.18);
+  }
+
+  .liquid-contract-tablet-status,
+  .liquid-contract-tablet-metric,
+  .liquid-contract-tablet-row {
+    border: 1px solid rgba(226, 232, 240, 0.68);
+    background: rgba(255, 255, 255, 0.72);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.9);
+  }
+
+  .liquid-contract-tablet-row {
+    display: flex;
+    align-items: center;
+    gap: 0.45rem;
+  }
+
+  .liquid-contract-mobile-group {
+    border-bottom: 1px solid rgba(255, 255, 255, 0.72);
+    background:
+      linear-gradient(135deg, rgba(219, 234, 254, 0.72), rgba(255, 255, 255, 0.58));
+    backdrop-filter: blur(14px) saturate(1.18);
+    -webkit-backdrop-filter: blur(14px) saturate(1.18);
+  }
+
+  .liquid-contract-mobile-floor {
+    border-bottom: 1px solid rgba(255, 255, 255, 0.72);
+    background: rgba(255, 255, 255, 0.58);
+    backdrop-filter: blur(10px) saturate(1.08);
+    -webkit-backdrop-filter: blur(10px) saturate(1.08);
+  }
+
+  .liquid-contract-mobile-chip {
+    border: 1px solid rgba(226, 232, 240, 0.78);
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.72);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.86);
+  }
+
+  .liquid-contract-data-row {
+    transition:
+      background-color 180ms cubic-bezier(0.22, 1, 0.36, 1),
+      box-shadow 180ms cubic-bezier(0.22, 1, 0.36, 1);
+  }
+
+  .liquid-contract-data-row:hover {
+    background: rgba(239, 246, 255, 0.46);
+    box-shadow: inset 3px 0 0 rgba(37, 99, 235, 0.34);
+  }
+
+  .liquid-contract-group-row {
+    border-block: 1px solid rgba(255, 255, 255, 0.72);
+    background:
+      linear-gradient(135deg, rgba(219, 234, 254, 0.72), rgba(255, 255, 255, 0.58));
+    backdrop-filter: blur(12px) saturate(1.12);
+    -webkit-backdrop-filter: blur(12px) saturate(1.12);
+  }
+
+  .liquid-contract-floor-row {
+    border-block: 1px solid rgba(255, 255, 255, 0.68);
+    background: rgba(255, 255, 255, 0.56);
+  }
+
+  .liquid-contract-year-row {
+    border-block: 1px solid rgba(255, 255, 255, 0.7);
+    background:
+      linear-gradient(135deg, rgba(219, 234, 254, 0.66), rgba(255, 255, 255, 0.58));
+  }
+
+  .liquid-contract-year-row[data-tone="rose"] {
+    background:
+      linear-gradient(135deg, rgba(255, 228, 230, 0.72), rgba(255, 255, 255, 0.58));
+  }
+
+  .liquid-contract-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    border-radius: 999px;
+    border: 1px solid rgba(226, 232, 240, 0.8);
+    padding: 0.125rem 0.5rem;
+    font-size: 10px;
+    font-weight: 900;
+    line-height: 1.2;
+    white-space: nowrap;
+  }
+
+  .liquid-contract-pill[data-tone="blue"] {
+    border-color: rgba(191, 219, 254, 0.86);
+    background: rgba(239, 246, 255, 0.88);
+    color: #1d4ed8;
+  }
+
+  .liquid-contract-pill[data-tone="cyan"] {
+    border-color: rgba(165, 243, 252, 0.86);
+    background: rgba(236, 254, 255, 0.9);
+    color: #0e7490;
+  }
+
+  .liquid-contract-pill[data-tone="sky"] {
+    border-color: rgba(186, 230, 253, 0.86);
+    background: rgba(240, 249, 255, 0.9);
+    color: #0369a1;
+  }
+
+  .liquid-contract-pill[data-tone="amber"] {
+    border-color: rgba(253, 230, 138, 0.9);
+    background: rgba(255, 251, 235, 0.92);
+    color: #b45309;
+  }
+
+  .liquid-contract-pill[data-tone="rose"] {
+    border-color: rgba(254, 205, 211, 0.9);
+    background: rgba(255, 241, 242, 0.92);
+    color: #be123c;
+  }
+
+  .liquid-contract-location-chip {
+    display: inline-flex;
+    max-width: 12rem;
+    align-items: center;
+    border: 1px solid rgba(226, 232, 240, 0.76);
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.72);
+    padding: 0.125rem 0.45rem;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+    font-size: 11px;
+    color: #475569;
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.84);
+  }
+
+  .liquid-contract-row-action {
+    display: inline-flex;
+    align-items: center;
+    border-radius: 999px;
+    padding: 0.25rem 0.625rem;
+    color: #1d4ed8;
+    font-size: 12px;
+    font-weight: 900;
+    transition:
+      background-color 180ms cubic-bezier(0.22, 1, 0.36, 1),
+      color 180ms cubic-bezier(0.22, 1, 0.36, 1);
+  }
+
+  .liquid-contract-row-action:hover {
+    background: rgba(239, 246, 255, 0.86);
+  }
+
+  .liquid-contract-row-action[data-tone="amber"] {
+    color: #b45309;
+  }
+
+  .liquid-contract-row-action[data-tone="amber"]:hover {
+    background: rgba(255, 251, 235, 0.9);
+  }
+
+  .liquid-contract-analysis-card,
+  .liquid-contract-mini-card,
+  .liquid-contract-expiry-card,
+  .liquid-contract-expiry-stat {
+    border: 1px solid rgba(226, 232, 240, 0.7);
+    background:
+      linear-gradient(145deg, rgba(255, 255, 255, 0.9), rgba(248, 251, 255, 0.72)),
+      linear-gradient(180deg, rgba(219, 234, 254, 0.16), rgba(255, 248, 241, 0.08));
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.92),
+      0 16px 44px rgba(15, 23, 42, 0.055);
+    backdrop-filter: blur(14px) saturate(1.16);
+    -webkit-backdrop-filter: blur(14px) saturate(1.16);
+  }
+
+  .liquid-contract-analysis-card,
+  .liquid-contract-expiry-card,
+  .liquid-contract-expiry-stat {
+    border-radius: 24px;
+  }
+
+  .liquid-contract-analysis-hero {
+    border: 1px solid rgba(191, 219, 254, 0.74);
+    background:
+      radial-gradient(circle at 88% 0%, rgba(37, 99, 235, 0.2), transparent 36%),
+      linear-gradient(145deg, rgba(239, 246, 255, 0.94), rgba(255, 255, 255, 0.72)),
+      linear-gradient(180deg, rgba(8, 145, 178, 0.1), rgba(255, 248, 241, 0.08));
+    color: #0f172a;
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.95),
+      0 20px 58px rgba(37, 99, 235, 0.1);
+    backdrop-filter: blur(18px) saturate(1.2);
+    -webkit-backdrop-filter: blur(18px) saturate(1.2);
+  }
+
+  .liquid-contract-mini-card {
+    border-radius: 18px;
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.9),
+      0 10px 28px rgba(15, 23, 42, 0.04);
+  }
+
+  .liquid-contract-expiry-card[data-urgency="overdue"] {
+    border-color: rgba(248, 113, 113, 0.48);
+    background:
+      linear-gradient(145deg, rgba(255, 241, 242, 0.92), rgba(255, 255, 255, 0.74)),
+      linear-gradient(180deg, rgba(254, 226, 226, 0.28), rgba(219, 234, 254, 0.08));
+  }
+
+  .liquid-contract-expiry-card[data-urgency="thisMonth"] {
+    border-color: rgba(251, 113, 133, 0.36);
+  }
+
+  .liquid-contract-expiry-card[data-urgency="nextMonth"] {
+    border-color: rgba(251, 191, 36, 0.42);
+  }
+
+  .liquid-contract-expiry-header {
+    border-bottom: 1px solid rgba(255, 255, 255, 0.72);
+    background: linear-gradient(180deg, rgba(248, 250, 252, 0.88), rgba(255, 255, 255, 0.62));
+  }
+
+  .liquid-contract-sticky {
+    background:
+      linear-gradient(180deg, rgba(248, 250, 252, 0.98), rgba(241, 245, 249, 0.94));
+    backdrop-filter: blur(14px) saturate(1.18);
+    -webkit-backdrop-filter: blur(14px) saturate(1.18);
+  }
+
+  .liquid-contract-editor .contract-section-heading {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    color: #1d4ed8;
+    font-weight: 900;
+    letter-spacing: 0;
+  }
+
+  .liquid-contract-editor .contract-inline-panel,
+  .liquid-contract-editor .contract-stat-card,
+  .liquid-contract-editor .contract-option-card,
+  .liquid-contract-editor .contract-compact-table,
+  .liquid-contract-editor .contract-empty-state,
+  .liquid-contract-editor .contract-check-card {
+    border: 1px solid rgba(226, 232, 240, 0.72);
+    background:
+      linear-gradient(145deg, rgba(255, 255, 255, 0.92), rgba(248, 251, 255, 0.76)),
+      linear-gradient(180deg, rgba(219, 234, 254, 0.12), rgba(255, 248, 241, 0.06));
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.94),
+      0 12px 32px rgba(15, 23, 42, 0.045);
+    backdrop-filter: blur(14px) saturate(1.16);
+    -webkit-backdrop-filter: blur(14px) saturate(1.16);
+  }
+
+  .liquid-contract-editor .contract-inline-panel {
+    border-radius: 20px;
+  }
+
+  .liquid-contract-editor .contract-option-card {
+    border-radius: 18px;
+  }
+
+  .liquid-contract-editor .contract-option-card[data-active="true"] {
+    border-color: rgba(37, 99, 235, 0.42);
+    background:
+      linear-gradient(145deg, rgba(239, 246, 255, 0.96), rgba(255, 255, 255, 0.8)),
+      linear-gradient(180deg, rgba(59, 130, 246, 0.13), rgba(8, 145, 178, 0.05));
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.96),
+      0 14px 34px rgba(37, 99, 235, 0.12);
+  }
+
+  .liquid-contract-editor .contract-stat-card {
+    border-radius: 20px;
+    min-width: 0;
+  }
+
+  .liquid-contract-editor .contract-unit-grid {
+    border: 1px solid rgba(226, 232, 240, 0.74);
+    background:
+      linear-gradient(145deg, rgba(248, 251, 255, 0.92), rgba(255, 255, 255, 0.78));
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.88);
+    backdrop-filter: blur(10px) saturate(1.08);
+    -webkit-backdrop-filter: blur(10px) saturate(1.08);
+  }
+
+  .liquid-contract-editor .contract-unit-chip {
+    min-height: 3rem;
+    border: 1px solid rgba(203, 213, 225, 0.72);
+    background: rgba(255, 255, 255, 0.84);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.82);
+  }
+
+  .liquid-contract-editor .contract-unit-chip[data-selected="true"] {
+    border-color: rgba(37, 99, 235, 0.58);
+    background:
+      linear-gradient(145deg, rgba(219, 234, 254, 0.98), rgba(255, 255, 255, 0.76));
+    color: #1d4ed8;
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.92),
+      0 10px 26px rgba(37, 99, 235, 0.12);
+  }
+
+  .liquid-contract-editor .contract-soft-action {
+    border: 1px solid rgba(191, 219, 254, 0.78);
+    background:
+      linear-gradient(180deg, rgba(239, 246, 255, 0.94), rgba(255, 255, 255, 0.76));
+    color: #1d4ed8;
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.88);
+  }
+
+  .liquid-contract-editor .contract-subtle-action {
+    border: 1px solid rgba(226, 232, 240, 0.78);
+    background: rgba(255, 255, 255, 0.7);
+    color: #475569;
+  }
+
+  .liquid-contract-editor .contract-alert-panel {
+    border: 1px solid rgba(251, 191, 36, 0.38);
+    border-radius: 18px;
+    background:
+      linear-gradient(145deg, rgba(255, 251, 235, 0.94), rgba(255, 255, 255, 0.78));
+  }
+
+  .liquid-contract-editor .contract-empty-state {
+    border-style: dashed;
+    color: #64748b;
+  }
+
+  .liquid-contract-editor .contract-note {
+    color: #475569;
+    background: rgba(248, 250, 252, 0.74);
+  }
+
+  .liquid-elevated-backdrop {
+    background:
+      linear-gradient(150deg, rgba(248, 251, 255, 0.26), rgba(15, 23, 42, 0.34)),
+      rgba(15, 23, 42, 0.28);
+    backdrop-filter: blur(22px) saturate(1.08);
+    -webkit-backdrop-filter: blur(22px) saturate(1.08);
+  }
+
+  .liquid-elevated-panel {
+    position: relative;
+    isolation: isolate;
+    overflow: hidden;
+    border: 1px solid rgba(226, 232, 240, 0.74);
+    background:
+      linear-gradient(145deg, rgba(255, 255, 255, 0.96), rgba(248, 251, 255, 0.9)),
+      linear-gradient(180deg, rgba(219, 234, 254, 0.3), rgba(255, 248, 241, 0.12));
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.96),
+      0 34px 100px rgba(15, 23, 42, 0.2);
+    backdrop-filter: blur(18px) saturate(1.18);
+    -webkit-backdrop-filter: blur(18px) saturate(1.18);
+  }
+
+  .liquid-elevated-header,
+  .liquid-elevated-footer {
+    background:
+      linear-gradient(135deg, rgba(255, 255, 255, 0.86), rgba(248, 251, 255, 0.68)),
+      linear-gradient(90deg, rgba(219, 234, 254, 0.2), rgba(255, 248, 241, 0.1));
+    backdrop-filter: blur(16px) saturate(1.2);
+    -webkit-backdrop-filter: blur(16px) saturate(1.2);
+  }
+
+  .liquid-elevated-card {
+    border: 1px solid rgba(226, 232, 240, 0.72);
+    background:
+      linear-gradient(145deg, rgba(255, 255, 255, 0.92), rgba(248, 250, 252, 0.76)),
+      linear-gradient(180deg, rgba(219, 234, 254, 0.16), rgba(255, 248, 241, 0.08));
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.92),
+      0 14px 38px rgba(15, 23, 42, 0.055);
+    backdrop-filter: blur(12px) saturate(1.18);
+    -webkit-backdrop-filter: blur(12px) saturate(1.18);
+  }
+
+  .liquid-elevated-field {
+    border: 1px solid rgba(203, 213, 225, 0.82);
+    background: rgba(255, 255, 255, 0.88);
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.92),
+      0 4px 12px rgba(15, 23, 42, 0.035);
+  }
+
+  .liquid-elevated-table {
+    background:
+      linear-gradient(180deg, rgba(255, 255, 255, 0.97), rgba(248, 250, 252, 0.93));
+  }
+
+  .liquid-elevated-history-row,
+  .liquid-elevated-preview-row {
+    border: 1px solid rgba(226, 232, 240, 0.72);
+    background:
+      linear-gradient(145deg, rgba(255, 255, 255, 0.88), rgba(248, 250, 252, 0.66)),
+      linear-gradient(180deg, rgba(219, 234, 254, 0.16), rgba(255, 255, 255, 0));
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.88),
+      0 6px 16px rgba(15, 23, 42, 0.035);
+  }
+
+  .liquid-elevated-preview-row {
+    transition: background-color 160ms ease, border-color 160ms ease, transform 160ms ease;
+  }
+
+  .liquid-elevated-preview-row:hover {
+    border-color: rgba(147, 197, 253, 0.62);
+    background:
+      linear-gradient(145deg, rgba(239, 246, 255, 0.86), rgba(255, 255, 255, 0.7));
+  }
+
+  .liquid-elevated-preview-row--blue {
+    border-color: rgba(191, 219, 254, 0.7);
+    background:
+      linear-gradient(145deg, rgba(239, 246, 255, 0.88), rgba(255, 255, 255, 0.68)),
+      linear-gradient(180deg, rgba(224, 242, 254, 0.24), rgba(255, 255, 255, 0));
+  }
+
+  .liquid-elevated-alert {
+    border: 1px solid rgba(251, 113, 133, 0.38);
+    background:
+      linear-gradient(145deg, rgba(255, 241, 242, 0.94), rgba(255, 255, 255, 0.78));
+    color: #be123c;
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.86);
+  }
+
+  .liquid-elevated-alert--amber {
+    border-color: rgba(251, 191, 36, 0.46);
+    background:
+      linear-gradient(145deg, rgba(254, 243, 199, 0.92), rgba(255, 255, 255, 0.76));
+    color: #92400e;
+  }
+
+  .liquid-ai-tab-active {
+    background:
+      linear-gradient(135deg, rgba(37, 99, 235, 0.96), rgba(8, 145, 178, 0.88));
+    color: #ffffff;
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.26),
+      0 10px 24px rgba(37, 99, 235, 0.18);
+  }
+
+  .liquid-ai-dropzone {
+    border: 2px dashed rgba(147, 197, 253, 0.72);
+    background:
+      radial-gradient(circle at 50% 0%, rgba(219, 234, 254, 0.44), transparent 40%),
+      linear-gradient(145deg, rgba(255, 255, 255, 0.78), rgba(239, 246, 255, 0.52));
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.9),
+      0 14px 34px rgba(37, 99, 235, 0.07);
+    backdrop-filter: blur(14px) saturate(1.18);
+    -webkit-backdrop-filter: blur(14px) saturate(1.18);
+  }
+
+  .liquid-ai-dropzone:hover {
+    border-color: rgba(37, 99, 235, 0.58);
+    background:
+      radial-gradient(circle at 50% 0%, rgba(191, 219, 254, 0.54), transparent 42%),
+      linear-gradient(145deg, rgba(239, 246, 255, 0.86), rgba(255, 255, 255, 0.62));
+  }
+
+  .liquid-ai-remove-action {
+    border: 1px solid rgba(254, 205, 211, 0.84);
+    background:
+      linear-gradient(145deg, rgba(255, 241, 242, 0.92), rgba(255, 255, 255, 0.72));
+    color: #e11d48;
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.88);
+  }
+
+  .liquid-ai-remove-action:hover {
+    background:
+      linear-gradient(145deg, rgba(255, 228, 230, 0.96), rgba(255, 255, 255, 0.8));
+  }
+
+  .liquid-ai-error {
+    border: 1px solid rgba(254, 205, 211, 0.86);
+    background:
+      linear-gradient(145deg, rgba(255, 241, 242, 0.94), rgba(255, 255, 255, 0.78));
+    color: #be123c;
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.9),
+      0 10px 26px rgba(225, 29, 72, 0.06);
+  }
+
+  .liquid-ai-match-high {
+    border-color: rgba(103, 232, 249, 0.72);
+    background:
+      linear-gradient(145deg, rgba(236, 254, 255, 0.92), rgba(255, 255, 255, 0.76));
+    color: #155e75;
+  }
+
+  .liquid-ai-match-low {
+    border-color: rgba(252, 211, 77, 0.78);
+    background:
+      linear-gradient(145deg, rgba(255, 251, 235, 0.94), rgba(255, 255, 255, 0.76));
+    color: #92400e;
+  }
+
+  .liquid-ai-match-missing {
+    border-color: rgba(253, 164, 175, 0.78);
+    background:
+      linear-gradient(145deg, rgba(255, 241, 242, 0.94), rgba(255, 255, 255, 0.76));
+    color: #9f1239;
+  }
+
+  .liquid-ai-unit-chip {
+    border: 1px solid rgba(203, 213, 225, 0.72);
+    background:
+      linear-gradient(145deg, rgba(255, 255, 255, 0.86), rgba(248, 250, 252, 0.64));
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.86);
+  }
+
+  .liquid-ai-unit-chip[data-selected="true"] {
+    border-color: rgba(37, 99, 235, 0.54);
+    background:
+      linear-gradient(135deg, rgba(37, 99, 235, 0.94), rgba(8, 145, 178, 0.82));
+    color: #ffffff;
+    font-weight: 800;
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.24),
+      0 10px 22px rgba(37, 99, 235, 0.16);
+  }
+
+  .liquid-finance-shell {
+    border: 1px solid rgba(255, 255, 255, 0.74);
+    background:
+      linear-gradient(145deg, rgba(255, 255, 255, 0.84), rgba(248, 251, 255, 0.64)),
+      linear-gradient(180deg, rgba(219, 234, 254, 0.24), rgba(255, 248, 241, 0.1));
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.88),
+      0 24px 72px rgba(15, 23, 42, 0.075);
+    backdrop-filter: blur(22px) saturate(1.34);
+    -webkit-backdrop-filter: blur(22px) saturate(1.34);
+  }
+
+  .liquid-finance-card {
+    border: 1px solid rgba(226, 232, 240, 0.72);
+    background:
+      linear-gradient(145deg, rgba(255, 255, 255, 0.9), rgba(248, 250, 252, 0.72)),
+      linear-gradient(180deg, rgba(219, 234, 254, 0.16), rgba(255, 248, 241, 0.08));
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.92),
+      0 14px 38px rgba(15, 23, 42, 0.055);
+    backdrop-filter: blur(12px) saturate(1.18);
+    -webkit-backdrop-filter: blur(12px) saturate(1.18);
+  }
+
+  .liquid-finance-table {
+    background:
+      linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(248, 250, 252, 0.92));
+  }
+
+  .liquid-finance-sticky {
+    background:
+      linear-gradient(180deg, rgba(248, 250, 252, 0.98), rgba(241, 245, 249, 0.95));
+  }
+
+  .liquid-finance-form {
+    border: 1px solid rgba(226, 232, 240, 0.74);
+    background:
+      linear-gradient(145deg, rgba(255, 255, 255, 0.9), rgba(248, 251, 255, 0.76)),
+      linear-gradient(180deg, rgba(219, 234, 254, 0.28), rgba(255, 248, 241, 0.12));
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.92),
+      0 20px 58px rgba(15, 23, 42, 0.075);
+    backdrop-filter: blur(18px) saturate(1.24);
+    -webkit-backdrop-filter: blur(18px) saturate(1.24);
+  }
+
+  .liquid-finance-mobile-card {
+    border: 1px solid rgba(226, 232, 240, 0.68);
+    background:
+      linear-gradient(145deg, rgba(255, 255, 255, 0.92), rgba(248, 251, 255, 0.76)),
+      linear-gradient(180deg, rgba(219, 234, 254, 0.16), rgba(255, 248, 241, 0.08));
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.94),
+      0 14px 38px rgba(15, 23, 42, 0.052);
+    backdrop-filter: blur(14px) saturate(1.16);
+    -webkit-backdrop-filter: blur(14px) saturate(1.16);
+  }
+
+  .liquid-finance-mobile-card[data-selected="true"] {
+    border-color: rgba(37, 99, 235, 0.42);
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.96),
+      inset 3px 0 0 rgba(37, 99, 235, 0.42),
+      0 16px 42px rgba(37, 99, 235, 0.12);
+  }
+
+  .liquid-finance-tablet-preview {
+    border: 1px solid rgba(226, 232, 240, 0.72);
+    background:
+      radial-gradient(circle at 88% 0%, rgba(14, 165, 233, 0.14), transparent 30%),
+      linear-gradient(145deg, rgba(255, 255, 255, 0.94), rgba(248, 251, 255, 0.8));
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.94),
+      0 18px 52px rgba(15, 23, 42, 0.08);
+    backdrop-filter: blur(16px) saturate(1.18);
+    -webkit-backdrop-filter: blur(16px) saturate(1.18);
+  }
+
+  .liquid-finance-tablet-status,
+  .liquid-finance-tablet-metric,
+  .liquid-finance-tablet-row {
+    border: 1px solid rgba(226, 232, 240, 0.68);
+    background: rgba(255, 255, 255, 0.72);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.9);
+  }
+
+  .liquid-finance-tablet-row {
+    display: flex;
+    align-items: center;
+    gap: 0.45rem;
+  }
+
+  .liquid-finance-mobile-metric {
+    border: 1px solid rgba(226, 232, 240, 0.66);
+    background: rgba(255, 255, 255, 0.68);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.9);
+  }
+
+  .liquid-finance-row-action {
+    border: 1px solid rgba(191, 219, 254, 0.72);
+    background:
+      linear-gradient(180deg, rgba(239, 246, 255, 0.92), rgba(255, 255, 255, 0.72));
+    color: #1d4ed8;
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.88);
+  }
+
+  .liquid-finance-field {
+    border: 1px solid rgba(203, 213, 225, 0.72);
+    background:
+      linear-gradient(145deg, rgba(255, 255, 255, 0.9), rgba(239, 246, 255, 0.66)),
+      linear-gradient(180deg, rgba(255, 255, 255, 0.46), rgba(219, 234, 254, 0.18));
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.92),
+      0 8px 22px rgba(15, 23, 42, 0.04);
+    backdrop-filter: blur(12px) saturate(1.18);
+    -webkit-backdrop-filter: blur(12px) saturate(1.18);
+  }
+
+  .liquid-finance-month-row {
+    background:
+      linear-gradient(90deg, rgba(239, 246, 255, 0.88), rgba(255, 255, 255, 0.8));
+  }
+
+  .liquid-finance-mobile-filter {
+    background:
+      linear-gradient(145deg, rgba(255, 255, 255, 0.68), rgba(248, 250, 252, 0.54));
+  }
+
+  .liquid-finance-mobile-summary {
+    background:
+      linear-gradient(145deg, rgba(255, 255, 255, 0.78), rgba(239, 246, 255, 0.56));
+  }
+
+  .liquid-finance-status-muted {
+    border-color: rgba(203, 213, 225, 0.72);
+    background:
+      linear-gradient(145deg, rgba(248, 250, 252, 0.88), rgba(255, 255, 255, 0.66)),
+      linear-gradient(180deg, rgba(219, 234, 254, 0.18), rgba(255, 255, 255, 0));
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.86);
+  }
+
+  .liquid-finance-alignment-note {
+    border: 1px solid rgba(251, 113, 133, 0.34);
+    background:
+      linear-gradient(145deg, rgba(255, 241, 242, 0.94), rgba(255, 255, 255, 0.76)),
+      linear-gradient(180deg, rgba(254, 226, 226, 0.34), rgba(255, 255, 255, 0.08));
+    color: #9f1239;
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.88),
+      0 8px 18px rgba(190, 18, 60, 0.06);
+    backdrop-filter: blur(10px) saturate(1.12);
+    -webkit-backdrop-filter: blur(10px) saturate(1.12);
+  }
+
+  .liquid-finance-summary-band {
+    background:
+      linear-gradient(90deg, rgba(239, 246, 255, 0.62), rgba(255, 255, 255, 0.5), rgba(224, 242, 254, 0.46));
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.78),
+      inset 0 -1px 0 rgba(255, 255, 255, 0.66);
+    backdrop-filter: blur(12px) saturate(1.16);
+    -webkit-backdrop-filter: blur(12px) saturate(1.16);
+  }
+
+  .liquid-finance-section-row {
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.72);
+  }
+
+  .liquid-finance-section-row--pending {
+    background: linear-gradient(90deg, rgba(254, 243, 199, 0.7), rgba(255, 255, 255, 0.58));
+  }
+
+  .liquid-finance-section-row--deferred {
+    background: linear-gradient(90deg, rgba(219, 234, 254, 0.72), rgba(255, 255, 255, 0.58));
+  }
+
+  .liquid-finance-section-row--settled {
+    background: linear-gradient(90deg, rgba(207, 250, 254, 0.68), rgba(255, 255, 255, 0.56));
+  }
+
+  .liquid-finance-section-pill {
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.82),
+      0 8px 18px rgba(15, 23, 42, 0.05);
+  }
+
+  .liquid-finance-section-heading,
+  .liquid-finance-writeoff-badge {
+    border: 1px solid rgba(226, 232, 240, 0.72);
+    background:
+      linear-gradient(145deg, rgba(255, 255, 255, 0.86), rgba(248, 250, 252, 0.62));
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.82);
+    backdrop-filter: blur(10px) saturate(1.14);
+    -webkit-backdrop-filter: blur(10px) saturate(1.14);
+  }
+
+  .liquid-finance-writeoff-badge {
+    color: #475569;
+  }
+
+  .liquid-finance-section-heading--pending,
+  .liquid-finance-writeoff-badge--pending {
+    border-color: rgba(251, 191, 36, 0.46);
+    background:
+      linear-gradient(145deg, rgba(254, 243, 199, 0.82), rgba(255, 255, 255, 0.66));
+    color: #92400e;
+  }
+
+  .liquid-finance-section-heading--deferred,
+  .liquid-finance-writeoff-badge--deferred {
+    border-color: rgba(147, 197, 253, 0.58);
+    background:
+      linear-gradient(145deg, rgba(219, 234, 254, 0.84), rgba(255, 255, 255, 0.66));
+    color: #1d4ed8;
+  }
+
+  .liquid-finance-section-heading--settled,
+  .liquid-finance-writeoff-badge--settled {
+    border-color: rgba(125, 211, 252, 0.62);
+    background:
+      linear-gradient(145deg, rgba(207, 250, 254, 0.78), rgba(255, 255, 255, 0.66));
+    color: #0e7490;
+  }
+
+  .liquid-finance-table-row:hover {
+    background:
+      linear-gradient(90deg, rgba(239, 246, 255, 0.64), rgba(255, 255, 255, 0.42));
+  }
+
+  .liquid-finance-payment-type,
+  .liquid-finance-source-pill,
+  .liquid-finance-defer-action,
+  .liquid-finance-icon-action,
+  .liquid-finance-settlement-note,
+  .liquid-finance-settlement-cell {
+    border: 1px solid rgba(226, 232, 240, 0.72);
+    background:
+      linear-gradient(145deg, rgba(255, 255, 255, 0.88), rgba(248, 250, 252, 0.62));
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.84);
+    backdrop-filter: blur(10px) saturate(1.14);
+    -webkit-backdrop-filter: blur(10px) saturate(1.14);
+  }
+
+  .liquid-finance-payment-type {
+    display: inline-flex;
+    align-items: center;
+    width: max-content;
+  }
+
+  .liquid-finance-payment-type--rent,
+  .liquid-finance-payment-type--management {
+    border-color: rgba(125, 211, 252, 0.68);
+    background:
+      linear-gradient(145deg, rgba(207, 250, 254, 0.76), rgba(255, 255, 255, 0.68));
+    color: #0e7490;
+  }
+
+  .liquid-finance-payment-type--transfer,
+  .liquid-finance-payment-type--deposit,
+  .liquid-finance-payment-type--parking {
+    border-color: rgba(147, 197, 253, 0.68);
+    background:
+      linear-gradient(145deg, rgba(219, 234, 254, 0.8), rgba(255, 255, 255, 0.68));
+    color: #1d4ed8;
+  }
+
+  .liquid-finance-payment-type--refund {
+    border-color: rgba(251, 113, 133, 0.46);
+    background:
+      linear-gradient(145deg, rgba(255, 241, 242, 0.88), rgba(255, 255, 255, 0.68));
+    color: #be123c;
+  }
+
+  .liquid-finance-payment-type--other {
+    color: #475569;
+  }
+
+  .liquid-finance-source-pill--contract {
+    border-color: rgba(147, 197, 253, 0.58);
+    background: linear-gradient(145deg, rgba(239, 246, 255, 0.88), rgba(255, 255, 255, 0.64));
+    color: #1d4ed8;
+  }
+
+  .liquid-finance-source-pill--manual {
+    color: #475569;
+  }
+
+  .liquid-finance-source-pill--special,
+  .liquid-finance-defer-action,
+  .liquid-finance-settlement-note,
+  .liquid-finance-settlement-cell {
+    border-color: rgba(251, 191, 36, 0.46);
+    background:
+      linear-gradient(145deg, rgba(254, 243, 199, 0.82), rgba(255, 255, 255, 0.68));
+    color: #92400e;
+  }
+
+  .liquid-finance-settlement-cell {
+    border-top: 0;
+    border-right: 0;
+    border-bottom: 0;
+    border-left-width: 2px;
+  }
+
+  .liquid-finance-settlement-cell-active {
+    color: #78350f;
+    background:
+      linear-gradient(145deg, rgba(253, 230, 138, 0.84), rgba(255, 255, 255, 0.7));
+  }
+
+  .liquid-finance-icon-action {
+    display: inline-flex;
+    width: 28px;
+    height: 28px;
+    align-items: center;
+    justify-content: center;
+    border-radius: 9999px;
+  }
+
+  .liquid-finance-icon-action--edit {
+    border-color: rgba(147, 197, 253, 0.68);
+    color: #2563eb;
+  }
+
+  .liquid-finance-icon-action--danger {
+    border-color: rgba(251, 113, 133, 0.46);
+    color: #e11d48;
+  }
+
+  .liquid-finance-icon-action:hover,
+  .liquid-finance-defer-action:hover {
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.9),
+      0 8px 18px rgba(15, 23, 42, 0.08);
+  }
+
+  .liquid-mobile-tab-active {
+    background:
+      linear-gradient(145deg, rgba(239, 246, 255, 0.94), rgba(255, 255, 255, 0.88));
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.9),
+      0 8px 18px rgba(15, 23, 42, 0.08);
+  }
+
+  .liquid-invoice-shell {
+    border: 1px solid rgba(255, 255, 255, 0.74);
+    background:
+      radial-gradient(circle at 16% 0%, rgba(219, 234, 254, 0.34), transparent 32%),
+      linear-gradient(145deg, rgba(255, 255, 255, 0.84), rgba(248, 251, 255, 0.66)),
+      linear-gradient(180deg, rgba(219, 234, 254, 0.22), rgba(255, 248, 241, 0.1));
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.9),
+      0 24px 72px rgba(15, 23, 42, 0.07);
+    backdrop-filter: blur(22px) saturate(1.3);
+    -webkit-backdrop-filter: blur(22px) saturate(1.3);
+  }
+
+  .liquid-invoice-logic {
+    border: 1px solid rgba(191, 219, 254, 0.58);
+    background:
+      linear-gradient(145deg, rgba(239, 246, 255, 0.82), rgba(236, 254, 255, 0.54)),
+      linear-gradient(180deg, rgba(255, 255, 255, 0.58), rgba(255, 255, 255, 0.3));
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.84),
+      0 16px 42px rgba(37, 99, 235, 0.07);
+    backdrop-filter: blur(16px) saturate(1.2);
+    -webkit-backdrop-filter: blur(16px) saturate(1.2);
+  }
+
+  .liquid-invoice-card {
+    border: 1px solid rgba(226, 232, 240, 0.72);
+    background:
+      linear-gradient(145deg, rgba(255, 255, 255, 0.9), rgba(248, 250, 252, 0.72)),
+      linear-gradient(180deg, rgba(219, 234, 254, 0.16), rgba(255, 248, 241, 0.08));
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.92),
+      0 14px 38px rgba(15, 23, 42, 0.052);
+    backdrop-filter: blur(12px) saturate(1.16);
+    -webkit-backdrop-filter: blur(12px) saturate(1.16);
+  }
+
+  .liquid-invoice-soft-cell {
+    border: 1px solid rgba(226, 232, 240, 0.62);
+    background:
+      linear-gradient(145deg, rgba(255, 255, 255, 0.74), rgba(239, 246, 255, 0.48));
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.86);
+  }
+
+  .liquid-invoice-pill {
+    border: 1px solid rgba(191, 219, 254, 0.62);
+    background:
+      linear-gradient(145deg, rgba(239, 246, 255, 0.86), rgba(255, 255, 255, 0.74));
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.86);
+  }
+
+  .liquid-invoice-disabled-action {
+    border: 1px solid rgba(226, 232, 240, 0.68);
+    background:
+      linear-gradient(145deg, rgba(241, 245, 249, 0.86), rgba(255, 255, 255, 0.6));
+    color: #94a3b8;
+  }
+
+  .liquid-invoice-table {
+    border: 1px solid rgba(226, 232, 240, 0.7);
+    background:
+      linear-gradient(180deg, rgba(255, 255, 255, 0.97), rgba(248, 250, 252, 0.92));
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.92),
+      0 18px 52px rgba(15, 23, 42, 0.055);
+    backdrop-filter: blur(12px) saturate(1.14);
+    -webkit-backdrop-filter: blur(12px) saturate(1.14);
+  }
+
+  .liquid-invoice-sticky {
+    background:
+      linear-gradient(180deg, rgba(248, 250, 252, 0.98), rgba(241, 245, 249, 0.95));
+    backdrop-filter: blur(14px) saturate(1.16);
+    -webkit-backdrop-filter: blur(14px) saturate(1.16);
+  }
+
+  .liquid-invoice-table-cell {
+    border-top: 1px solid rgba(226, 232, 240, 0.68);
+    transition:
+      background-color 160ms ease,
+      box-shadow 160ms ease;
+  }
+
+  .liquid-invoice-table-row:hover .liquid-invoice-table-cell {
+    background:
+      linear-gradient(90deg, rgba(239, 246, 255, 0.58), rgba(255, 255, 255, 0.4));
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.72);
+  }
+
+  .liquid-invoice-plan-pill,
+  .liquid-invoice-status-pending,
+  .liquid-invoice-status-done,
+  .liquid-invoice-row-action,
+  .liquid-invoice-row-action-strong,
+  .liquid-invoice-mobile-card,
+  .liquid-invoice-mobile-date,
+  .liquid-invoice-tablet-preview,
+  .liquid-invoice-tablet-status,
+  .liquid-invoice-tablet-metric,
+  .liquid-invoice-tablet-row,
+  .liquid-invoice-defer-panel,
+  .liquid-invoice-defer-note,
+  .liquid-invoice-defer-field {
+    backdrop-filter: blur(16px) saturate(1.22);
+    -webkit-backdrop-filter: blur(16px) saturate(1.22);
+  }
+
+  .liquid-invoice-plan-pill {
+    color: #1d4ed8;
+    border: 1px solid rgba(191, 219, 254, 0.72);
+    background:
+      linear-gradient(145deg, rgba(219, 234, 254, 0.82), rgba(255, 255, 255, 0.72));
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.86),
+      0 6px 16px rgba(37, 99, 235, 0.08);
+  }
+
+  .liquid-invoice-status-pending,
+  .liquid-invoice-status-done {
+    border: 1px solid rgba(255, 255, 255, 0.68);
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.72),
+      0 7px 18px rgba(15, 23, 42, 0.055);
+  }
+
+  .liquid-invoice-status-pending {
+    color: #92400e;
+    background:
+      linear-gradient(145deg, rgba(254, 243, 199, 0.88), rgba(255, 255, 255, 0.72));
+  }
+
+  .liquid-invoice-status-done {
+    color: #1d4ed8;
+    background:
+      linear-gradient(145deg, rgba(219, 234, 254, 0.82), rgba(207, 250, 254, 0.54));
+  }
+
+  .liquid-invoice-row-action,
+  .liquid-invoice-row-action-strong {
+    border: 1px solid rgba(191, 219, 254, 0.72);
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.78),
+      0 9px 20px rgba(15, 23, 42, 0.06);
+  }
+
+  .liquid-invoice-row-action {
+    color: #334155;
+    background:
+      linear-gradient(145deg, rgba(255, 255, 255, 0.82), rgba(239, 246, 255, 0.56));
+  }
+
+  .liquid-invoice-row-action-strong {
+    color: #fff;
+    background:
+      linear-gradient(145deg, rgba(37, 99, 235, 0.92), rgba(14, 165, 233, 0.76));
+  }
+
+  .liquid-invoice-mobile-card {
+    border: 1px solid rgba(255, 255, 255, 0.74);
+    background:
+      radial-gradient(circle at 88% 0%, rgba(219, 234, 254, 0.3), transparent 30%),
+      linear-gradient(145deg, rgba(255, 255, 255, 0.86), rgba(248, 251, 255, 0.66)),
+      linear-gradient(180deg, rgba(236, 254, 255, 0.18), rgba(255, 248, 241, 0.08));
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.9),
+      0 16px 38px rgba(15, 23, 42, 0.075);
+  }
+
+  .liquid-invoice-mobile-card[data-selected="true"] {
+    border-color: rgba(37, 99, 235, 0.42);
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.96),
+      inset 3px 0 0 rgba(37, 99, 235, 0.42),
+      0 16px 42px rgba(37, 99, 235, 0.12);
+  }
+
+  .liquid-invoice-tablet-preview {
+    border: 1px solid rgba(226, 232, 240, 0.72);
+    background:
+      radial-gradient(circle at 88% 0%, rgba(14, 165, 233, 0.14), transparent 30%),
+      linear-gradient(145deg, rgba(255, 255, 255, 0.94), rgba(248, 251, 255, 0.8));
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.94),
+      0 18px 52px rgba(15, 23, 42, 0.08);
+  }
+
+  .liquid-invoice-tablet-status,
+  .liquid-invoice-tablet-metric,
+  .liquid-invoice-tablet-row {
+    border: 1px solid rgba(226, 232, 240, 0.68);
+    background: rgba(255, 255, 255, 0.72);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.9);
+  }
+
+  .liquid-invoice-tablet-row {
+    display: flex;
+    align-items: center;
+    gap: 0.45rem;
+  }
+
+  .liquid-invoice-mobile-date,
+  .liquid-invoice-defer-note {
+    border: 1px solid rgba(226, 232, 240, 0.68);
+    background:
+      linear-gradient(145deg, rgba(255, 255, 255, 0.82), rgba(239, 246, 255, 0.52));
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.86);
+  }
+
+  .liquid-invoice-defer-panel {
+    border: 1px solid rgba(255, 255, 255, 0.74);
+    background:
+      radial-gradient(circle at 20% 0%, rgba(219, 234, 254, 0.36), transparent 34%),
+      linear-gradient(145deg, rgba(255, 255, 255, 0.94), rgba(248, 251, 255, 0.82));
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.92),
+      0 -18px 58px rgba(15, 23, 42, 0.18);
+  }
+
+  .liquid-invoice-defer-field {
+    border: 1px solid rgba(191, 219, 254, 0.72);
+    background:
+      linear-gradient(145deg, rgba(255, 255, 255, 0.9), rgba(239, 246, 255, 0.62));
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.86),
+      0 8px 20px rgba(15, 23, 42, 0.045);
+  }
+
+  .liquid-tenant-picker-selected,
+  .liquid-tenant-picker-reselect,
+  .liquid-tenant-picker-input,
+  .liquid-tenant-picker-list,
+  .liquid-tenant-picker-option,
+  .liquid-tenant-picker-empty {
+    backdrop-filter: blur(16px) saturate(1.22);
+    -webkit-backdrop-filter: blur(16px) saturate(1.22);
+  }
+
+  .liquid-tenant-picker-selected,
+  .liquid-tenant-picker-list,
+  .liquid-tenant-picker-input {
+    border: 1px solid rgba(255, 255, 255, 0.72);
+    background:
+      linear-gradient(145deg, rgba(255, 255, 255, 0.88), rgba(248, 251, 255, 0.66)),
+      linear-gradient(180deg, rgba(219, 234, 254, 0.16), rgba(255, 248, 241, 0.08));
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.88),
+      0 12px 32px rgba(15, 23, 42, 0.06);
+  }
+
+  .liquid-tenant-picker-reselect {
+    border: 1px solid rgba(191, 219, 254, 0.7);
+    background:
+      linear-gradient(145deg, rgba(255, 255, 255, 0.84), rgba(239, 246, 255, 0.58));
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.82),
+      0 7px 18px rgba(15, 23, 42, 0.05);
+  }
+
+  .liquid-tenant-picker-reselect:hover {
+    background:
+      linear-gradient(145deg, rgba(239, 246, 255, 0.9), rgba(255, 255, 255, 0.72));
+  }
+
+  .liquid-tenant-picker-list {
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.88),
+      inset 0 -18px 36px rgba(15, 23, 42, 0.02),
+      0 14px 36px rgba(15, 23, 42, 0.06);
+  }
+
+  .liquid-tenant-picker-option {
+    background: rgba(255, 255, 255, 0.08);
+  }
+
+  .liquid-tenant-picker-option-blue:hover {
+    background:
+      linear-gradient(145deg, rgba(219, 234, 254, 0.56), rgba(255, 255, 255, 0.36));
+  }
+
+  .liquid-tenant-picker-option-cyan:hover {
+    background:
+      linear-gradient(145deg, rgba(207, 250, 254, 0.56), rgba(255, 255, 255, 0.36));
+  }
+
+  .liquid-tenant-picker-empty {
+    background:
+      linear-gradient(145deg, rgba(255, 255, 255, 0.6), rgba(248, 250, 252, 0.34));
+  }
+
+  .liquid-tenant-picker-hint {
+    color: rgba(100, 116, 139, 0.86);
+  }
+
+  .liquid-conflict-bulk-action,
+  .liquid-conflict-card-head,
+  .liquid-conflict-type-pill,
+  .liquid-conflict-mobile-field,
+  .liquid-conflict-field-pill,
+  .liquid-conflict-value-local,
+  .liquid-conflict-value-server,
+  .liquid-conflict-actions,
+  .liquid-conflict-decision,
+  .liquid-conflict-empty {
+    backdrop-filter: blur(16px) saturate(1.22);
+    -webkit-backdrop-filter: blur(16px) saturate(1.22);
+  }
+
+  .liquid-conflict-bulk-action,
+  .liquid-conflict-decision {
+    border: 1px solid rgba(255, 255, 255, 0.7);
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.78),
+      0 8px 20px rgba(15, 23, 42, 0.055);
+  }
+
+  .liquid-conflict-bulk-theirs,
+  .liquid-conflict-decision-active-theirs {
+    color: #1d4ed8;
+    background:
+      linear-gradient(145deg, rgba(219, 234, 254, 0.84), rgba(255, 255, 255, 0.72));
+  }
+
+  .liquid-conflict-bulk-mine,
+  .liquid-conflict-decision-active-mine {
+    color: #0e7490;
+    background:
+      linear-gradient(145deg, rgba(207, 250, 254, 0.84), rgba(255, 255, 255, 0.72));
+  }
+
+  .liquid-conflict-bulk-skip,
+  .liquid-conflict-decision-active-skip {
+    color: #334155;
+    background:
+      linear-gradient(145deg, rgba(241, 245, 249, 0.88), rgba(255, 255, 255, 0.74));
+  }
+
+  .liquid-conflict-decision-active-mine,
+  .liquid-conflict-decision-active-theirs,
+  .liquid-conflict-decision-active-skip {
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.82),
+      0 12px 28px rgba(15, 23, 42, 0.08);
+  }
+
+  .liquid-conflict-decision-idle {
+    color: #64748b;
+    background:
+      linear-gradient(145deg, rgba(255, 255, 255, 0.62), rgba(248, 250, 252, 0.38));
+  }
+
+  .liquid-conflict-decision-idle:hover {
+    color: #0f172a;
+    background:
+      linear-gradient(145deg, rgba(255, 255, 255, 0.84), rgba(239, 246, 255, 0.48));
+  }
+
+  .liquid-conflict-card-head,
+  .liquid-conflict-actions,
+  .liquid-conflict-mobile-field,
+  .liquid-conflict-empty {
+    background:
+      linear-gradient(145deg, rgba(255, 255, 255, 0.7), rgba(248, 251, 255, 0.48));
+  }
+
+  .liquid-conflict-type-pill,
+  .liquid-conflict-field-pill {
+    color: #334155;
+    border: 1px solid rgba(226, 232, 240, 0.72);
+    background:
+      linear-gradient(145deg, rgba(241, 245, 249, 0.86), rgba(255, 255, 255, 0.72));
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.78);
+  }
+
+  .liquid-conflict-mobile-field,
+  .liquid-conflict-empty {
+    border: 1px solid rgba(255, 255, 255, 0.7);
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.82),
+      0 10px 24px rgba(15, 23, 42, 0.05);
+  }
+
+  .liquid-conflict-value-local,
+  .liquid-conflict-value-server {
+    border: 1px solid rgba(255, 255, 255, 0.66);
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.76),
+      0 7px 18px rgba(15, 23, 42, 0.045);
+  }
+
+  .liquid-conflict-value-local {
+    background:
+      linear-gradient(145deg, rgba(207, 250, 254, 0.66), rgba(255, 255, 255, 0.62));
+  }
+
+  .liquid-conflict-value-server {
+    background:
+      linear-gradient(145deg, rgba(219, 234, 254, 0.68), rgba(255, 255, 255, 0.62));
+  }
+
+  .liquid-conflict-table-row:hover {
+    background:
+      linear-gradient(90deg, rgba(239, 246, 255, 0.48), rgba(255, 255, 255, 0.24));
+  }
+
+  .liquid-analysis-shell {
+    border: 1px solid rgba(255, 255, 255, 0.72);
+    background:
+      radial-gradient(circle at 22% 8%, rgba(219, 234, 254, 0.36), transparent 34%),
+      linear-gradient(145deg, rgba(255, 255, 255, 0.82), rgba(248, 251, 255, 0.62)),
+      linear-gradient(180deg, rgba(219, 234, 254, 0.2), rgba(255, 248, 241, 0.1));
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.9),
+      0 24px 72px rgba(15, 23, 42, 0.07);
+    backdrop-filter: blur(22px) saturate(1.28);
+    -webkit-backdrop-filter: blur(22px) saturate(1.28);
+  }
+
+  .liquid-analysis-card {
+    border: 1px solid rgba(226, 232, 240, 0.72);
+    background:
+      linear-gradient(145deg, rgba(255, 255, 255, 0.9), rgba(248, 250, 252, 0.72)),
+      linear-gradient(180deg, rgba(219, 234, 254, 0.15), rgba(255, 248, 241, 0.08));
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.92),
+      0 14px 38px rgba(15, 23, 42, 0.052);
+    backdrop-filter: blur(12px) saturate(1.16);
+    -webkit-backdrop-filter: blur(12px) saturate(1.16);
+  }
+
+  .liquid-analysis-chart,
+  .liquid-analysis-table {
+    border: 1px solid rgba(226, 232, 240, 0.7);
+    background:
+      linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(248, 250, 252, 0.9));
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.92),
+      0 18px 52px rgba(15, 23, 42, 0.055);
+    backdrop-filter: blur(12px) saturate(1.14);
+    -webkit-backdrop-filter: blur(12px) saturate(1.14);
+  }
+
+  .liquid-analysis-sticky {
+    background:
+      linear-gradient(180deg, rgba(248, 250, 252, 0.98), rgba(241, 245, 249, 0.95));
+    backdrop-filter: blur(14px) saturate(1.16);
+    -webkit-backdrop-filter: blur(14px) saturate(1.16);
+  }
+
+  .liquid-analysis-segment-active {
+    background:
+      linear-gradient(135deg, rgba(37, 99, 235, 0.94), rgba(8, 145, 178, 0.82));
+    color: #ffffff;
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.22),
+      0 10px 22px rgba(37, 99, 235, 0.16);
+  }
+
+  .liquid-analysis-table-toolbar {
+    background:
+      linear-gradient(145deg, rgba(255, 255, 255, 0.88), rgba(239, 246, 255, 0.62)),
+      linear-gradient(180deg, rgba(255, 255, 255, 0.42), rgba(224, 242, 254, 0.18));
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.88);
+    backdrop-filter: blur(14px) saturate(1.18);
+    -webkit-backdrop-filter: blur(14px) saturate(1.18);
+  }
+
+  .liquid-analysis-table-body {
+    background:
+      linear-gradient(180deg, rgba(255, 255, 255, 0.9), rgba(248, 250, 252, 0.82));
+  }
+
+  .liquid-analysis-table-row {
+    transition: background-color 160ms ease, box-shadow 160ms ease;
+  }
+
+  .liquid-analysis-table-row:hover {
+    background: rgba(239, 246, 255, 0.72);
+  }
+
+  .liquid-analysis-table-row--warning {
+    background:
+      linear-gradient(90deg, rgba(254, 243, 199, 0.58), rgba(255, 255, 255, 0.56));
+  }
+
+  .liquid-analysis-expand-row {
+    background:
+      linear-gradient(145deg, rgba(239, 246, 255, 0.7), rgba(255, 255, 255, 0.62));
+  }
+
+  .liquid-analysis-stability {
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.82);
+  }
+
+  .liquid-analysis-stability--stable {
+    border-color: rgba(103, 232, 249, 0.68);
+    background:
+      linear-gradient(145deg, rgba(207, 250, 254, 0.84), rgba(255, 255, 255, 0.7));
+    color: #0e7490;
+  }
+
+  .liquid-analysis-stability--normal {
+    border-color: rgba(253, 230, 138, 0.72);
+    background:
+      linear-gradient(145deg, rgba(254, 243, 199, 0.88), rgba(255, 255, 255, 0.72));
+    color: #b45309;
+  }
+
+  .liquid-analysis-stability--risk {
+    border-color: rgba(251, 113, 133, 0.52);
+    background:
+      linear-gradient(145deg, rgba(255, 241, 242, 0.92), rgba(255, 255, 255, 0.72));
+    color: #be123c;
+  }
+
+  .liquid-analysis-empty {
+    background:
+      linear-gradient(145deg, rgba(248, 250, 252, 0.86), rgba(255, 255, 255, 0.72));
+  }
+
+  .liquid-bigscreen-shell {
+    background:
+      linear-gradient(135deg, #020617 0%, #061522 42%, #082337 100%),
+      linear-gradient(180deg, rgba(37, 99, 235, 0.16), rgba(8, 145, 178, 0.1));
+  }
+
+  .liquid-bigscreen-chrome,
+  .liquid-bigscreen-panel,
+  .liquid-bigscreen-hero,
+  .liquid-bigscreen-card,
+  .liquid-bigscreen-row,
+  .liquid-bigscreen-table,
+  .liquid-bigscreen-ticker {
+    position: relative;
+    isolation: isolate;
+    border: 1px solid rgba(186, 230, 253, 0.14);
+    background:
+      linear-gradient(145deg, rgba(15, 23, 42, 0.72), rgba(8, 47, 73, 0.34)),
+      linear-gradient(180deg, rgba(255, 255, 255, 0.08), rgba(255, 255, 255, 0.025));
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.12),
+      0 28px 78px rgba(0, 0, 0, 0.22);
+    backdrop-filter: blur(22px) saturate(1.28);
+    -webkit-backdrop-filter: blur(22px) saturate(1.28);
+  }
+
+  .liquid-bigscreen-chrome {
+    border-color: rgba(186, 230, 253, 0.18);
+    background:
+      linear-gradient(145deg, rgba(15, 23, 42, 0.78), rgba(8, 47, 73, 0.44)),
+      linear-gradient(180deg, rgba(255, 255, 255, 0.1), rgba(255, 255, 255, 0.03));
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.14),
+      0 18px 44px rgba(0, 0, 0, 0.18);
+  }
+
+  .liquid-bigscreen-hero {
+    border-color: rgba(125, 211, 252, 0.2);
+    background:
+      linear-gradient(135deg, rgba(14, 165, 233, 0.18), rgba(8, 145, 178, 0.1) 46%, rgba(15, 23, 42, 0.62)),
+      linear-gradient(180deg, rgba(255, 255, 255, 0.12), rgba(255, 255, 255, 0.035));
+  }
+
+  .liquid-bigscreen-card {
+    border-color: rgba(186, 230, 253, 0.12);
+    background:
+      linear-gradient(145deg, rgba(15, 23, 42, 0.66), rgba(8, 47, 73, 0.26)),
+      linear-gradient(180deg, rgba(255, 255, 255, 0.075), rgba(255, 255, 255, 0.025));
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.1),
+      0 16px 48px rgba(0, 0, 0, 0.18);
+  }
+
+  .liquid-bigscreen-row {
+    border-color: rgba(186, 230, 253, 0.1);
+    background: rgba(255, 255, 255, 0.055);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
+    transition: background-color 160ms ease, border-color 160ms ease;
+  }
+
+  .liquid-bigscreen-row:hover {
+    border-color: rgba(125, 211, 252, 0.22);
+    background: rgba(14, 165, 233, 0.1);
+  }
+
+  .liquid-bigscreen-table {
+    overflow: hidden;
+    border-color: rgba(186, 230, 253, 0.14);
+  }
+
+  .liquid-bigscreen-table thead {
+    background: rgba(14, 165, 233, 0.12);
+  }
+
+  .liquid-bigscreen-ticker {
+    border-left: 0;
+    border-right: 0;
+    border-bottom: 0;
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  }
+
   @keyframes marquee {
     0% {
       transform: translateX(0);
@@ -17,8 +4575,8 @@
 
   @keyframes mobile-card-in {
     0% {
-      opacity: 0;
-      transform: translateY(10px) scale(0.98);
+      opacity: 1;
+      transform: translateY(0) scale(1);
     }
     100% {
       opacity: 1;
@@ -27,6 +4585,8 @@
   }
 
   .mobile-card-enter {
+    opacity: 1;
+    transform: translateY(0) scale(1);
     animation: mobile-card-in 420ms cubic-bezier(0.22, 1, 0.36, 1) both;
     will-change: transform, opacity;
   }
@@ -49,14 +4609,706 @@
   }
 
   @media (prefers-reduced-motion: reduce) {
-    .mobile-card-enter {
-      animation: none;
+    .mobile-card-enter,
+    .animate-in,
+    .animate-spin,
+    .animate-marquee,
+    .animate-pulse {
+      animation: none !important;
     }
+
+    .mobile-card-enter {
+      opacity: 1 !important;
+      transform: none !important;
+    }
+
+    .ios-liquid-app :where([class*="transition"], [class*="duration-"]) {
+      transition: none !important;
+    }
+
     .mobile-pressable,
     .mobile-pressable:hover,
-    .mobile-pressable:active {
+    .mobile-pressable:active,
+    .liquid-pressable,
+    .liquid-pressable:hover,
+    .liquid-pressable:active,
+    .liquid-drawer-panel,
+    .monthly-detail-backdrop,
+    .monthly-detail-panel,
+    .liquid-mobile-filter-backdrop,
+    .liquid-mobile-filter-sheet,
+    .liquid-mobile-park-picker,
+    .liquid-mobile-more-sheet,
+    .liquid-elevated-backdrop,
+    .liquid-elevated-panel {
       transform: none;
-      transition: none;
+      transition: none !important;
+    }
+  }
+
+  @media (prefers-contrast: more) {
+    .liquid-glass-readable,
+    .liquid-mobile-readable,
+    .liquid-mobile-toolbar-shell,
+    .liquid-mobile-dashboard-shell,
+    .liquid-mobile-hero,
+    .liquid-mobile-dashboard-hero,
+    .liquid-mobile-dashboard-section,
+    .liquid-mobile-context-line,
+    .liquid-mobile-park-picker,
+    .liquid-mobile-park-option,
+    .liquid-mobile-primary-metric,
+    .liquid-mobile-primary-badge,
+    .liquid-mobile-focus-cell,
+    .liquid-mobile-micro-card,
+    .liquid-mobile-progress-track,
+    .liquid-mobile-progress-fill,
+    .mobile-dashboard-custom-fields,
+    .liquid-mobile-custom-field,
+    .liquid-mobile-task-card,
+    .liquid-mobile-task-empty,
+    .liquid-mobile-empty-state,
+    .liquid-mobile-search-chip,
+    .liquid-mobile-filter-button,
+    .liquid-mobile-filter-clear,
+    .liquid-mobile-filter-sheet,
+    .liquid-mobile-filter-option,
+    .liquid-building-mobile-floor-section,
+    .liquid-building-mobile-floor-header,
+    .liquid-building-mobile-unit-main,
+    .liquid-contract-tablet-preview,
+    .liquid-contract-tablet-status,
+    .liquid-contract-tablet-metric,
+    .liquid-contract-tablet-row,
+    .liquid-finance-tablet-preview,
+    .liquid-finance-tablet-status,
+    .liquid-finance-tablet-metric,
+    .liquid-finance-tablet-row,
+    .liquid-invoice-tablet-preview,
+    .liquid-invoice-tablet-status,
+    .liquid-invoice-tablet-metric,
+    .liquid-invoice-tablet-row,
+    .liquid-mobile-bottom-nav,
+    .liquid-mobile-bottom-readable,
+    .liquid-mobile-bottom-item-idle,
+    .monthly-detail-panel,
+    .monthly-detail-table-shell,
+    .monthly-detail-mobile-card,
+    .liquid-auth-panel,
+    .liquid-auth-segment,
+    .liquid-auth-field,
+    .liquid-auth-park-option {
+      border-color: rgba(71, 85, 105, 0.28);
+      background: rgba(255, 255, 255, 0.97);
+      color: #0f172a;
+    }
+
+    .liquid-auth-field::placeholder {
+      color: #475569;
+      opacity: 1;
+    }
+
+    .liquid-mobile-chip-blue,
+    .liquid-mobile-chip-cyan,
+    .liquid-mobile-chip-amber,
+    .liquid-mobile-chip-rose {
+      border-color: rgba(71, 85, 105, 0.28);
+      background: rgba(255, 255, 255, 0.94);
+    }
+  }
+
+  @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+    .liquid-glass,
+    .liquid-glass-panel,
+    .liquid-glass-toolbar,
+    .liquid-glass-sidebar,
+    .liquid-glass-control,
+    .liquid-glass-subtle,
+    .liquid-glass-readable,
+    .liquid-mobile-card,
+    .liquid-mobile-toolbar-shell,
+    .liquid-mobile-dashboard-shell,
+    .liquid-mobile-hero,
+    .liquid-mobile-dashboard-hero,
+    .liquid-mobile-dashboard-section,
+    .liquid-mobile-top-pill,
+    .liquid-mobile-context-line,
+    .liquid-mobile-park-picker,
+    .liquid-mobile-park-option,
+    .liquid-mobile-control,
+    .liquid-mobile-primary-metric,
+    .liquid-mobile-primary-badge,
+    .liquid-mobile-focus-cell,
+    .liquid-mobile-progress-track,
+    .liquid-mobile-progress-fill,
+    .liquid-mobile-custom-field,
+    .liquid-mobile-task-card,
+    .liquid-mobile-task-empty,
+    .liquid-mobile-empty-state,
+    .liquid-mobile-search-chip,
+    .liquid-mobile-filter-button,
+    .liquid-mobile-filter-clear,
+    .liquid-mobile-filter-backdrop,
+    .liquid-mobile-filter-sheet,
+    .liquid-mobile-filter-option,
+    .liquid-mobile-action,
+    .liquid-mobile-inline-action,
+    .liquid-mobile-inline-action-strong,
+    .liquid-mobile-year-control,
+    .liquid-mobile-micro-card,
+    .liquid-mobile-bottom-nav,
+    .liquid-mobile-bottom-readable,
+    .liquid-mobile-bottom-item-active,
+    .liquid-workbench-card,
+    .liquid-workbench-header,
+    .liquid-workbench-head-cell,
+    .liquid-workbench-cell,
+    .liquid-workbench-rate-pill,
+    .liquid-workbench-total-row,
+    .liquid-workbench-total-cell,
+    .liquid-workbench-total-pill,
+    .liquid-workbench-month-card,
+    .liquid-workbench-month-field,
+    .liquid-workbench-mobile-total,
+    .liquid-shared-table-head,
+    .liquid-shared-sticky-cell,
+    .liquid-shared-year-cell,
+    .liquid-shared-empty,
+    .liquid-workbench-mini-card,
+    .liquid-workbench-segment,
+    .liquid-building-overview-hero,
+    .liquid-building-overview-card,
+    .liquid-building-tools-menu,
+    .liquid-building-switcher,
+    .liquid-building-tab,
+    .liquid-building-tab--active,
+    .liquid-building-content-panel,
+    .liquid-building-view-toggle,
+    .liquid-building-legend-pill,
+    .liquid-building-mobile-floor-section,
+    .liquid-building-mobile-floor-header,
+    .liquid-building-mobile-unit-main,
+    .liquid-building-floor-row,
+    .liquid-building-floor-label,
+    .liquid-building-floor,
+    .liquid-building-add-slot,
+    .liquid-building-metric-chip,
+    .liquid-building-table-row,
+    .liquid-building-mobile-unit,
+    .liquid-building-mobile-meta,
+    .liquid-building-mobile-batch-toolbar,
+    .liquid-building-mobile-actionbar,
+    .liquid-building-mobile-action,
+    .liquid-building-mobile-action-pill,
+    .liquid-building-mobile-select,
+    .liquid-building-mobile-quick-panel,
+    .liquid-building-status,
+    .liquid-building-import-head,
+    .liquid-building-import-body,
+    .liquid-building-import-success,
+    .liquid-building-danger-action,
+    .liquid-building-field,
+    .liquid-drawer-panel,
+    .liquid-budget-shell,
+    .liquid-budget-field,
+    .liquid-budget-row-head,
+    .liquid-budget-row-new,
+    .liquid-budget-row-new-head,
+    .liquid-budget-data-cell,
+    .liquid-budget-adjusted-out,
+    .liquid-budget-adjusted-in,
+    .liquid-budget-adjusted-note,
+    .liquid-budget-subtotal,
+    .liquid-budget-subtotal-cell,
+    .liquid-budget-total-cell,
+    .liquid-budget-summary-row,
+    .liquid-budget-summary-sticky,
+    .liquid-budget-occupancy-row,
+    .liquid-budget-occupancy-sticky,
+    .liquid-budget-import-head,
+    .liquid-budget-import-body,
+    .liquid-budget-dialog,
+    .liquid-init-shell,
+    .liquid-init-dialog,
+    .liquid-init-mobile-card,
+    .liquid-init-field,
+    .liquid-init-year-segment,
+    .liquid-settings-hero,
+    .liquid-settings-card,
+    .liquid-settings-field,
+    .liquid-settings-table,
+    .liquid-settings-table-head,
+    .liquid-settings-group-head,
+    .liquid-settings-panel-body,
+    .liquid-settings-row,
+    .liquid-settings-row-compact,
+    .liquid-settings-action,
+    .liquid-settings-status-pill,
+    .liquid-settings-notice,
+    .liquid-settings-maintenance-row,
+    .liquid-auth-panel,
+    .liquid-auth-segment,
+    .liquid-auth-field,
+    .liquid-auth-park-option,
+    .liquid-contract-editor,
+    .liquid-contract-init-panel,
+    .liquid-contract-init-note,
+    .liquid-contract-init-field,
+    .liquid-contract-termination-panel,
+    .liquid-contract-termination-card,
+    .liquid-contract-termination-field,
+    .liquid-contract-toolbar,
+    .liquid-contract-list,
+    .liquid-contract-card,
+    .liquid-contract-mobile-card,
+    .liquid-contract-mobile-group,
+    .liquid-contract-mobile-floor,
+    .liquid-contract-mobile-chip,
+    .liquid-contract-tablet-preview,
+    .liquid-contract-tablet-status,
+    .liquid-contract-tablet-metric,
+    .liquid-contract-tablet-row,
+    .liquid-finance-tablet-preview,
+    .liquid-finance-tablet-status,
+    .liquid-finance-tablet-metric,
+    .liquid-finance-tablet-row,
+    .liquid-invoice-tablet-preview,
+    .liquid-invoice-tablet-status,
+    .liquid-invoice-tablet-metric,
+    .liquid-invoice-tablet-row,
+    .liquid-contract-data-row,
+    .liquid-contract-group-row,
+    .liquid-contract-floor-row,
+    .liquid-contract-year-row,
+    .liquid-contract-pill,
+    .liquid-contract-location-chip,
+    .liquid-contract-row-action,
+    .liquid-contract-analysis-card,
+    .liquid-contract-analysis-hero,
+    .liquid-contract-mini-card,
+    .liquid-contract-expiry-card,
+    .liquid-contract-expiry-stat,
+    .liquid-contract-expiry-header,
+    .liquid-contract-sticky,
+    .liquid-contract-editor .contract-inline-panel,
+    .liquid-contract-editor .contract-stat-card,
+    .liquid-contract-editor .contract-option-card,
+    .liquid-contract-editor .contract-compact-table,
+    .liquid-contract-editor .contract-empty-state,
+    .liquid-contract-editor .contract-check-card,
+    .liquid-contract-editor .contract-unit-grid,
+    .liquid-contract-editor .contract-unit-chip,
+    .liquid-contract-editor .contract-soft-action,
+    .liquid-contract-editor .contract-subtle-action,
+    .liquid-contract-editor .contract-alert-panel,
+    .liquid-elevated-panel,
+    .liquid-elevated-header,
+    .liquid-elevated-footer,
+    .liquid-elevated-card,
+    .liquid-elevated-field,
+    .liquid-elevated-history-row,
+    .liquid-elevated-preview-row,
+    .liquid-elevated-alert,
+    .liquid-ai-dropzone,
+    .liquid-ai-error,
+    .liquid-ai-match-high,
+    .liquid-ai-match-low,
+    .liquid-ai-match-missing,
+    .liquid-ai-unit-chip,
+    .liquid-finance-shell,
+    .liquid-finance-card,
+    .liquid-finance-form,
+    .liquid-finance-mobile-card,
+    .liquid-finance-mobile-metric,
+    .liquid-finance-row-action,
+    .liquid-finance-field,
+    .liquid-finance-month-row,
+    .liquid-finance-mobile-filter,
+    .liquid-finance-mobile-summary,
+    .liquid-finance-status-muted,
+    .liquid-finance-alignment-note,
+    .liquid-finance-summary-band,
+    .liquid-finance-section-row,
+    .liquid-finance-section-pill,
+    .liquid-finance-section-heading,
+    .liquid-finance-writeoff-badge,
+    .liquid-finance-payment-type,
+    .liquid-finance-source-pill,
+    .liquid-finance-defer-action,
+    .liquid-finance-icon-action,
+    .liquid-finance-settlement-note,
+    .liquid-finance-settlement-cell,
+    .liquid-mobile-tab-active,
+    .liquid-invoice-shell,
+    .liquid-invoice-logic,
+    .liquid-invoice-card,
+    .liquid-invoice-soft-cell,
+    .liquid-invoice-pill,
+    .liquid-invoice-disabled-action,
+    .liquid-invoice-table,
+    .liquid-invoice-sticky,
+    .liquid-invoice-plan-pill,
+    .liquid-invoice-status-pending,
+    .liquid-invoice-status-done,
+    .liquid-invoice-row-action,
+    .liquid-invoice-row-action-strong,
+    .liquid-invoice-mobile-card,
+    .liquid-invoice-mobile-date,
+    .liquid-invoice-defer-panel,
+    .liquid-invoice-defer-note,
+    .liquid-invoice-defer-field,
+    .liquid-tenant-picker-selected,
+    .liquid-tenant-picker-reselect,
+    .liquid-tenant-picker-input,
+    .liquid-tenant-picker-list,
+    .liquid-tenant-picker-option,
+    .liquid-tenant-picker-empty,
+    .liquid-conflict-bulk-action,
+    .liquid-conflict-card-head,
+    .liquid-conflict-type-pill,
+    .liquid-conflict-mobile-field,
+    .liquid-conflict-field-pill,
+    .liquid-conflict-value-local,
+    .liquid-conflict-value-server,
+    .liquid-conflict-actions,
+    .liquid-conflict-decision,
+    .liquid-conflict-empty,
+    .liquid-analysis-shell,
+    .liquid-analysis-card,
+    .liquid-analysis-chart,
+    .liquid-analysis-table,
+    .liquid-analysis-segment-active,
+    .liquid-analysis-table-toolbar,
+    .liquid-analysis-table-body,
+    .liquid-analysis-table-row,
+    .liquid-analysis-expand-row,
+    .liquid-analysis-stability,
+    .liquid-analysis-empty,
+    .liquid-dial-core,
+    .monthly-detail-panel,
+    .monthly-detail-mobile-card,
+    .monthly-detail-mobile-total {
+      background: rgba(255, 255, 255, 0.92);
+    }
+
+    .monthly-detail-mobile-total {
+      background: rgba(15, 23, 42, 0.96);
+    }
+
+    .liquid-bigscreen-chrome,
+    .liquid-bigscreen-panel,
+    .liquid-bigscreen-hero,
+    .liquid-bigscreen-card,
+    .liquid-bigscreen-row,
+    .liquid-bigscreen-table,
+    .liquid-bigscreen-ticker {
+      background: rgba(15, 23, 42, 0.94);
+    }
+  }
+
+  @media (prefers-reduced-transparency: reduce) {
+    .ios-liquid-app {
+      background: #f8fafc;
+    }
+
+    .liquid-glass,
+    .liquid-glass-panel,
+    .liquid-glass-toolbar,
+    .liquid-glass-sidebar,
+    .liquid-glass-control,
+    .liquid-glass-subtle,
+    .liquid-glass-readable,
+    .liquid-mobile-card,
+    .liquid-mobile-toolbar-shell,
+    .liquid-mobile-dashboard-shell,
+    .liquid-mobile-hero,
+    .liquid-mobile-dashboard-hero,
+    .liquid-mobile-dashboard-section,
+    .liquid-mobile-top-pill,
+    .liquid-mobile-context-line,
+    .liquid-mobile-park-picker,
+    .liquid-mobile-park-option,
+    .liquid-mobile-control,
+    .liquid-mobile-primary-metric,
+    .liquid-mobile-primary-badge,
+    .liquid-mobile-focus-cell,
+    .liquid-mobile-micro-card,
+    .liquid-mobile-progress-track,
+    .liquid-mobile-progress-fill,
+    .mobile-dashboard-custom-fields,
+    .liquid-mobile-custom-field,
+    .liquid-mobile-task-card,
+    .liquid-mobile-task-empty,
+    .liquid-mobile-empty-state,
+    .liquid-mobile-search-chip,
+    .liquid-mobile-filter-button,
+    .liquid-mobile-filter-clear,
+    .liquid-mobile-filter-sheet,
+    .liquid-mobile-filter-option,
+    .liquid-mobile-action,
+    .liquid-mobile-inline-action,
+    .liquid-mobile-inline-action-strong,
+    .liquid-mobile-year-control,
+    .liquid-mobile-bottom-nav,
+    .liquid-mobile-bottom-readable,
+    .liquid-mobile-bottom-item-idle,
+    .liquid-mobile-bottom-item-active,
+    .liquid-auth-panel,
+    .liquid-auth-segment,
+    .liquid-auth-field,
+    .liquid-auth-park-option,
+    .liquid-workbench-card,
+    .liquid-workbench-header,
+    .liquid-workbench-head-cell,
+    .liquid-workbench-cell,
+    .liquid-workbench-rate-pill,
+    .liquid-workbench-total-row,
+    .liquid-workbench-total-cell,
+    .liquid-workbench-total-pill,
+    .liquid-workbench-month-card,
+    .liquid-workbench-month-field,
+    .liquid-workbench-mobile-total,
+    .liquid-shared-table-head,
+    .liquid-shared-sticky-cell,
+    .liquid-shared-year-cell,
+    .liquid-shared-empty,
+    .liquid-workbench-mini-card,
+    .liquid-workbench-segment,
+    .liquid-building-overview-hero,
+    .liquid-building-overview-card,
+    .liquid-building-tools-menu,
+    .liquid-building-switcher,
+    .liquid-building-tab,
+    .liquid-building-tab--active,
+    .liquid-building-content-panel,
+    .liquid-building-view-toggle,
+    .liquid-building-legend-pill,
+    .liquid-building-mobile-floor-section,
+    .liquid-building-mobile-floor-header,
+    .liquid-building-mobile-unit-main,
+    .liquid-building-floor-row,
+    .liquid-building-floor-label,
+    .liquid-building-floor,
+    .liquid-building-add-slot,
+    .liquid-building-metric-chip,
+    .liquid-building-table-row,
+    .liquid-building-mobile-unit,
+    .liquid-building-mobile-meta,
+    .liquid-building-status,
+    .liquid-building-import-head,
+    .liquid-building-import-body,
+    .liquid-building-import-success,
+    .liquid-building-danger-action,
+    .liquid-building-field,
+    .liquid-drawer-panel,
+    .liquid-budget-shell,
+    .liquid-budget-field,
+    .liquid-budget-row-head,
+    .liquid-budget-row-new,
+    .liquid-budget-row-new-head,
+    .liquid-budget-data-cell,
+    .liquid-budget-adjusted-out,
+    .liquid-budget-adjusted-in,
+    .liquid-budget-adjusted-note,
+    .liquid-budget-subtotal,
+    .liquid-budget-subtotal-cell,
+    .liquid-budget-total-cell,
+    .liquid-budget-summary-row,
+    .liquid-budget-summary-sticky,
+    .liquid-budget-occupancy-row,
+    .liquid-budget-occupancy-sticky,
+    .liquid-budget-import-head,
+    .liquid-budget-import-body,
+    .liquid-budget-dialog,
+    .liquid-init-shell,
+    .liquid-init-dialog,
+    .liquid-init-mobile-card,
+    .liquid-init-field,
+    .liquid-init-year-segment,
+    .liquid-settings-hero,
+    .liquid-settings-card,
+    .liquid-settings-field,
+    .liquid-settings-table,
+    .liquid-settings-table-head,
+    .liquid-settings-group-head,
+    .liquid-settings-panel-body,
+    .liquid-settings-row,
+    .liquid-settings-row-compact,
+    .liquid-settings-action,
+    .liquid-settings-status-pill,
+    .liquid-settings-notice,
+    .liquid-settings-maintenance-row,
+    .liquid-auth-panel,
+    .liquid-auth-segment,
+    .liquid-auth-field,
+    .liquid-auth-park-option,
+    .liquid-contract-editor,
+    .liquid-contract-init-panel,
+    .liquid-contract-init-note,
+    .liquid-contract-init-field,
+    .liquid-contract-termination-panel,
+    .liquid-contract-termination-card,
+    .liquid-contract-termination-field,
+    .liquid-contract-toolbar,
+    .liquid-contract-list,
+    .liquid-contract-card,
+    .liquid-contract-mobile-card,
+    .liquid-contract-mobile-group,
+    .liquid-contract-mobile-floor,
+    .liquid-contract-mobile-chip,
+    .liquid-contract-tablet-preview,
+    .liquid-contract-tablet-status,
+    .liquid-contract-tablet-metric,
+    .liquid-contract-tablet-row,
+    .liquid-finance-tablet-preview,
+    .liquid-finance-tablet-status,
+    .liquid-finance-tablet-metric,
+    .liquid-finance-tablet-row,
+    .liquid-invoice-tablet-preview,
+    .liquid-invoice-tablet-status,
+    .liquid-invoice-tablet-metric,
+    .liquid-invoice-tablet-row,
+    .liquid-contract-data-row,
+    .liquid-contract-group-row,
+    .liquid-contract-floor-row,
+    .liquid-contract-year-row,
+    .liquid-contract-pill,
+    .liquid-contract-location-chip,
+    .liquid-contract-row-action,
+    .liquid-contract-analysis-card,
+    .liquid-contract-analysis-hero,
+    .liquid-contract-mini-card,
+    .liquid-contract-expiry-card,
+    .liquid-contract-expiry-stat,
+    .liquid-contract-expiry-header,
+    .liquid-contract-sticky,
+    .liquid-contract-editor .contract-inline-panel,
+    .liquid-contract-editor .contract-stat-card,
+    .liquid-contract-editor .contract-option-card,
+    .liquid-contract-editor .contract-compact-table,
+    .liquid-contract-editor .contract-empty-state,
+    .liquid-contract-editor .contract-check-card,
+    .liquid-contract-editor .contract-unit-grid,
+    .liquid-contract-editor .contract-unit-chip,
+    .liquid-contract-editor .contract-soft-action,
+    .liquid-contract-editor .contract-subtle-action,
+    .liquid-contract-editor .contract-alert-panel,
+    .liquid-elevated-panel,
+    .liquid-elevated-header,
+    .liquid-elevated-footer,
+    .liquid-elevated-card,
+    .liquid-elevated-field,
+    .liquid-elevated-history-row,
+    .liquid-elevated-preview-row,
+    .liquid-elevated-alert,
+    .liquid-ai-dropzone,
+    .liquid-ai-error,
+    .liquid-ai-match-high,
+    .liquid-ai-match-low,
+    .liquid-ai-match-missing,
+    .liquid-ai-unit-chip,
+    .liquid-finance-shell,
+    .liquid-finance-card,
+    .liquid-finance-form,
+    .liquid-finance-mobile-card,
+    .liquid-finance-mobile-metric,
+    .liquid-finance-row-action,
+    .liquid-finance-field,
+    .liquid-finance-month-row,
+    .liquid-finance-mobile-filter,
+    .liquid-finance-mobile-summary,
+    .liquid-finance-status-muted,
+    .liquid-finance-alignment-note,
+    .liquid-finance-summary-band,
+    .liquid-finance-section-row,
+    .liquid-finance-section-pill,
+    .liquid-finance-section-heading,
+    .liquid-finance-writeoff-badge,
+    .liquid-finance-payment-type,
+    .liquid-finance-source-pill,
+    .liquid-finance-defer-action,
+    .liquid-finance-icon-action,
+    .liquid-finance-settlement-note,
+    .liquid-finance-settlement-cell,
+    .liquid-mobile-tab-active,
+    .liquid-invoice-shell,
+    .liquid-invoice-logic,
+    .liquid-invoice-card,
+    .liquid-invoice-soft-cell,
+    .liquid-invoice-pill,
+    .liquid-invoice-disabled-action,
+    .liquid-invoice-table,
+    .liquid-invoice-sticky,
+    .liquid-invoice-plan-pill,
+    .liquid-invoice-status-pending,
+    .liquid-invoice-status-done,
+    .liquid-invoice-row-action,
+    .liquid-invoice-row-action-strong,
+    .liquid-invoice-mobile-card,
+    .liquid-invoice-mobile-date,
+    .liquid-invoice-defer-panel,
+    .liquid-invoice-defer-note,
+    .liquid-invoice-defer-field,
+    .liquid-tenant-picker-selected,
+    .liquid-tenant-picker-reselect,
+    .liquid-tenant-picker-input,
+    .liquid-tenant-picker-list,
+    .liquid-tenant-picker-option,
+    .liquid-tenant-picker-empty,
+    .liquid-conflict-bulk-action,
+    .liquid-conflict-card-head,
+    .liquid-conflict-type-pill,
+    .liquid-conflict-mobile-field,
+    .liquid-conflict-field-pill,
+    .liquid-conflict-value-local,
+    .liquid-conflict-value-server,
+    .liquid-conflict-actions,
+    .liquid-conflict-decision,
+    .liquid-conflict-empty,
+    .liquid-analysis-shell,
+    .liquid-analysis-card,
+    .liquid-analysis-chart,
+    .liquid-analysis-table,
+    .liquid-analysis-segment-active,
+    .liquid-analysis-table-toolbar,
+    .liquid-analysis-table-body,
+    .liquid-analysis-table-row,
+    .liquid-analysis-expand-row,
+    .liquid-analysis-stability,
+    .liquid-analysis-empty,
+    .liquid-dial-core,
+    .monthly-detail-panel,
+    .monthly-detail-table-shell,
+    .monthly-detail-mobile-card,
+    .monthly-detail-mobile-total {
+      background: rgba(255, 255, 255, 0.95);
+      backdrop-filter: none;
+      -webkit-backdrop-filter: none;
+    }
+
+    .monthly-detail-mobile-total {
+      background: rgba(15, 23, 42, 0.97);
+    }
+
+    .liquid-bigscreen-shell {
+      background: #020617;
+    }
+
+    .liquid-bigscreen-chrome,
+    .liquid-bigscreen-panel,
+    .liquid-bigscreen-hero,
+    .liquid-bigscreen-card,
+    .liquid-bigscreen-row,
+    .liquid-bigscreen-table,
+    .liquid-bigscreen-ticker {
+      background: rgba(15, 23, 42, 0.96);
+      backdrop-filter: none;
+      -webkit-backdrop-filter: none;
+    }
+
+    .liquid-auth-field::placeholder {
+      color: #64748b;
+      opacity: 1;
     }
   }
 }

@@ -60,10 +60,17 @@ const WRITEOFF_LABELS = {
 } as const;
 
 function writeOffBadgeClass(label: string) {
-  if (label === WRITEOFF_LABELS.pending) return 'text-amber-700 bg-amber-50 border-amber-100';
-  if (label === WRITEOFF_LABELS.settled) return 'text-emerald-700 bg-emerald-50 border-emerald-100';
-  if (label === WRITEOFF_LABELS.deferred) return 'text-indigo-800 bg-indigo-50 border-indigo-100';
-  return 'text-slate-600 bg-slate-50 border-slate-100';
+  if (label === WRITEOFF_LABELS.pending) return 'liquid-finance-writeoff-badge liquid-finance-writeoff-badge--pending';
+  if (label === WRITEOFF_LABELS.settled) return 'liquid-finance-writeoff-badge liquid-finance-writeoff-badge--settled';
+  if (label === WRITEOFF_LABELS.deferred) return 'liquid-finance-writeoff-badge liquid-finance-writeoff-badge--deferred';
+  return 'liquid-finance-writeoff-badge liquid-finance-writeoff-badge--muted';
+}
+
+function writeOffSectionClass(label: string) {
+  if (label === WRITEOFF_LABELS.pending) return 'liquid-finance-section-heading liquid-finance-section-heading--pending';
+  if (label === WRITEOFF_LABELS.settled) return 'liquid-finance-section-heading liquid-finance-section-heading--settled';
+  if (label === WRITEOFF_LABELS.deferred) return 'liquid-finance-section-heading liquid-finance-section-heading--deferred';
+  return 'liquid-finance-section-heading liquid-finance-section-heading--muted';
 }
 
 interface BillingTableProps {
@@ -90,55 +97,61 @@ const BillingCard: React.FC<{
     const deferShell = deferReceivableShellClass(item);
     const hasDeferOut = !!(item.deferredToPeriod && (item.deferredAmount ?? 0) > 0);
     const hasDeferIn = !!(item.deferredInAmount && item.deferredInAmount > 0);
+    const cardSummaryLabel = `${item.tenantName}，${building?.name || '未匹配楼宇'} ${unitNames || '未匹配房号'}，${writeOffLabel}，应收 ${formatCurrency(receivableBudgetDisplay(item))}，实收 ${formatCurrency(item.amountPaid)}${hasDeferOut ? `，缓出至 ${item.deferredToPeriod} ${formatCurrency(item.deferredAmount ?? 0)}` : ''}${hasDeferIn ? `，由 ${item.deferredInFromSummary} 缓入 ${formatCurrency(item.deferredInAmount ?? 0)}` : ''}`;
     return (
-    <div className={`bg-white p-4 border-b border-slate-100 last:border-0 ${deferShell}`}>
+    <div
+        className={`liquid-finance-mobile-card mobile-card-enter m-2 rounded-[22px] border border-white/70 p-4 ${deferShell}`}
+        role="group"
+        aria-label={cardSummaryLabel}
+        title={cardSummaryLabel}
+    >
         <div className="flex justify-between items-start mb-2">
             <div className="font-medium text-slate-800">
                 <div className="flex items-center gap-2">
-                    <span className="w-6 h-6 rounded-full bg-slate-100 text-slate-500 flex items-center justify-center text-xs font-bold shrink-0">
+                    <span className="liquid-icon-well flex h-8 w-8 shrink-0 items-center justify-center rounded-2xl text-xs font-black text-blue-700">
                         {item.tenantName.substring(0,1)}
                     </span>
-                    <span>{item.tenantName}</span>
+                    <span className="font-black text-slate-950">{item.tenantName}</span>
                 </div>
                 {hasDeferOut && (
-                    <div className="mt-1.5 ml-8 text-[10px] font-semibold text-orange-800 leading-snug">缓出 → {item.deferredToPeriod}（{formatCurrency(item.deferredAmount ?? 0)}）</div>
+                    <div className="ml-8 mt-1.5 text-xs font-semibold leading-snug text-orange-800">缓出 → {item.deferredToPeriod}（{formatCurrency(item.deferredAmount ?? 0)}）</div>
                 )}
                 {hasDeferIn && (
-                    <div className="mt-1 ml-8 text-[10px] font-semibold text-sky-800 leading-snug">缓入 ← {item.deferredInFromSummary}（{formatCurrency(item.deferredInAmount ?? 0)}）</div>
+                    <div className="ml-8 mt-1 text-xs font-semibold leading-snug text-sky-800">缓入 ← {item.deferredInFromSummary}（{formatCurrency(item.deferredInAmount ?? 0)}）</div>
                 )}
                 {item.budgetAlignmentNote && (
-                    <div className="mt-1.5 ml-8 text-[10px] text-rose-800 leading-snug bg-rose-50/90 border border-rose-100 rounded px-1.5 py-1">
+                    <div className="liquid-finance-alignment-note ml-8 mt-1.5 rounded-xl px-2 py-1 text-xs font-semibold leading-snug">
                         {item.budgetAlignmentNote}
                     </div>
                 )}
             </div>
-            <div className={`text-xs font-medium px-2 py-0.5 rounded border flex items-center gap-1 ${writeOffBadgeClass(writeOffLabel)}`}>
+            <div className={`flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs font-black ${writeOffBadgeClass(writeOffLabel)}`}>
                 {writeOffLabel === WRITEOFF_LABELS.settled ? <CheckCircle2 size={12} /> : <AlertCircle size={12} />}
                 {writeOffLabel}
             </div>
         </div>
-        <div className="text-xs text-slate-500 mb-2">
+        <div className="mb-2 text-xs font-semibold text-slate-500">
             {building?.name} {unitNames}
         </div>
-        <div className="flex justify-between items-center text-sm border-t border-slate-50 pt-2 mt-1">
+        <div className="mt-1 flex items-center justify-between border-t border-white/70 pt-2 text-sm">
             <div className="text-slate-500">
                 应收: <span className="font-semibold text-slate-700">{formatCurrency(receivableBudgetDisplay(item))}</span>
                 {hasDeferOut && (item.amountDue ?? 0) < 0.005 && (
-                    <span className="block text-[10px] text-slate-400 font-normal mt-0.5">原账面应收已全部缓出</span>
+                    <span className="mt-0.5 block text-xs font-semibold text-slate-500">原账面应收已全部缓出</span>
                 )}
             </div>
-            <div className={writeOffLabel === WRITEOFF_LABELS.settled ? 'text-green-600' : 'text-blue-600'}>
+            <div className={writeOffLabel === WRITEOFF_LABELS.settled ? 'text-cyan-700' : 'text-blue-700'}>
                 实收: <span className="font-bold">{formatCurrency(item.amountPaid)}</span>
             </div>
         </div>
         <div className="mt-2">
-            <label className="text-[10px] text-slate-400 font-medium">备注</label>
+            <label className="text-xs font-bold text-slate-500">备注</label>
             <RentRemarkField
                 tenantId={item.tenantId}
                 periodYYYYMM={selectedMonth}
                 notes={notes}
                 onSave={remarkDisabled ? undefined : onRemarkSave}
-                className="mt-0.5 w-full min-h-[52px] text-xs border border-slate-200 rounded-lg p-2 text-slate-700 resize-y"
+                className="liquid-elevated-field mt-1 min-h-[56px] w-full resize-y rounded-2xl px-3 py-2 text-xs font-semibold text-slate-700 outline-none focus-visible:ring-4 focus-visible:ring-blue-500/10"
             />
         </div>
     </div>
@@ -234,30 +247,30 @@ export const BillingTable: React.FC<BillingTableProps> = ({
       const { building, unitNames } = resolveUnitLocation(item.unitIds);
       const paidClass =
           writeOffLabel === WRITEOFF_LABELS.settled
-              ? 'text-green-600 font-medium'
+              ? 'text-cyan-700 font-bold'
               : writeOffLabel === WRITEOFF_LABELS.deferred
-                ? 'text-indigo-700 font-medium'
-                : 'text-amber-600 font-medium';
+                ? 'text-blue-700 font-bold'
+                : 'text-amber-700 font-bold';
       const deferShell = deferReceivableShellClass(item);
       const hasDeferOut = !!(item.deferredToPeriod && (item.deferredAmount ?? 0) > 0);
       const hasDeferIn = !!(item.deferredInAmount && item.deferredInAmount > 0);
       return (
-          <tr key={rowKey} className={`hover:bg-slate-50 transition-colors group ${deferShell}`}>
+          <tr key={rowKey} className={`liquid-finance-table-row transition-colors group ${deferShell}`}>
               <td className="px-6 py-4 text-slate-800">
-                  <div className="flex items-center gap-2 font-medium">
-                      <span className="w-8 h-8 rounded-full bg-slate-100 text-slate-500 flex items-center justify-center text-xs font-bold shrink-0">
+                  <div className="flex items-center gap-2 font-bold">
+                      <span className="liquid-icon-well flex h-8 w-8 shrink-0 items-center justify-center rounded-2xl text-xs font-black text-blue-700">
                           {item.tenantName.substring(0, 1)}
                       </span>
                       <div>
-                          <div>{item.tenantName}</div>
+                          <div className="text-slate-950">{item.tenantName}</div>
                           {hasDeferOut && (
-                              <div className="mt-0.5 text-[10px] font-semibold text-orange-800">缓出 → {item.deferredToPeriod}（{formatCurrency(item.deferredAmount ?? 0)}）</div>
+                              <div className="mt-0.5 text-xs font-semibold text-orange-800">缓出 → {item.deferredToPeriod}（{formatCurrency(item.deferredAmount ?? 0)}）</div>
                           )}
                           {hasDeferIn && (
-                              <div className="mt-0.5 text-[10px] font-semibold text-sky-800">缓入 ← {item.deferredInFromSummary}（{formatCurrency(item.deferredInAmount ?? 0)}）</div>
+                              <div className="mt-0.5 text-xs font-semibold text-sky-800">缓入 ← {item.deferredInFromSummary}（{formatCurrency(item.deferredInAmount ?? 0)}）</div>
                           )}
                           {item.budgetAlignmentNote && (
-                              <div className="mt-1 text-[10px] text-rose-800 leading-snug bg-rose-50/90 border border-rose-100 rounded px-1.5 py-1 max-w-[280px]">
+                              <div className="liquid-finance-alignment-note mt-1 max-w-[280px] rounded-xl px-2 py-1 text-xs font-semibold leading-snug">
                                   {item.budgetAlignmentNote}
                               </div>
                           )}
@@ -265,24 +278,24 @@ export const BillingTable: React.FC<BillingTableProps> = ({
                   </div>
               </td>
               <td className="px-6 py-4 text-slate-600">
-                  {building?.name} <span className="text-slate-400 ml-1">{unitNames}</span>
+                  {building?.name} <span className="ml-1 font-semibold text-slate-500">{unitNames}</span>
               </td>
               <td className="px-6 py-4 font-semibold text-slate-700 align-top">
                   <div>{formatCurrency(receivableBudgetDisplay(item))}</div>
                   {item.earlyTerminationBreakdown && (
-                      <div className="text-[10px] text-amber-800 font-medium mt-1 max-w-[220px] leading-snug">
+                      <div className="mt-1 max-w-[220px] text-xs font-semibold leading-snug text-amber-800">
                           {item.earlyTerminationBreakdown}
                       </div>
                   )}
                   {hasDeferOut && (item.amountDue ?? 0) < 0.005 && (
-                      <div className="text-[10px] text-slate-400 font-normal mt-0.5">原账面应收已全部缓出</div>
+                      <div className="mt-0.5 text-xs font-semibold text-slate-500">原账面应收已全部缓出</div>
                   )}
               </td>
               <td className="px-6 py-4">
                   <span className={paidClass}>{formatCurrency(item.amountPaid)}</span>
               </td>
               <td className="px-6 py-4">
-                  <div className={`flex items-center gap-1.5 font-medium px-2 py-1 rounded-md w-fit border ${writeOffBadgeClass(writeOffLabel)}`}>
+                  <div className={`flex w-fit items-center gap-1.5 rounded-full border px-2.5 py-1 font-black ${writeOffBadgeClass(writeOffLabel)}`}>
                       {writeOffLabel === WRITEOFF_LABELS.settled ? (
                           <CheckCircle2 size={16} className="shrink-0" />
                       ) : (
@@ -297,7 +310,7 @@ export const BillingTable: React.FC<BillingTableProps> = ({
                       periodYYYYMM={selectedMonth}
                       notes={data.billingPeriodNotes}
                       onSave={onUpdateRentRemark}
-                      className="w-full min-h-[52px] text-xs border border-slate-200 rounded-lg p-2 text-slate-700 resize-y"
+                      className="liquid-elevated-field min-h-[56px] w-full resize-y rounded-2xl px-3 py-2 text-xs font-semibold text-slate-700 outline-none focus-visible:ring-4 focus-visible:ring-blue-500/10"
                   />
               </td>
           </tr>
@@ -335,59 +348,59 @@ export const BillingTable: React.FC<BillingTableProps> = ({
   };
 
   return (
-    <div className="bg-white rounded-xl shadow-sm border border-slate-100 overflow-hidden">
-      <div className="p-4 md:p-6 border-b border-slate-100 flex flex-col md:flex-row justify-between items-start md:items-center bg-gradient-to-r from-slate-50 to-white gap-4 min-w-0">
+    <div className="liquid-finance-table overflow-hidden rounded-[26px]">
+      <div className="liquid-glass-toolbar flex min-w-0 flex-col items-start justify-between gap-4 px-4 py-4 md:flex-row md:items-center md:px-6 md:py-5">
         <div className="flex flex-wrap items-center gap-3 w-full md:w-auto justify-between md:justify-start min-w-0">
              <div className="flex items-center gap-3 sm:gap-4 min-w-0">
-                 <div className="bg-blue-100 p-2 rounded-lg text-blue-600">
+                 <div className="liquid-icon-well rounded-2xl p-2 text-blue-700">
                     <Wallet size={20} />
                  </div>
                  <div>
-                    <h3 className="text-lg font-bold text-slate-800">{panelTitle}</h3>
-                    <p className="text-xs text-slate-500 mt-0.5">{panelSubtitle}</p>
+                    <h3 className="text-lg font-black text-slate-950">{panelTitle}</h3>
+                    <p className="mt-0.5 text-xs font-semibold text-slate-500">{panelSubtitle}</p>
                  </div>
              </div>
 
              {mgmtFeeParkEnabled && viewRentPricing && (
-                 <div className="flex rounded-lg border border-slate-200 overflow-hidden text-xs font-semibold shrink-0">
+                 <div className="liquid-glass-control flex shrink-0 overflow-hidden rounded-full p-1 text-xs font-bold">
                      <button
                          type="button"
                          onClick={() => setFeeTab('rent')}
-                         className={`px-3 py-1.5 ${feeTab === 'rent' ? 'bg-blue-600 text-white' : 'bg-white text-slate-600'}`}
+                         className={`liquid-pressable rounded-full px-3 py-1.5 ${feeTab === 'rent' ? 'liquid-action-strong' : 'text-slate-600 hover:bg-blue-50/70 hover:text-blue-700'}`}
                      >
                          租金收款
                      </button>
                      <button
                          type="button"
                          onClick={() => setFeeTab('management_fee')}
-                         className={`px-3 py-1.5 ${feeTab === 'management_fee' ? 'bg-teal-600 text-white' : 'bg-white text-slate-600'}`}
+                         className={`liquid-pressable rounded-full px-3 py-1.5 ${feeTab === 'management_fee' ? 'liquid-action-strong' : 'text-slate-600 hover:bg-blue-50/70 hover:text-blue-700'}`}
                      >
                          物业费收款
                      </button>
                  </div>
              )}
              {mgmtFeeParkEnabled && !viewRentPricing && (
-                 <span className="text-xs font-semibold text-teal-700 px-2 py-1 bg-teal-50 border border-teal-100 rounded-lg shrink-0">
+                 <span className="liquid-glass-control shrink-0 rounded-full px-3 py-1 text-xs font-bold text-cyan-700">
                      物业费收款
                  </span>
              )}
 
              {/* Arrow Navigation */}
-             <div className="flex items-center gap-1 bg-white border border-slate-200 rounded-lg p-1 shadow-sm">
-                 <button onClick={handlePrevMonth} className="p-1 hover:bg-slate-100 rounded text-slate-500 transition-colors">
+             <div className="liquid-glass-readable flex items-center gap-1 rounded-full p-1">
+                 <button onClick={handlePrevMonth} className="liquid-pressable rounded-full p-1 text-slate-500 transition-colors hover:bg-blue-50/70 hover:text-blue-700">
                      <ChevronLeft size={16}/>
                  </button>
-                 <div className="flex items-center gap-2 px-2 text-sm font-medium text-slate-700 min-w-[80px] justify-center">
+                 <div className="flex min-w-[92px] items-center justify-center gap-2 px-2 text-sm font-bold text-slate-700">
                      <Calendar size={14} className="text-slate-400"/>
                      <span>{selectedMonth}</span>
                  </div>
-                 <button onClick={handleNextMonth} className="p-1 hover:bg-slate-100 rounded text-slate-500 transition-colors">
+                 <button onClick={handleNextMonth} className="liquid-pressable rounded-full p-1 text-slate-500 transition-colors hover:bg-blue-50/70 hover:text-blue-700">
                      <ChevronRight size={16}/>
                  </button>
              </div>
         </div>
         
-        <div className="flex gap-4 md:gap-6 items-center w-full md:w-auto bg-slate-50 md:bg-transparent p-3 md:p-0 rounded-lg justify-around md:justify-end">
+        <div className="liquid-glass-readable flex w-full items-center justify-around gap-4 rounded-2xl p-3 md:w-auto md:justify-end md:gap-6 md:bg-transparent md:p-0 md:shadow-none md:ring-0">
              <div
                  className="text-center md:text-right"
                  title={
@@ -400,38 +413,38 @@ export const BillingTable: React.FC<BillingTableProps> = ({
                            : `本月应收 ¥${totalDue.toLocaleString()}（与「财务报表 本月应收租金」一致，未录入手工应收行）`
                  }
              >
-                 <p className="text-[10px] text-slate-400 uppercase tracking-wider font-semibold">{isMgmtTab ? "当月应收物业费" : "当月应收租金"}</p>
-                 <p className="text-base md:text-lg font-bold text-slate-800">{formatCurrency(totalDue)}</p>
+                 <p className="text-xs font-black uppercase tracking-wide text-slate-500">{isMgmtTab ? "当月应收物业费" : "当月应收租金"}</p>
+                 <p className="text-base font-black text-slate-950 md:text-lg">{formatCurrency(totalDue)}</p>
                  {(!isMgmtTab && manualReceivableThisMonth > 0) && (
-                     <p className="text-[10px] text-amber-600 mt-0.5 inline-flex items-center gap-1 justify-end">
-                         <Info size={10}/>
+                     <p className="mt-0.5 inline-flex items-center justify-end gap-1 text-xs font-bold text-amber-700">
+                         <Info size={12}/>
                          财务报表另含手工 <span className="font-semibold">{formatCurrency(manualReceivableThisMonth)}</span>
                      </p>
                  )}
              </div>
-             <div className="h-8 w-px bg-slate-200 block md:hidden"></div>
-             <div className="text-center md:text-right md:border-l md:border-slate-200 md:pl-6">
-                 <p className="text-[10px] text-slate-400 uppercase tracking-wider font-semibold">{isMgmtTab ? "当月实收物业费" : "当月实收租金"}</p>
-                 <p className={`text-base md:text-lg font-bold ${totalPaid >= totalDue ? 'text-emerald-600' : 'text-blue-600'}`}>{formatCurrency(totalPaid)}</p>
+             <div className="block h-8 w-px bg-slate-200/70 md:hidden"></div>
+             <div className="text-center md:border-l md:border-white/70 md:pl-6 md:text-right">
+                 <p className="text-xs font-black uppercase tracking-wide text-slate-500">{isMgmtTab ? "当月实收物业费" : "当月实收租金"}</p>
+                 <p className={`text-base font-black md:text-lg ${totalPaid >= totalDue ? 'text-cyan-700' : 'text-blue-700'}`}>{formatCurrency(totalPaid)}</p>
              </div>
         </div>
       </div>
 
       {mgmtFeeParkEnabled && viewRentPricing && feeTab === 'rent' && (
-          <div className="px-4 md:px-6 py-4 border-b border-slate-100 bg-gradient-to-r from-slate-50 via-white to-teal-50/40">
-              <p className="text-xs font-bold text-slate-600 mb-3">租金及物业费收款汇总（{selectedMonth}）</p>
+          <div className="liquid-finance-summary-band border-y border-white/70 px-4 py-4 md:px-6">
+              <p className="mb-3 text-xs font-black text-slate-600">租金及物业费收款汇总（{selectedMonth}）</p>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  <div className="rounded-lg border border-blue-100 bg-blue-50/50 p-3">
-                      <p className="text-[10px] font-semibold text-blue-800 uppercase tracking-wide mb-2">租金</p>
+                  <div className="liquid-glass-readable rounded-2xl p-3">
+                      <p className="mb-2 text-xs font-black uppercase tracking-wide text-blue-800">租金</p>
                       <div className="flex justify-between text-sm"><span className="text-slate-600">应收</span><span className="font-bold text-slate-800">{formatCurrency(rentTotals.totalDue)}</span></div>
-                      <div className="flex justify-between text-sm mt-1"><span className="text-slate-600">实收</span><span className="font-bold text-emerald-700">{formatCurrency(rentTotals.totalPaid)}</span></div>
+                      <div className="mt-1 flex justify-between text-sm"><span className="text-slate-600">实收</span><span className="font-bold text-blue-700">{formatCurrency(rentTotals.totalPaid)}</span></div>
                       <div className="flex justify-between text-xs mt-2 text-slate-500"><span>收缴率</span><span className="font-semibold text-blue-700">{formatPercent(rentTotals.collectionRate, 1)}</span></div>
                   </div>
-                  <div className="rounded-lg border border-teal-100 bg-teal-50/50 p-3">
-                      <p className="text-[10px] font-semibold text-teal-800 uppercase tracking-wide mb-2">物业费</p>
+                  <div className="liquid-glass-readable rounded-2xl p-3">
+                      <p className="mb-2 text-xs font-black uppercase tracking-wide text-cyan-800">物业费</p>
                       <div className="flex justify-between text-sm"><span className="text-slate-600">应收</span><span className="font-bold text-slate-800">{formatCurrency(mgmtTotals.totalDue)}</span></div>
-                      <div className="flex justify-between text-sm mt-1"><span className="text-slate-600">实收</span><span className="font-bold text-emerald-700">{formatCurrency(mgmtTotals.totalPaid)}</span></div>
-                      <div className="flex justify-between text-xs mt-2 text-slate-500"><span>收缴率</span><span className="font-semibold text-teal-700">{formatPercent(mgmtTotals.collectionRate, 1)}</span></div>
+                      <div className="mt-1 flex justify-between text-sm"><span className="text-slate-600">实收</span><span className="font-bold text-cyan-700">{formatCurrency(mgmtTotals.totalPaid)}</span></div>
+                      <div className="flex justify-between text-xs mt-2 text-slate-500"><span>收缴率</span><span className="font-semibold text-cyan-700">{formatPercent(mgmtTotals.collectionRate, 1)}</span></div>
                   </div>
               </div>
           </div>
@@ -440,15 +453,15 @@ export const BillingTable: React.FC<BillingTableProps> = ({
 
       {billingList.length === 0 ? (
           <div className="p-12 text-center">
-             <div className="inline-flex items-center justify-center w-12 h-12 rounded-full bg-slate-100 text-slate-400 mb-3">
+             <div className="liquid-glass-readable mb-3 inline-flex h-12 w-12 items-center justify-center rounded-[20px] text-slate-400">
                  <Building2 size={24} />
              </div>
-             <p className="text-slate-500">{isMgmtTab ? "该月份暂无应收物业费账单。" : "该月份暂无应收租金账单。"}</p>
+             <p className="font-semibold text-slate-500">{isMgmtTab ? "该月份暂无应收物业费账单。" : "该月份暂无应收租金账单。"}</p>
           </div>
       ) : isDesktop ? (
             <div className="overflow-x-auto">
                 <table className="w-full text-sm text-left">
-                <thead className="bg-slate-50 text-slate-500 font-medium">
+                <thead className="liquid-finance-sticky font-bold text-slate-600">
                     <tr>
                     <th className="px-6 py-4">签约客户</th>
                     <th className="px-6 py-4">租赁房号</th>
@@ -458,11 +471,11 @@ export const BillingTable: React.FC<BillingTableProps> = ({
                     <th className="px-6 py-4 min-w-[200px]">备注</th>
                     </tr>
                 </thead>
-                <tbody className="divide-y divide-slate-100">
+                <tbody className="divide-y divide-white/70">
                     {receivableSections.unsettled.length > 0 && (
                         <>
-                            <tr className="bg-amber-50/60">
-                                <td colSpan={6} className="px-6 py-2 text-xs font-bold text-amber-900/90 border-t border-amber-100/80">
+                            <tr className="liquid-finance-section-row liquid-finance-section-row--pending">
+                                <td colSpan={6} className={`${writeOffSectionClass(WRITEOFF_LABELS.pending)} px-6 py-2 text-xs font-black`}>
                                     {WRITEOFF_LABELS.pending}
                                 </td>
                             </tr>
@@ -473,8 +486,8 @@ export const BillingTable: React.FC<BillingTableProps> = ({
                     )}
                     {receivableSections.deferred.length > 0 && (
                         <>
-                            <tr className="bg-indigo-50/60">
-                                <td colSpan={6} className="px-6 py-2 text-xs font-bold text-indigo-900/90 border-t border-indigo-100/80">
+                            <tr className="liquid-finance-section-row liquid-finance-section-row--deferred">
+                                <td colSpan={6} className={`${writeOffSectionClass(WRITEOFF_LABELS.deferred)} px-6 py-2 text-xs font-black`}>
                                     {WRITEOFF_LABELS.deferred}（原账期挂账已调至其他月份）
                                 </td>
                             </tr>
@@ -485,8 +498,8 @@ export const BillingTable: React.FC<BillingTableProps> = ({
                     )}
                     {(receivableSections.settledThisMonth.length + receivableSections.prepaid.length) > 0 && (
                         <>
-                            <tr className="bg-emerald-50/50">
-                                <td colSpan={6} className="px-6 py-2 text-xs font-bold text-emerald-900/90 border-t border-emerald-100/80">
+                            <tr className="liquid-finance-section-row liquid-finance-section-row--settled">
+                                <td colSpan={6} className={`${writeOffSectionClass(WRITEOFF_LABELS.settled)} px-6 py-2 text-xs font-black`}>
                                     {WRITEOFF_LABELS.settled}
                                 </td>
                             </tr>
@@ -502,10 +515,10 @@ export const BillingTable: React.FC<BillingTableProps> = ({
                 </table>
             </div>
       ) : (
-            <div>
+            <div className="space-y-2 px-1 pb-2 pt-1">
                 {receivableSections.unsettled.length > 0 && (
                     <>
-                        <div className="px-3 py-2 text-xs font-bold bg-amber-50/60 text-amber-900 border-b border-amber-100">{WRITEOFF_LABELS.pending}</div>
+                        <div className={`${writeOffSectionClass(WRITEOFF_LABELS.pending)} liquid-finance-section-pill mx-2 rounded-full px-3 py-2 text-xs font-black`}>{WRITEOFF_LABELS.pending}</div>
                         {receivableSections.unsettled.map(({ item, i }) => {
                             const { building, unitNames } = resolveUnitLocation(item.unitIds);
                             return (
@@ -526,7 +539,7 @@ export const BillingTable: React.FC<BillingTableProps> = ({
                 )}
                 {receivableSections.deferred.length > 0 && (
                     <>
-                        <div className="px-3 py-2 text-xs font-bold bg-indigo-50/70 text-indigo-900 border-b border-indigo-100">{WRITEOFF_LABELS.deferred}（原账期已调至他月）</div>
+                        <div className={`${writeOffSectionClass(WRITEOFF_LABELS.deferred)} liquid-finance-section-pill mx-2 rounded-full px-3 py-2 text-xs font-black`}>{WRITEOFF_LABELS.deferred}（原账期已调至他月）</div>
                         {receivableSections.deferred.map(({ item, i }) => {
                             const { building, unitNames } = resolveUnitLocation(item.unitIds);
                             return (
@@ -547,7 +560,7 @@ export const BillingTable: React.FC<BillingTableProps> = ({
                 )}
                 {(receivableSections.settledThisMonth.length + receivableSections.prepaid.length) > 0 && (
                     <>
-                        <div className="px-3 py-2 text-xs font-bold bg-emerald-50/50 text-emerald-900 border-b border-emerald-100">{WRITEOFF_LABELS.settled}</div>
+                        <div className={`${writeOffSectionClass(WRITEOFF_LABELS.settled)} liquid-finance-section-pill mx-2 rounded-full px-3 py-2 text-xs font-black`}>{WRITEOFF_LABELS.settled}</div>
                         {[...receivableSections.settledThisMonth, ...receivableSections.prepaid].map((entry, idx) => {
                             const { item } = entry;
                             const { building, unitNames } = resolveUnitLocation(item.unitIds);

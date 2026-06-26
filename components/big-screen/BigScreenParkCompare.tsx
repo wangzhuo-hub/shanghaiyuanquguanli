@@ -18,7 +18,7 @@ const initialBudgetCompletion = (park: BigScreenParkMetric): number =>
     : 0;
 
 const completionColor = (pct: number): string =>
-  pct >= 90 ? 'text-emerald-400' : pct >= 70 ? 'text-amber-400' : 'text-red-400';
+  pct >= 90 ? 'text-cyan-300' : pct >= 70 ? 'text-amber-400' : 'text-red-400';
 
 const rankColor = (index: number): string => {
   if (index === 0) return 'text-amber-400';
@@ -44,19 +44,19 @@ export const BigScreenParkCompare: React.FC<Props> = ({ parks, year, hideAmount 
   return (
     <div className="min-h-full flex flex-col px-4 md:px-16 py-4 md:py-8 pb-12 md:pb-16">
       <div className="text-center mb-4 md:mb-8 shrink-0">
-        <h2 className="text-2xl md:text-5xl font-bold">园区横向对比</h2>
-        <p className="text-slate-400 mt-1 md:mt-2 text-sm md:text-base">{year}年度</p>
+        <h2 className="text-2xl font-black md:text-5xl">园区横向对比</h2>
+        <p className="mt-1 text-sm font-semibold text-slate-400 md:mt-2 md:text-base">{year}年度</p>
       </div>
 
       <div className="flex-1 grid grid-cols-1 lg:grid-cols-3 gap-3 md:gap-6 min-h-0">
         {/* Occupancy ranking */}
-        <div className="bg-white/5 rounded-2xl p-6 border border-white/10 flex flex-col min-h-0">
-          <h3 className="text-base font-semibold text-slate-300 mb-4">出租率排名</h3>
+        <div className="liquid-bigscreen-panel rounded-[24px] p-6 flex flex-col min-h-0">
+          <h3 className="mb-4 text-base font-black text-slate-200">出租率排名</h3>
           <div className="flex-1 overflow-auto space-y-2">
             {byOccupancy.map((park, i) => (
               <div
                 key={park.projectId}
-                className="flex items-center justify-between py-2 px-3 rounded-lg bg-white/5"
+                className="liquid-bigscreen-row flex items-center justify-between rounded-2xl px-3 py-2"
               >
                 <div className="flex items-center gap-3">
                   <span className={`text-lg font-bold tabular-nums w-6 ${rankColor(i)}`}>
@@ -67,7 +67,7 @@ export const BigScreenParkCompare: React.FC<Props> = ({ parks, year, hideAmount 
                 <span
                   className={`text-base font-bold tabular-nums ${
                     park.occupancyRate >= park.annualOccupancyTarget
-                      ? 'text-emerald-400'
+                      ? 'text-cyan-300'
                       : 'text-amber-400'
                   }`}
                 >
@@ -79,15 +79,15 @@ export const BigScreenParkCompare: React.FC<Props> = ({ parks, year, hideAmount 
         </div>
 
         {/* Collection ranking */}
-        <div className="bg-white/5 rounded-2xl p-6 border border-white/10 flex flex-col min-h-0">
-          <h3 className="text-base font-semibold text-slate-300 mb-4">预算完成率排名</h3>
+        <div className="liquid-bigscreen-panel rounded-[24px] p-6 flex flex-col min-h-0">
+          <h3 className="mb-4 text-base font-black text-slate-200">预算完成率排名</h3>
           <div className="flex-1 overflow-auto space-y-2">
             {byCollection.map((park, i) => {
               const pct = initialBudgetCompletion(park);
               return (
               <div
                 key={park.projectId}
-                className="flex items-center justify-between py-2 px-3 rounded-lg bg-white/5"
+                className="liquid-bigscreen-row flex items-center justify-between rounded-2xl px-3 py-2"
               >
                 <div className="flex items-center gap-3">
                   <span className={`text-lg font-bold tabular-nums w-6 ${rankColor(i)}`}>
@@ -104,13 +104,13 @@ export const BigScreenParkCompare: React.FC<Props> = ({ parks, year, hideAmount 
         </div>
 
         {/* Revenue ranking */}
-        <div className="bg-white/5 rounded-2xl p-6 border border-white/10 flex flex-col min-h-0">
-          <h3 className="text-base font-semibold text-slate-300 mb-4">实收排名</h3>
+        <div className="liquid-bigscreen-panel rounded-[24px] p-6 flex flex-col min-h-0">
+          <h3 className="mb-4 text-base font-black text-slate-200">实收排名</h3>
           <div className="flex-1 overflow-auto space-y-2">
             {byRevenue.map((park, i) => (
               <div
                 key={park.projectId}
-                className="flex items-center justify-between py-2 px-3 rounded-lg bg-white/5"
+                className="liquid-bigscreen-row flex items-center justify-between rounded-2xl px-3 py-2"
               >
                 <div className="flex items-center gap-3">
                   <span className={`text-lg font-bold tabular-nums w-6 ${rankColor(i)}`}>
@@ -128,9 +128,9 @@ export const BigScreenParkCompare: React.FC<Props> = ({ parks, year, hideAmount 
       </div>
 
       {/* Summary table */}
-      <div className="mt-4 md:mt-6 shrink-0 overflow-x-auto rounded-xl border border-white/10">
+      <div className="liquid-bigscreen-table mt-4 shrink-0 overflow-x-auto rounded-[22px] md:mt-6">
         <table className="w-full text-xs md:text-base">
-          <thead className="bg-white/10 text-slate-300">
+          <thead className="text-slate-300">
             <tr>
               <th className="text-left px-4 py-2">园区</th>
               <th className="text-right px-4 py-2">出租率</th>
@@ -151,7 +151,7 @@ export const BigScreenParkCompare: React.FC<Props> = ({ parks, year, hideAmount 
             {byRevenue.map((park) => {
               const budgetPct = initialBudgetCompletion(park);
               return (
-              <tr key={park.projectId} className="hover:bg-white/5">
+              <tr key={park.projectId} className="transition-colors hover:bg-sky-400/10">
                 <td className="px-4 py-2 font-medium">{park.parkName}</td>
                 <td className="px-4 py-2 text-right tabular-nums">
                   {formatPercent(park.occupancyRate, 0)}

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { mapTenantAppDataToPbTenantRow } from '../mcpIncrementalSave';
+import { affectedMetricsFromDirtyPayload, mapTenantAppDataToPbTenantRow } from '../mcpIncrementalSave';
 
 describe('mapTenantAppDataToPbTenantRow', () => {
     it('keeps billing-critical contract fields for full tenant restores', () => {
@@ -79,5 +79,31 @@ describe('mapTenantAppDataToPbTenantRow', () => {
             project_id: 'beijing_park',
             monthly_rent: 2857.34,
         });
+    });
+});
+
+describe('affectedMetricsFromDirtyPayload', () => {
+    it('marks payment writes as KPI and billing affecting', () => {
+        expect(
+            affectedMetricsFromDirtyPayload({
+                pb_payments: {
+                    creates: [{ originalId: 'p1', data: {} }],
+                    updates: [],
+                    deletes: [],
+                },
+            }).sort()
+        ).toEqual(['billing', 'kpi']);
+    });
+
+    it('marks tenant writes as dashboard, tenant, billing, and KPI affecting', () => {
+        expect(
+            affectedMetricsFromDirtyPayload({
+                pb_tenants: {
+                    creates: [],
+                    updates: [{ originalId: 't1', changedFields: { name: 'A' }, baseUpdated: 'v1' }],
+                    deletes: [],
+                },
+            }).sort()
+        ).toEqual(['billing', 'dashboard', 'kpi', 'tenants']);
     });
 });

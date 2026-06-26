@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'vitest';
-import { dashboardDataToPbRecords, diffPbRecords, payloadCount } from '../dataDiff';
+import {
+    dashboardDataToPbRecords,
+    diffPbRecords,
+    diffPbRecordsScoped,
+    payloadCount,
+} from '../dataDiff';
 import type { DashboardData } from '../../types';
 
 const baseData = (): DashboardData => ({
@@ -70,6 +75,44 @@ describe('dataDiff', () => {
         expect(payloadCount(payload).total).toBe(0);
     });
 
+    it('按年窗口保存时，同窗口 baseline 不会把窗口外收款/发票判为删除', () => {
+        const full = baseData();
+        full.payments = [
+            { id: 'pay2025', tenantId: 't1', tenantName: '张三', amount: 1000, type: 'Rent', date: '2025-12-20', status: 'Paid', period: '2025-12' },
+            { id: 'pay2026', tenantId: 't1', tenantName: '张三', amount: 1000, type: 'Rent', date: '2026-01-20', status: 'Paid', period: '2026-01' },
+        ] as any;
+        full.invoices = [
+            { id: 'inv2025', tenantId: 't1', amount: 1000, billDate: '2025-12-01', status: 'Invoiced', invoicedAt: '2025-12-05' },
+            { id: 'inv2026', tenantId: 't1', amount: 1000, billDate: '2026-01-01', status: 'Pending' },
+        ] as any;
+
+        const windowed = {
+            ...full,
+            payments: (full.payments || []).filter((p: any) => p.date.startsWith('2026-')),
+            invoices: (full.invoices || []).filter((inv: any) => inv.billDate.startsWith('2026-')),
+        } as DashboardData;
+        const meta = {
+            ...baseMeta(),
+            pb_payments: {
+                pay2025: '2026-04-21T10:00:00.000Z',
+                pay2026: '2026-04-21T10:00:00.000Z',
+            },
+            pb_invoices: {
+                inv2025: '2026-04-21T10:00:00.000Z',
+                inv2026: '2026-04-21T10:00:00.000Z',
+            },
+        };
+
+        const windowedBaseline = dashboardDataToPbRecords(windowed, 'p1');
+        const payload = diffPbRecords(windowedBaseline, dashboardDataToPbRecords(windowed, 'p1'), meta);
+        expect(payloadCount(payload).total).toBe(0);
+
+        const fullBaseline = dashboardDataToPbRecords(full, 'p1');
+        const mismatchedPayload = diffPbRecords(fullBaseline, dashboardDataToPbRecords(windowed, 'p1'), meta);
+        expect(mismatchedPayload.pb_payments.deletes.map((d) => d.originalId)).toEqual(['pay2025']);
+        expect(mismatchedPayload.pb_invoices.deletes.map((d) => d.originalId)).toEqual(['inv2025']);
+    });
+
     it('修改张三的 monthly_rent → 只产生一条 update，且 changedFields 只含 monthly_rent', () => {
         const baseline = dashboardDataToPbRecords(baseData(), 'p1');
         const modified = baseData();
@@ -88,6 +131,36 @@ describe('dataDiff', () => {
         // 没有其它 collection 被波及
         expect(payload.pb_buildings).toBeUndefined();
         expect(payload.pb_units).toBeUndefined();
+    });
+
+    it('scoped diff 对指定集合输出与全量 diff 一致', () => {
+        const baseline = dashboardDataToPbRecords(baseData(), 'p1');
+        const modified = baseData();
+        (modified.tenants as any)[0].monthlyRent = 9999;
+        modified.payments = [
+            { id: 'pay1', tenantId: 't1', tenantName: '张三', amount: 1000, type: 'Rent', date: '2026-02-01', status: 'Paid', period: '2026-02' },
+        ] as any;
+
+        const fullPayload = diffPbRecords(
+            baseline,
+            dashboardDataToPbRecords(modified, 'p1'),
+            baseMeta(),
+        );
+        const scopedSnapshot = dashboardDataToPbRecords(modified, 'p1', {
+            collections: ['pb_tenants'],
+        });
+        expect(Object.keys(scopedSnapshot)).toEqual(['pb_tenants']);
+        const scopedPayload = diffPbRecordsScoped(
+            baseline,
+            scopedSnapshot,
+            baseMeta(),
+            { collections: ['pb_tenants'] },
+        );
+
+        expect(scopedPayload).toEqual({
+            pb_tenants: fullPayload.pb_tenants,
+        });
+        expect(scopedPayload.pb_payments).toBeUndefined();
     });
 
     it('A 改张三月租、B 改李四电话 → 两边 diff 不互相影响', () => {

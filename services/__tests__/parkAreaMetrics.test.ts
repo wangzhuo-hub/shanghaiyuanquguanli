@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { ContractStatus, UnitStatus } from '../../types';
-import { computeParkAreaMetrics, isTenantLeasedAtDate } from '../parkAreaMetrics';
+import { buildParkAreaMetricsByBuilding, computeParkAreaMetrics, isTenantLeasedAtDate } from '../parkAreaMetrics';
 
 const building = {
     id: 'b1',
@@ -142,5 +142,76 @@ describe('computeParkAreaMetrics', () => {
         expect(metrics.leasedArea).toBe(100);
         expect(metrics.vacantArea).toBe(50);
         expect(metrics.occupancyRate).toBe(66.67);
+    });
+
+    it('builds per-building metrics in one batch with the same single-building口径', () => {
+        const ref = new Date('2026-06-18T12:00:00');
+        const buildings = [
+            building,
+            {
+                id: 'b2',
+                name: 'B座',
+                type: 'Building' as const,
+                units: [
+                    { id: 'u4', name: '201', floor: 2, area: 80, status: UnitStatus.Occupied, isSelfUse: false },
+                    { id: 'u5', name: '202', floor: 2, area: 40, status: UnitStatus.Vacant, isSelfUse: false },
+                ],
+            },
+            {
+                id: 'site1',
+                name: '场地',
+                type: 'Site' as const,
+                units: [
+                    { id: 's1', name: '场地1', floor: 1, area: 999, status: UnitStatus.Occupied, isSelfUse: false },
+                ],
+            },
+        ];
+        const tenants = [
+            {
+                id: 'b1-tenant',
+                name: 'A客户',
+                buildingId: 'b1',
+                unitIds: ['u1'],
+                totalArea: 100,
+                leaseStart: '2026-01-01',
+                leaseEnd: '2026-12-31',
+                status: ContractStatus.Active,
+            },
+            {
+                id: 'b2-tenant',
+                name: 'B客户',
+                buildingId: 'b2',
+                unitIds: ['u4'],
+                totalArea: 80,
+                leaseStart: '2026-01-01',
+                leaseEnd: '2026-12-31',
+                status: ContractStatus.Active,
+            },
+            {
+                id: 'site-tenant',
+                name: '场地客户',
+                buildingId: 'site1',
+                unitIds: ['s1'],
+                totalArea: 999,
+                leaseStart: '2026-01-01',
+                leaseEnd: '2026-12-31',
+                status: ContractStatus.Active,
+            },
+        ] as any;
+
+        const byBuilding = buildParkAreaMetricsByBuilding(buildings, tenants, { referenceDate: ref });
+
+        expect(byBuilding.get('b1')).toEqual(computeParkAreaMetrics(buildings, tenants, {
+            buildingId: 'b1',
+            referenceDate: ref,
+        }));
+        expect(byBuilding.get('b2')).toEqual(computeParkAreaMetrics(buildings, tenants, {
+            buildingId: 'b2',
+            referenceDate: ref,
+        }));
+        expect(byBuilding.get('site1')).toEqual(computeParkAreaMetrics(buildings, tenants, {
+            buildingId: 'site1',
+            referenceDate: ref,
+        }));
     });
 });

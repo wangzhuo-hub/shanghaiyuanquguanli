@@ -14,7 +14,7 @@ const fmtWan = (v: number | null | undefined, d = 2, hide = false) =>
   hide ? '***' : formatWan(v, d);
 
 const kpiCard =
-  'rounded-xl xl:rounded-2xl flex flex-col justify-center min-h-0 overflow-hidden';
+  'liquid-bigscreen-card rounded-xl xl:rounded-2xl flex flex-col justify-center min-h-0 overflow-hidden';
 
 export const BigScreenParkSlide: React.FC<Props> = ({ park, year, hideAmount }) => {
   const occupancyOk = park.occupancyRate >= park.annualOccupancyTarget;
@@ -36,20 +36,20 @@ export const BigScreenParkSlide: React.FC<Props> = ({ park, year, hideAmount }) 
       >
         {/* Header */}
         <header className="text-center shrink-0">
-          <h1 className="text-2xl md:text-4xl xl:text-5xl font-bold tracking-tight">{park.parkName}</h1>
-          <p className="text-slate-500 mt-1 text-sm md:text-base xl:text-lg">{year}年度经营概览</p>
+          <h1 className="text-2xl font-black tracking-tight md:text-4xl xl:text-5xl">{park.parkName}</h1>
+          <p className="mt-1 text-sm font-semibold text-slate-400 md:text-base xl:text-lg">{year}年度经营概览</p>
         </header>
 
         {/* Hero */}
         <section className="min-h-0">
-          <div className="h-full bg-gradient-to-br from-white/8 to-white/3 rounded-xl xl:rounded-2xl border border-white/10 px-6 xl:px-12 py-5 xl:py-8 flex items-center">
+          <div className="liquid-bigscreen-hero flex h-full items-center rounded-xl px-6 py-5 xl:rounded-2xl xl:px-12 xl:py-8">
             <div className="w-full grid grid-cols-1 md:grid-cols-2 gap-6 xl:gap-16">
               <div className="text-center md:text-left">
                 <div className="flex items-center justify-center md:justify-start gap-2 mb-2 xl:mb-4">
-                  <div className="w-9 h-9 xl:w-11 xl:h-11 rounded-lg bg-emerald-500/20 flex items-center justify-center shrink-0">
-                    <Banknote className="text-emerald-400 w-[18px] h-[18px] xl:w-5 xl:h-5" />
+                  <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-2xl bg-sky-400/16 ring-1 ring-sky-300/20 xl:h-11 xl:w-11">
+                    <Banknote className="h-[18px] w-[18px] text-sky-300 xl:h-5 xl:w-5" />
                   </div>
-                  <span className="text-sm xl:text-xl text-slate-400 font-medium">年度租金实收</span>
+                  <span className="text-sm font-semibold text-slate-300 xl:text-xl">年度租金实收</span>
                 </div>
                 <div className="text-5xl md:text-6xl xl:text-[5.25rem] font-bold text-white tabular-nums tracking-tight leading-none">
                   {fmtWan(park.annualRevenueCollected, 0, hideAmount)}
@@ -59,13 +59,13 @@ export const BigScreenParkSlide: React.FC<Props> = ({ park, year, hideAmount }) 
                     合同应收 {fmtWan(park.annualContractReceivable, 0, hideAmount)}
                   </span>
                   <span
-                    className={`text-xs xl:text-lg px-2.5 py-0.5 rounded-full font-medium ${collectionOk ? 'bg-emerald-500/20 text-emerald-400' : 'bg-amber-500/20 text-amber-400'}`}
+                    className={`rounded-full px-2.5 py-0.5 text-xs font-bold xl:text-lg ${collectionOk ? 'bg-cyan-400/16 text-cyan-300 ring-1 ring-cyan-300/20' : 'bg-amber-400/18 text-amber-300 ring-1 ring-amber-300/20'}`}
                   >
                     完成率 {formatPercent(park.annualGoalCompletion, 0)}
                   </span>
                 </div>
                 {showManagementFee ? (
-                  <div className="mt-3 xl:mt-4 pt-3 xl:pt-4 border-t border-white/10">
+                  <div className="mt-3 xl:mt-4 pt-3 xl:pt-4 border-t border-cyan-300/15">
                     <div className="text-xs xl:text-lg text-teal-400/80 font-medium">年度物业费实收</div>
                     <div className="text-2xl md:text-3xl xl:text-4xl font-bold text-teal-300 tabular-nums mt-1 leading-none">
                       {fmtWan(park.annualManagementFeeCollected, 0, hideAmount)}
@@ -78,17 +78,17 @@ export const BigScreenParkSlide: React.FC<Props> = ({ park, year, hideAmount }) 
                 ) : null}
               </div>
 
-              <div className="text-center md:text-right md:border-l md:border-white/10 md:pl-8 xl:pl-16">
+              <div className="text-center md:text-right md:border-l md:border-cyan-300/15 md:pl-8 xl:pl-16">
                 <div className="flex items-center justify-center md:justify-end gap-2 mb-2 xl:mb-4">
-                  <span className="text-sm xl:text-xl text-slate-400 font-medium">出租率</span>
+                  <span className="text-sm font-semibold text-slate-300 xl:text-xl">出租率</span>
                   <div
-                    className={`w-9 h-9 xl:w-11 xl:h-11 rounded-lg ${occupancyOk ? 'bg-emerald-500/20' : 'bg-amber-500/20'} flex items-center justify-center shrink-0`}
+                    className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-2xl xl:h-11 xl:w-11 ${occupancyOk ? 'bg-cyan-400/16 ring-1 ring-cyan-300/20' : 'bg-amber-400/18 ring-1 ring-amber-300/20'}`}
                   >
-                    <Target className={`w-[18px] h-[18px] xl:w-5 xl:h-5 ${occupancyOk ? 'text-emerald-400' : 'text-amber-400'}`} />
+                    <Target className={`h-[18px] w-[18px] xl:h-5 xl:w-5 ${occupancyOk ? 'text-cyan-300' : 'text-amber-300'}`} />
                   </div>
                 </div>
                 <div
-                  className={`text-5xl md:text-6xl xl:text-[5.25rem] font-bold tabular-nums tracking-tight leading-none ${occupancyOk ? 'text-emerald-400' : 'text-amber-400'}`}
+                  className={`text-5xl font-bold tabular-nums leading-none tracking-tight md:text-6xl xl:text-[5.25rem] ${occupancyOk ? 'text-cyan-300' : 'text-amber-300'}`}
                 >
                   {formatPercent(park.occupancyRate, 0)}
                 </div>
@@ -97,7 +97,7 @@ export const BigScreenParkSlide: React.FC<Props> = ({ park, year, hideAmount }) 
                     目标 {formatPercent(park.annualOccupancyTarget, 0)}
                   </span>
                   <span
-                    className={`text-xs xl:text-lg px-2.5 py-0.5 rounded-full font-medium ${occupancyOk ? 'bg-emerald-500/20 text-emerald-400' : 'bg-amber-500/20 text-amber-400'}`}
+                    className={`rounded-full px-2.5 py-0.5 text-xs font-bold xl:text-lg ${occupancyOk ? 'bg-cyan-400/16 text-cyan-300 ring-1 ring-cyan-300/20' : 'bg-amber-400/18 text-amber-300 ring-1 ring-amber-300/20'}`}
                   >
                     {occupancyOk ? '达标' : `差 ${formatPercent(park.annualOccupancyTarget - park.occupancyRate, 0)}`}
                   </span>
@@ -141,7 +141,7 @@ export const BigScreenParkSlide: React.FC<Props> = ({ park, year, hideAmount }) 
             </span>
           </div>
           <div className="grid grid-cols-2 md:grid-cols-4 gap-3 xl:gap-5 flex-1 min-h-0">
-            <div className={`${kpiCard} bg-white/5 border border-white/5 p-4 xl:p-6`}>
+            <div className={`${kpiCard} p-4 xl:p-6`}>
               <div className="text-xs xl:text-lg text-slate-500">年初预算</div>
               <div className="text-xl md:text-2xl xl:text-4xl font-bold text-white tabular-nums mt-1 xl:mt-2 leading-tight">
                 {fmtWan(park.annualInitialBudget, 0, hideAmount)}
@@ -152,10 +152,10 @@ export const BigScreenParkSlide: React.FC<Props> = ({ park, year, hideAmount }) 
                 偏差 {formatPercent(park.budgetDeviation, 0)}
               </div>
             </div>
-            <div className={`${kpiCard} bg-white/5 border border-white/5 p-4 xl:p-6`}>
+            <div className={`${kpiCard} p-4 xl:p-6`}>
               <div className="text-xs xl:text-lg text-slate-500">回款完成率 / 客户</div>
               <div
-                className={`text-xl md:text-2xl xl:text-4xl font-bold tabular-nums mt-1 xl:mt-2 leading-tight ${collectionOk ? 'text-emerald-400' : park.annualGoalCompletion >= 70 ? 'text-amber-400' : 'text-red-400'}`}
+                className={`text-xl md:text-2xl xl:text-4xl font-bold tabular-nums mt-1 xl:mt-2 leading-tight ${collectionOk ? 'text-cyan-300' : park.annualGoalCompletion >= 70 ? 'text-amber-400' : 'text-red-400'}`}
               >
                 {formatPercent(park.annualGoalCompletion, 0)}
               </div>
@@ -163,19 +163,19 @@ export const BigScreenParkSlide: React.FC<Props> = ({ park, year, hideAmount }) 
                 {park.tenantCount} 户 · {formatArea(park.totalArea, 0)}
               </div>
             </div>
-            <div className={`${kpiCard} bg-emerald-500/5 border border-emerald-500/10 p-4 xl:p-6 text-center`}>
+            <div className={`${kpiCard} p-4 text-center xl:p-6`}>
               <div className="flex items-center justify-center gap-1.5 xl:gap-2 mb-1 xl:mb-2">
-                <ArrowUp className="text-emerald-400 w-3.5 h-3.5 xl:w-5 xl:h-5" />
-                <span className="text-xs xl:text-lg text-emerald-400/80 font-medium">新签约</span>
+                <ArrowUp className="h-3.5 w-3.5 text-cyan-300 xl:h-5 xl:w-5" />
+                <span className="text-xs font-semibold text-cyan-300/85 xl:text-lg">新签约</span>
               </div>
-              <div className="text-xl md:text-2xl xl:text-4xl font-bold text-emerald-400 tabular-nums leading-tight">
+              <div className="text-xl font-bold tabular-nums leading-tight text-cyan-300 md:text-2xl xl:text-4xl">
                 {formatArea(park.newContractsArea, 0)}
               </div>
               <div className="text-xs xl:text-lg text-slate-500 mt-1 xl:mt-2">
                 净增 {formatArea(park.netIncreaseArea, 0)}
               </div>
             </div>
-            <div className={`${kpiCard} bg-red-500/5 border border-red-500/10 p-4 xl:p-6 text-center`}>
+            <div className={`${kpiCard} p-4 text-center xl:p-6`}>
               <div className="flex items-center justify-center gap-1.5 xl:gap-2 mb-1 xl:mb-2">
                 <ArrowDown className="text-red-400 w-3.5 h-3.5 xl:w-5 xl:h-5" />
                 <span className="text-xs xl:text-lg text-red-400/80 font-medium">退租</span>

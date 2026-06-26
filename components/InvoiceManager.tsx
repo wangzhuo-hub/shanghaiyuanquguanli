@@ -1,9 +1,26 @@
 
-import React, { useState, useMemo } from 'react';
-import { Tenant, BudgetAssumption, BudgetAdjustment, InvoiceRecord, Building } from '../types';
-import { generateBudgetedBills, getVirtualTenants } from '../services/billingService';
-import { Calendar, CheckCircle2, Clock, AlertCircle, ChevronLeft, ChevronRight, RefreshCw, FileText, Info, Layers, ArrowRight, HelpCircle, Lightbulb, Sparkles } from 'lucide-react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { Tenant, BudgetAssumption, BudgetAdjustment, InvoiceRecord, Building, CloudConfig } from '../types';
+import type { BudgetedBill } from '../services/billingService';
+import { fetchCloudBudgetedBillsPreviewBatch } from '../services/cloudComputeClient';
+import { resolveBudgetedBillPreviewBatchItems } from '../services/budgetedBillPreviewBatch';
+import { shouldRunLocalBudgetedBillPreviewFallback } from '../services/computeFallbackPolicy';
+import { getVirtualTenants } from '../services/virtualTenants';
+import { Calendar, CheckCircle2, Clock, AlertCircle, ChevronLeft, ChevronRight, RefreshCw, FileText, Info, Layers, ArrowRight, HelpCircle, Lightbulb, Sparkles, X } from 'lucide-react';
 import { formatCurrency, formatPercent } from '../services/numberFormat';
+
+const InvoiceEmptyState: React.FC<{
+    title: string;
+    detail: string;
+}> = ({ title, detail }) => (
+    <div className="liquid-mobile-empty-state flex h-full min-h-[300px] flex-col items-center justify-center rounded-[24px] px-6 text-center">
+        <div className="liquid-icon-well flex h-14 w-14 items-center justify-center rounded-[22px] text-blue-700">
+            <FileText size={28} />
+        </div>
+        <p className="mt-4 text-base font-black text-slate-950">{title}</p>
+        <p className="mt-2 max-w-md text-sm font-semibold leading-5 text-slate-500">{detail}</p>
+    </div>
+);
 
 interface InvoiceManagerProps {
     tenants: Tenant[];
@@ -12,6 +29,8 @@ interface InvoiceManagerProps {
     budgetAdjustments: BudgetAdjustment[];
     invoices: InvoiceRecord[];
     onUpdateInvoices: (invoices: InvoiceRecord[]) => void;
+    cloudConfig?: CloudConfig;
+    serverComputeEnabled?: boolean;
 }
 
 export const InvoiceManager: React.FC<InvoiceManagerProps> = ({
@@ -20,7 +39,9 @@ export const InvoiceManager: React.FC<InvoiceManagerProps> = ({
     budgetAssumptions,
     budgetAdjustments,
     invoices,
-    onUpdateInvoices
+    onUpdateInvoices,
+    cloudConfig,
+    serverComputeEnabled = false,
 }) => {
     const currentYear = new Date().getFullYear();
     const [selectedMonth, setSelectedMonth] = useState<string>(new Date().toISOString().slice(0, 7)); // YYYY-MM
@@ -28,6 +49,12 @@ export const InvoiceManager: React.FC<InvoiceManagerProps> = ({
     const [deferTarget, setDeferTarget] = useState<InvoiceRecord | null>(null);
     const [deferDate, setDeferDate] = useState('');
     const [showLogicPanel, setShowLogicPanel] = useState(true);
+    const [tabletPreviewInvoiceId, setTabletPreviewInvoiceId] = useState<string | null>(null);
+    const [serverBills, setServerBills] = useState<{
+        loading: boolean;
+        error?: string;
+        items: Array<{ id: string; bills: BudgetedBill[] }> | null;
+    }>({ loading: false, items: null });
 
     // Helper to calculate next month for Budget comparison
     const getBudgetMonth = (invMonth: string) => {
@@ -36,51 +63,44 @@ export const InvoiceManager: React.FC<InvoiceManagerProps> = ({
         return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
     };
 
-    // 1. Calculate Combined Invoices (Budgeted Potential + Existing Records)
-    const combinedInvoices = useMemo(() => {
-        // LOGIC UPDATE: Use ALL passed assumptions to generate virtual tenants (Renewals/Vacancy)
-        // This ensures Invoice Manager aligns with the Budget Scenario provided.
-        
-        // Generate Virtual Tenants (e.g. Renewals, Vacancy Fills from Budget)
-        const virtualTenants = getVirtualTenants(tenants, buildings, budgetAssumptions);
-        const allTenants = [...tenants, ...virtualTenants];
-        
-        // Use a wide range to catch everything
-        const startDate = new Date(currentYear - 1, 0, 1);
-        const endDate = new Date(currentYear + 1, 11, 31);
+    const virtualTenants = useMemo(
+        () => getVirtualTenants(tenants, buildings, budgetAssumptions),
+        [tenants, buildings, budgetAssumptions],
+    );
+    const allTenantById = useMemo(() => {
+        const map = new Map<string, Tenant>();
+        [...tenants, ...virtualTenants].forEach((tenant) => map.set(tenant.id, tenant));
+        return map;
+    }, [tenants, virtualTenants]);
+    const buildingById = useMemo(() => new Map(buildings.map((building) => [building.id, building] as const)), [buildings]);
+    const invoiceById = useMemo(() => new Map(invoices.map(inv => [inv.id, inv])), [invoices]);
+    const previewRange = useMemo(() => ({
+        startDate: new Date(currentYear - 1, 0, 1),
+        endDate: new Date(currentYear + 1, 11, 31),
+    }), [currentYear]);
 
-        let potentialInvoices: InvoiceRecord[] = [];
-
-        // Pre-calculate Self-Use Units to exclude them
+    const billableTenants = useMemo(() => {
         const selfUseUnitIds = new Set<string>();
         buildings.forEach(b => b.units.forEach(u => { if (u.isSelfUse) selfUseUnitIds.add(u.id); }));
+        return [...tenants, ...virtualTenants].filter((tenant) => {
+            if (tenant.status === 'Terminated' && !tenant.id.startsWith('virt_')) return false;
+            if (tenant.unitIds.some(uid => selfUseUnitIds.has(uid))) return false;
+            return !tenant.isSpecialBusiness;
+        });
+    }, [tenants, virtualTenants, buildings]);
 
-        allTenants.forEach(t => {
-            // Filter Terminated (unless it's a virtual plan)
-            if (t.status === 'Terminated' && !t.id.startsWith('virt_')) return;
-            
-            // Filter Self-Use (Consistency Fix)
-            const isSelfUse = t.unitIds.some(uid => selfUseUnitIds.has(uid));
-            if (isSelfUse) return;
-
-            // 特殊业态：合同不滚动账单，应收金额由「财务报表 → 特殊业态收入录入」按月手工录入，
-            // 因此也不应在「开票管理」中滚动出潜在发票。
-            if (t.isSpecialBusiness) return;
-
-            // Use all assumptions for billing generation
-            const bills = generateBudgetedBills(t, budgetAssumptions, budgetAdjustments, startDate, endDate);
-            
+    const buildPotentialInvoices = useCallback((billItems: Array<{ id: string; bills: BudgetedBill[] }>): InvoiceRecord[] => {
+        const potentialInvoices: InvoiceRecord[] = [];
+        billItems.forEach(({ id, bills }) => {
+            const tenant = allTenantById.get(id);
+            if (!tenant) return;
             bills.forEach(bill => {
-                // Logic: Target Invoice Date is 1 month BEFORE the Bill Due Date
-                // e.g., Bill Due 2024-04-01 -> Invoice Date 2024-03-01
                 const targetInvoiceDateObj = new Date(bill.date);
                 targetInvoiceDateObj.setMonth(targetInvoiceDateObj.getMonth() - 1);
                 const defaultTargetDateStr = targetInvoiceDateObj.toISOString().split('T')[0];
                 const billDateStr = bill.date.toISOString().split('T')[0];
-                const invoiceId = `inv_${t.id}_${billDateStr}`;
-
-                // Check if we already have a record for this specific bill
-                const existingRecord = invoices.find(inv => inv.id === invoiceId);
+                const invoiceId = `inv_${tenant.id}_${billDateStr}`;
+                const existingRecord = invoiceById.get(invoiceId);
 
                 if (existingRecord) {
                     potentialInvoices.push({
@@ -91,7 +111,7 @@ export const InvoiceManager: React.FC<InvoiceManagerProps> = ({
                     // Create a potential record
                     potentialInvoices.push({
                         id: invoiceId,
-                        tenantId: t.id,
+                        tenantId: tenant.id,
                         billDate: billDateStr,
                         targetInvoiceDate: defaultTargetDateStr,
                         amount: bill.amount,
@@ -100,14 +120,127 @@ export const InvoiceManager: React.FC<InvoiceManagerProps> = ({
                 }
             });
         });
-        
         return potentialInvoices;
-    }, [tenants, buildings, budgetAssumptions, budgetAdjustments, invoices, currentYear]);
+    }, [allTenantById, invoiceById]);
+
+    useEffect(() => {
+        if (billableTenants.length === 0) {
+            setServerBills({ loading: false, items: [] });
+            return;
+        }
+        const canUseServer = serverComputeEnabled && !!cloudConfig?.projectId;
+        let cancelled = false;
+        if (!canUseServer || !cloudConfig) {
+            if (!shouldRunLocalBudgetedBillPreviewFallback({ canUseServer, serverAttempted: false })) {
+                setServerBills({
+                    loading: false,
+                    items: null,
+                    error: '后台批量账单预览计算不可用，未执行前端本地批量计算',
+                });
+                return;
+            }
+            setServerBills({ loading: true, items: null });
+            import('../services/billingService')
+                .then(({ generateBudgetedBills }) => {
+                    if (cancelled) return;
+                    const items = billableTenants.map((tenant) => ({
+                        id: tenant.id,
+                        bills: generateBudgetedBills(
+                            tenant,
+                            budgetAssumptions,
+                            budgetAdjustments,
+                            previewRange.startDate,
+                            previewRange.endDate,
+                        ),
+                    }));
+                    setServerBills({ loading: false, items });
+                })
+                .catch((error: unknown) => {
+                    if (!cancelled) {
+                        setServerBills({
+                            loading: false,
+                            items: null,
+                            error: error instanceof Error ? error.message : '本地账单生成模块加载失败',
+                        });
+                    }
+                });
+            return () => {
+                cancelled = true;
+            };
+        }
+
+        setServerBills({ loading: true, items: null });
+        const requestItems = billableTenants.map((tenant) => ({
+            id: tenant.id,
+            tenant,
+            assumptions: budgetAssumptions,
+            adjustments: budgetAdjustments,
+            startDate: previewRange.startDate,
+            endDate: previewRange.endDate,
+        }));
+        fetchCloudBudgetedBillsPreviewBatch(cloudConfig, {
+            items: requestItems,
+        }).then((result) => {
+            if (cancelled) return;
+            const previewItems = resolveBudgetedBillPreviewBatchItems(
+                result,
+                requestItems.map((item) => item.id),
+            );
+            if (previewItems.ok) {
+                setServerBills({
+                    loading: false,
+                    items: previewItems.items,
+                });
+                return;
+            }
+            setServerBills({ loading: false, items: null, error: previewItems.message || '后台批量账单预览计算失败，未执行前端本地批量计算' });
+        }).catch((error: unknown) => {
+            if (!cancelled) {
+                setServerBills({
+                    loading: false,
+                    items: null,
+                    error: error instanceof Error ? error.message : '后台批量账单预览计算失败，未执行前端本地批量计算',
+                });
+            }
+        });
+
+        return () => {
+            cancelled = true;
+        };
+    }, [
+        billableTenants,
+        budgetAdjustments,
+        budgetAssumptions,
+        cloudConfig,
+        previewRange,
+        serverComputeEnabled,
+    ]);
+
+    // 1. Calculate Combined Invoices (Budgeted Potential + Existing Records)
+    const combinedInvoices = useMemo(() => {
+        if (serverBills.loading) return [];
+        if (serverBills.items) return buildPotentialInvoices(serverBills.items);
+        return [];
+    }, [buildPotentialInvoices, serverBills]);
 
     // 2. Filter by Selected Month
     const filteredInvoices = useMemo(() => {
         return combinedInvoices.filter(inv => inv.targetInvoiceDate.startsWith(selectedMonth));
     }, [combinedInvoices, selectedMonth]);
+    const tabletPreviewInvoice = useMemo(() => {
+        if (filteredInvoices.length === 0) return null;
+        return filteredInvoices.find(inv => inv.id === tabletPreviewInvoiceId) || filteredInvoices[0];
+    }, [filteredInvoices, tabletPreviewInvoiceId]);
+
+    useEffect(() => {
+        if (filteredInvoices.length === 0) {
+            if (tabletPreviewInvoiceId !== null) setTabletPreviewInvoiceId(null);
+            return;
+        }
+        if (!tabletPreviewInvoiceId || !filteredInvoices.some(inv => inv.id === tabletPreviewInvoiceId)) {
+            setTabletPreviewInvoiceId(filteredInvoices[0].id);
+        }
+    }, [filteredInvoices, tabletPreviewInvoiceId]);
 
     // 3. Calculate Summary Stats
     const stats = useMemo(() => {
@@ -152,6 +285,20 @@ export const InvoiceManager: React.FC<InvoiceManagerProps> = ({
         setIsDeferModalOpen(true);
     };
 
+    const closeDeferModal = useCallback(() => {
+        setIsDeferModalOpen(false);
+        setDeferTarget(null);
+    }, []);
+
+    useEffect(() => {
+        if (!isDeferModalOpen) return;
+        const handleKeyDown = (event: KeyboardEvent) => {
+            if (event.key === 'Escape') closeDeferModal();
+        };
+        window.addEventListener('keydown', handleKeyDown);
+        return () => window.removeEventListener('keydown', handleKeyDown);
+    }, [closeDeferModal, isDeferModalOpen]);
+
     const handleConfirmDefer = () => {
         if (!deferTarget || !deferDate) return;
         
@@ -164,8 +311,7 @@ export const InvoiceManager: React.FC<InvoiceManagerProps> = ({
 
         const otherInvoices = invoices.filter(i => i.id !== deferTarget.id);
         onUpdateInvoices([...otherInvoices, updatedRecord]);
-        setIsDeferModalOpen(false);
-        setDeferTarget(null);
+        closeDeferModal();
     };
 
     const handleMonthChange = (offset: number) => {
@@ -177,57 +323,209 @@ export const InvoiceManager: React.FC<InvoiceManagerProps> = ({
     // Helper to identify virtual tenants
     const isVirtual = (id: string) => id.startsWith('virt_');
 
-    return (
-        <div className="bg-white rounded-xl shadow-sm border border-slate-200 h-full flex flex-col animate-in fade-in zoom-in-50 duration-300">
-            {/* Header / Toolbar */}
-            <div className="p-4 border-b border-slate-200 flex flex-col md:flex-row justify-between items-center gap-4 bg-slate-50 rounded-t-xl">
-                <div className="flex items-center gap-2">
-                    <div className="bg-purple-100 p-2 rounded-lg text-purple-600"><FileText size={20} /></div>
-                    <div>
-                        <h3 className="text-lg font-bold text-slate-800">租金发票管理</h3>
-                        <p className="text-xs text-slate-500">基于“发票专用方案”生成 (已自动同步预算预测数据)</p>
+    const renderInvoiceTabletPreview = () => {
+        const invoice = tabletPreviewInvoice;
+        if (!invoice) {
+            return (
+                <aside className="liquid-invoice-tablet-preview rounded-[26px] p-5 text-center">
+                    <div className="liquid-icon-well mx-auto flex h-12 w-12 items-center justify-center rounded-[20px] text-blue-700">
+                        <FileText size={22} />
+                    </div>
+                    <div className="mt-3 text-sm font-black text-slate-800">选择一笔开票计划</div>
+                    <p className="mx-auto mt-1 max-w-[14rem] text-xs font-semibold leading-5 text-slate-500">
+                        平板下可在左侧浏览计划，右侧快速核对金额、日期和状态。
+                    </p>
+                </aside>
+            );
+        }
+
+        const tenant = allTenantById.get(invoice.tenantId);
+        const building = tenant ? buildingById.get(tenant.buildingId) : undefined;
+        const isPlan = isVirtual(invoice.tenantId);
+        const isPending = invoice.status === 'Pending';
+        return (
+            <aside className="liquid-invoice-tablet-preview rounded-[26px] p-4">
+                <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                        <div className="text-xs font-black text-slate-500">开票计划预览 · {selectedMonth}</div>
+                        <h3 className="mt-1 break-anywhere text-lg font-black leading-tight text-slate-950">
+                            {tenant?.name || '未知客户'}
+                        </h3>
+                        <p className="mt-1 text-xs font-semibold text-slate-500">{building?.name || '未关联楼宇'}</p>
+                    </div>
+                    <span className={`liquid-invoice-tablet-status inline-flex shrink-0 items-center gap-1 rounded-full px-2.5 py-1 text-xs font-black ${isPending ? 'text-amber-700' : 'text-blue-700'}`}>
+                        {isPending ? <AlertCircle size={12} /> : <CheckCircle2 size={12} />}
+                        {isPending ? '待开票' : '已开票'}
+                    </span>
+                </div>
+
+                {isPlan && (
+                    <div className="liquid-invoice-tablet-row mt-3 rounded-2xl px-3 py-2 text-xs font-semibold text-slate-600">
+                        <Sparkles size={13} className="shrink-0 text-amber-600" />
+                        <span>预测收入源，签约前不可确认或延期。</span>
+                    </div>
+                )}
+
+                <div className="mt-4 text-3xl font-black tabular-nums text-slate-950">
+                    {formatCurrency(invoice.amount)}
+                </div>
+
+                <div className="mt-4 grid grid-cols-2 gap-2">
+                    <div className="liquid-invoice-tablet-metric rounded-2xl px-3 py-2">
+                        <div className="text-xs font-black text-slate-500">原计划应收日</div>
+                        <div className="mt-1 text-sm font-black tabular-nums text-blue-700">{invoice.billDate}</div>
+                    </div>
+                    <div className="liquid-invoice-tablet-metric rounded-2xl px-3 py-2">
+                        <div className="text-xs font-black text-slate-500">计划开票日</div>
+                        <div className="mt-1 text-sm font-black tabular-nums text-cyan-700">{invoice.targetInvoiceDate}</div>
+                    </div>
+                    <div className="liquid-invoice-tablet-metric rounded-2xl px-3 py-2">
+                        <div className="text-xs font-black text-slate-500">发票视图</div>
+                        <div className="mt-1 text-sm font-black tabular-nums text-slate-950">{selectedMonth}</div>
+                    </div>
+                    <div className="liquid-invoice-tablet-metric rounded-2xl px-3 py-2">
+                        <div className="text-xs font-black text-slate-500">预算归属月</div>
+                        <div className="mt-1 text-sm font-black tabular-nums text-cyan-700">{getBudgetMonth(selectedMonth)}</div>
                     </div>
                 </div>
 
-                <div className="flex items-center gap-4">
-                    <button onClick={() => setShowLogicPanel(!showLogicPanel)} className={`hidden md:flex items-center gap-1 text-xs px-3 py-1.5 rounded border transition-colors ${showLogicPanel ? 'bg-blue-50 text-blue-700 border-blue-200' : 'bg-white text-slate-500 border-slate-200'}`}>
-                        <Lightbulb size={14} className={showLogicPanel ? "fill-blue-100 text-blue-600" : ""} />
-                        <span>数据逻辑分析</span>
+                {!isPending && invoice.invoicedAt && (
+                    <div className="liquid-invoice-tablet-row mt-3 rounded-2xl px-3 py-2 text-xs font-semibold text-slate-600">
+                        <CheckCircle2 size={13} className="shrink-0 text-blue-700" />
+                        <span>开票时间</span>
+                        <span className="ml-auto font-black tabular-nums text-slate-900">{invoice.invoicedAt.slice(0, 10)}</span>
+                    </div>
+                )}
+
+                {invoice.deferReason && (
+                    <div className="liquid-invoice-tablet-row mt-3 rounded-2xl px-3 py-2 text-xs font-semibold text-slate-600">
+                        <Clock size={13} className="shrink-0 text-amber-600" />
+                        <span>已调整计划日</span>
+                    </div>
+                )}
+
+                <div className="mt-4 grid grid-cols-2 gap-2">
+                    <button
+                        type="button"
+                        onClick={() => handleToggleStatus(invoice)}
+                        disabled={isPlan}
+                        className={`liquid-pressable min-h-10 rounded-full px-3 text-sm font-black ${
+                            isPlan
+                                ? 'liquid-invoice-disabled-action cursor-not-allowed'
+                                : isPending
+                                    ? 'liquid-invoice-row-action-strong'
+                                    : 'liquid-invoice-row-action'
+                        }`}
+                    >
+                        {isPending ? '确认开票' : '恢复待开'}
                     </button>
-                    <div className="flex items-center bg-white border border-slate-300 rounded-lg p-1 shadow-sm">
-                        <button onClick={() => handleMonthChange(-1)} className="p-1.5 hover:bg-slate-100 rounded text-slate-600"><ChevronLeft size={16}/></button>
-                        <div className="px-4 font-bold text-slate-700 min-w-[100px] text-center">{selectedMonth}</div>
-                        <button onClick={() => handleMonthChange(1)} className="p-1.5 hover:bg-slate-100 rounded text-slate-600"><ChevronRight size={16}/></button>
+                    <button
+                        type="button"
+                        onClick={() => handleOpenDefer(invoice)}
+                        disabled={isPlan}
+                        className={`liquid-pressable min-h-10 rounded-full px-3 text-sm font-black ${
+                            isPlan
+                                ? 'liquid-invoice-disabled-action cursor-not-allowed'
+                                : 'liquid-invoice-row-action'
+                        }`}
+                    >
+                        延期
+                    </button>
+                </div>
+            </aside>
+        );
+    };
+
+    return (
+        <div className="liquid-invoice-shell flex h-full flex-col overflow-hidden rounded-[30px] animate-in fade-in zoom-in-50 duration-300">
+            <div className="flex flex-col gap-4 border-b border-white/65 px-4 py-4 md:flex-row md:items-center md:justify-between md:px-6">
+                <div className="flex min-w-0 items-center gap-3">
+                    <div className="liquid-action-strong inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl">
+                        <FileText size={21} />
+                    </div>
+                    <div className="min-w-0">
+                        <h3 className="truncate text-xl font-black tracking-normal text-slate-950">租金发票管理</h3>
+                        <p className="mt-1 text-xs font-semibold text-slate-500">
+                            基于发票专用方案生成，预测数据与预算方案保持同源。
+                        </p>
+                    </div>
+                </div>
+
+                <div className="flex w-full flex-col gap-2 sm:flex-row sm:items-center md:w-auto">
+                    <button
+                        type="button"
+                        onClick={() => setShowLogicPanel(!showLogicPanel)}
+                        className={`liquid-glass-control liquid-pressable inline-flex items-center justify-center gap-1.5 rounded-full px-3 py-2 text-xs font-bold transition ${
+                            showLogicPanel ? 'text-blue-700 ring-1 ring-blue-200/80' : 'text-slate-600'
+                        }`}
+                    >
+                        <Lightbulb size={14} className={showLogicPanel ? 'fill-blue-100 text-blue-600' : 'text-slate-500'} />
+                        数据逻辑
+                    </button>
+                    <div className="liquid-glass-readable flex items-center justify-between rounded-full p-1">
+                        <button
+                            type="button"
+                            onClick={() => handleMonthChange(-1)}
+                            className="liquid-pressable rounded-full p-2 text-slate-500 hover:text-blue-700 focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-blue-200/80"
+                            aria-label="上一月"
+                        >
+                            <ChevronLeft size={16}/>
+                        </button>
+                        <div className="flex min-w-[116px] items-center justify-center gap-1.5 px-3 text-sm font-black tabular-nums text-slate-900">
+                            <Calendar size={14} className="text-blue-600" />
+                            {selectedMonth}
+                        </div>
+                        <button
+                            type="button"
+                            onClick={() => handleMonthChange(1)}
+                            className="liquid-pressable rounded-full p-2 text-slate-500 hover:text-blue-700 focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-blue-200/80"
+                            aria-label="下一月"
+                        >
+                            <ChevronRight size={16}/>
+                        </button>
                     </div>
                 </div>
             </div>
 
-            {/* Logic Analysis Panel */}
             {showLogicPanel && (
-                <div className="bg-blue-50/50 border-b border-blue-100 p-4 animate-in slide-in-from-top-2">
-                    <div className="flex flex-col md:flex-row gap-6 text-sm">
-                        <div className="flex-1 space-y-2">
-                            <h4 className="font-bold text-blue-800 flex items-center gap-2"><HelpCircle size={16}/> 为什么发票金额与预算表不同？</h4>
-                            <ul className="list-disc list-inside text-blue-700/80 space-y-1 text-xs">
-                                <li><strong>预开票机制 (Pre-billing):</strong> 系统默认“提前1个月”开具发票。</li>
-                                <li><strong>全量对齐:</strong> 当前视图已包含“预算方案”中的所有预测数据（如：待租去化、续签计划），以确保与预算表金额一致。</li>
-                                <li>若记录显示 <span className="inline-flex items-center gap-0.5 bg-indigo-50 text-indigo-600 px-1 rounded font-bold"><Sparkles size={10}/> 预测</span> 标签，代表该笔收入源自预算假设（尚未正式签约）。</li>
-                            </ul>
-                        </div>
-                        <div className="flex-shrink-0 bg-white border border-blue-200 rounded-xl p-3 shadow-sm min-w-[280px]">
-                            <div className="text-xs text-slate-500 mb-2 font-medium text-center">当前数据对账关系</div>
-                            <div className="flex items-center justify-between gap-2">
-                                <div className="text-center">
-                                    <div className="text-[10px] text-slate-400 uppercase">发票视图</div>
-                                    <div className="font-bold text-indigo-600 text-lg">{selectedMonth}</div>
+                <div className="px-4 pt-4 md:px-6">
+                    <div className="liquid-invoice-logic rounded-[24px] px-4 py-4 animate-in slide-in-from-top-2">
+                        <div className="grid gap-4 md:grid-cols-[1fr_auto] md:items-center">
+                            <div className="min-w-0">
+                                <h4 className="flex items-center gap-2 text-sm font-black text-slate-900">
+                                    <HelpCircle size={16} className="text-blue-600"/>
+                                    为什么发票金额与预算表不同？
+                                </h4>
+                                <div className="mt-2 grid gap-2 text-xs font-semibold leading-5 text-slate-600 sm:grid-cols-3">
+                                    <div className="liquid-invoice-soft-cell rounded-2xl px-3 py-2">
+                                        <span className="font-black text-blue-700">提前 1 个月</span>
+                                        <span className="block">应收日自动前推为开票计划日。</span>
+                                    </div>
+                                    <div className="liquid-invoice-soft-cell rounded-2xl px-3 py-2">
+                                        <span className="font-black text-cyan-700">全量方案</span>
+                                        <span className="block">含待租去化、续签计划等预算预测。</span>
+                                    </div>
+                                    <div className="liquid-invoice-soft-cell rounded-2xl px-3 py-2">
+                                        <span className="font-black text-slate-800">预测标记</span>
+                                        <span className="block">未正式签约的虚拟收入源不可操作。</span>
+                                    </div>
                                 </div>
-                                <div className="flex flex-col items-center">
-                                    <div className="text-[10px] text-slate-400">对应</div>
-                                    <ArrowRight size={16} className="text-slate-300" />
+                            </div>
+                            <div className="liquid-glass-readable rounded-[20px] px-4 py-3">
+                                <div className="mb-2 flex items-center gap-1.5 text-xs font-black text-slate-500">
+                                    <Info size={13} className="text-blue-600" />
+                                    当前对账关系
                                 </div>
-                                <div className="text-center">
-                                    <div className="text-[10px] text-slate-400 uppercase">预算/实收归属月</div>
-                                    <div className="font-bold text-emerald-600 text-lg">{getBudgetMonth(selectedMonth)}</div>
+                                <div className="flex items-center justify-between gap-3">
+                                    <div className="text-center">
+                                        <div className="text-xs font-bold uppercase text-slate-500">发票视图</div>
+                                        <div className="mt-0.5 text-lg font-black tabular-nums text-blue-700">{selectedMonth}</div>
+                                    </div>
+                                    <ArrowRight size={18} className="text-slate-300" />
+                                    <div className="text-center">
+                                        <div className="text-xs font-bold uppercase text-slate-500">预算归属月</div>
+                                        <div className="mt-0.5 text-lg font-black tabular-nums text-cyan-700">{getBudgetMonth(selectedMonth)}</div>
+                                    </div>
                                 </div>
                             </div>
                         </div>
@@ -235,181 +533,293 @@ export const InvoiceManager: React.FC<InvoiceManagerProps> = ({
                 </div>
             )}
 
-            {/* Dashboard Cards Section */}
-            <div className="p-4 grid grid-cols-1 md:grid-cols-3 gap-4 bg-white border-b border-slate-100">
-                {/* Card 1: Total Plan */}
-                <div className="bg-indigo-50 border border-indigo-100 rounded-xl p-4 flex flex-col justify-between shadow-sm relative overflow-hidden group">
-                    <div className="absolute right-0 top-0 p-3 opacity-10 group-hover:opacity-20 transition-opacity">
-                        <Layers size={48} className="text-indigo-600"/>
-                    </div>
-                    <div>
-                        <p className="text-xs font-bold text-indigo-500 uppercase tracking-wider mb-1">本月计划开票 (总计)</p>
-                        <div className="flex items-baseline gap-2">
-                            <h3 className="text-2xl font-bold text-slate-800">{formatCurrency(stats.totalAmt)}</h3>
-                        </div>
-                    </div>
-                    <div className="mt-3 flex items-center justify-between text-xs">
-                        <span className="bg-white/60 px-2 py-1 rounded text-indigo-700 font-medium">{stats.totalCount} 笔账单</span>
-                        <span className="text-indigo-400 font-medium">100%</span>
+            <div className="grid gap-3 px-4 py-4 md:grid-cols-3 md:px-6">
+                <div className="liquid-invoice-card relative overflow-hidden rounded-[22px] px-4 py-4">
+                    <Layers size={52} className="pointer-events-none absolute -right-2 -top-2 text-blue-200/55" />
+                    <p className="text-xs font-black text-slate-500">本月计划开票</p>
+                    <div className="mt-2 text-2xl font-black tabular-nums text-slate-950">{formatCurrency(stats.totalAmt)}</div>
+                    <div className="mt-3 flex items-center justify-between text-xs font-bold">
+                        <span className="liquid-invoice-pill rounded-full px-2.5 py-1 text-blue-700">{stats.totalCount} 笔账单</span>
+                        <span className="text-slate-400">100%</span>
                     </div>
                 </div>
 
-                {/* Card 2: Invoiced */}
-                <div className="bg-emerald-50 border border-emerald-100 rounded-xl p-4 flex flex-col justify-between shadow-sm relative overflow-hidden group">
-                    <div className="absolute right-0 top-0 p-3 opacity-10 group-hover:opacity-20 transition-opacity">
-                        <CheckCircle2 size={48} className="text-emerald-600"/>
-                    </div>
-                    <div>
-                        <p className="text-xs font-bold text-emerald-600 uppercase tracking-wider mb-1">已开票 (Completed)</p>
-                        <div className="flex items-baseline gap-2">
-                            <h3 className="text-2xl font-bold text-slate-800">{formatCurrency(stats.paidAmt)}</h3>
-                        </div>
-                    </div>
-                    <div className="mt-3 flex items-center justify-between text-xs">
-                        <span className="bg-white/60 px-2 py-1 rounded text-emerald-700 font-medium">{stats.paidCount} 笔已开</span>
-                        <span className="text-emerald-600 font-bold">
+                <div className="liquid-invoice-card relative overflow-hidden rounded-[22px] px-4 py-4">
+                    <CheckCircle2 size={52} className="pointer-events-none absolute -right-2 -top-2 text-cyan-200/65" />
+                    <p className="text-xs font-black text-slate-500">已开票</p>
+                    <div className="mt-2 text-2xl font-black tabular-nums text-blue-700">{formatCurrency(stats.paidAmt)}</div>
+                    <div className="mt-3 flex items-center justify-between text-xs font-bold">
+                        <span className="liquid-invoice-pill rounded-full px-2.5 py-1 text-cyan-700">{stats.paidCount} 笔已开</span>
+                        <span className="text-blue-700">
                             {formatPercent(stats.totalAmt > 0 ? (stats.paidAmt / stats.totalAmt) * 100 : 0)} 进度
                         </span>
                     </div>
                 </div>
 
-                {/* Card 3: Pending */}
-                <div className="bg-amber-50 border border-amber-100 rounded-xl p-4 flex flex-col justify-between shadow-sm relative overflow-hidden group">
-                    <div className="absolute right-0 top-0 p-3 opacity-10 group-hover:opacity-20 transition-opacity">
-                        <Clock size={48} className="text-amber-600"/>
-                    </div>
-                    <div>
-                        <p className="text-xs font-bold text-amber-600 uppercase tracking-wider mb-1">待开票 (Pending)</p>
-                        <div className="flex items-baseline gap-2">
-                            <h3 className="text-2xl font-bold text-amber-700">{formatCurrency(stats.pendingAmt)}</h3>
-                        </div>
-                    </div>
-                    <div className="mt-3 flex items-center justify-between text-xs">
-                        <span className="bg-white/60 px-2 py-1 rounded text-amber-700 font-medium">{stats.pendingCount} 笔待处理</span>
-                        <span className="text-amber-600/80 font-medium">剩余任务</span>
+                <div className="liquid-invoice-card relative overflow-hidden rounded-[22px] px-4 py-4">
+                    <Clock size={52} className="pointer-events-none absolute -right-2 -top-2 text-amber-200/75" />
+                    <p className="text-xs font-black text-slate-500">待开票</p>
+                    <div className="mt-2 text-2xl font-black tabular-nums text-amber-700">{formatCurrency(stats.pendingAmt)}</div>
+                    <div className="mt-3 flex items-center justify-between text-xs font-bold">
+                        <span className="liquid-invoice-pill rounded-full px-2.5 py-1 text-amber-700">{stats.pendingCount} 笔待处理</span>
+                        <span className="text-amber-600">剩余任务</span>
                     </div>
                 </div>
             </div>
 
-            {/* List */}
-            <div className="flex-1 overflow-auto">
-                {filteredInvoices.length > 0 ? (
-                    <table className="w-full text-sm text-left">
-                        <thead className="bg-slate-50 text-slate-500 font-medium sticky top-0 z-10 shadow-sm">
-                            <tr>
-                                <th className="px-6 py-3">客户名称</th>
-                                <th className="px-6 py-3">关联楼宇</th>
-                                <th className="px-6 py-3">预计开票金额</th>
-                                <th className="px-6 py-3 text-blue-600 bg-blue-50/50">原计划应收日 (Budget)</th>
-                                <th className="px-6 py-3 text-indigo-600 bg-indigo-50/50">当前计划开票日 (Invoice)</th>
-                                <th className="px-6 py-3">状态</th>
-                                <th className="px-6 py-3 text-right">操作</th>
-                            </tr>
-                        </thead>
-                        <tbody className="divide-y divide-slate-100">
-                            {filteredInvoices.map(inv => {
-                                // Fallback logic for finding tenant info since virtuals are merged
-                                // Note: combinedInvoices logic generated 'potentialInvoices' which are derived from allTenants (including virtuals)
-                                // We need to find the tenant object again to display Name/Building
-                                const isVirt = isVirtual(inv.tenantId);
-                                // For virtuals, we can find them in the virtual list generated inside useMemo, but we don't have access to it here.
-                                // We can re-derive it or just search in 'tenants' (won't find virtuals)
-                                // Better approach: InvoiceRecord only stores ID. 
-                                // Let's use getVirtualTenants again or find from a memoized list if performance allows. 
-                                // For simplicity and performance, we'll search 'tenants' first. If not found, it's virtual.
-                                let tenant = tenants.find(t => t.id === inv.tenantId);
-                                let isPlan = false;
-                                
-                                if (!tenant) {
-                                    // It's a virtual tenant. We need to regenerate it to get the name/building
-                                    // Re-calling getVirtualTenants here is a bit expensive but safe for now given small dataset
-                                    const vts = getVirtualTenants(tenants, buildings, budgetAssumptions);
-                                    tenant = vts.find(t => t.id === inv.tenantId);
-                                    isPlan = true;
-                                }
+            <div className="flex-1 overflow-auto px-4 pb-4 md:px-6 md:pb-6">
+                {serverBills.loading ? (
+                    <div className="liquid-glass-readable flex h-full min-h-[300px] flex-col items-center justify-center rounded-[24px] text-slate-500">
+                        <RefreshCw size={36} className="mb-4 animate-spin text-blue-500/60" />
+                        <p className="font-bold">后台正在计算开票计划...</p>
+                    </div>
+                ) : serverBills.error ? (
+                    <div className="liquid-glass-readable flex h-full min-h-[300px] flex-col items-center justify-center rounded-[24px] px-6 text-center text-slate-500">
+                        <AlertCircle size={36} className="mb-4 text-amber-500" />
+                        <p className="font-black text-slate-800">开票计划暂不可用</p>
+                        <p className="mt-2 max-w-md text-xs font-semibold leading-5">{serverBills.error}</p>
+                    </div>
+                ) : filteredInvoices.length > 0 ? (
+                    <>
+                        <div className="liquid-invoice-table hidden overflow-hidden rounded-[24px] lg:block">
+                            <table className="w-full min-w-[940px] border-separate border-spacing-0 text-left text-sm">
+                                <thead className="text-xs font-black text-slate-600">
+                                    <tr>
+                                        <th className="liquid-invoice-sticky sticky top-0 z-10 px-6 py-3.5">客户名称</th>
+                                        <th className="liquid-invoice-sticky sticky top-0 z-10 px-6 py-3.5">关联楼宇</th>
+                                        <th className="liquid-invoice-sticky sticky top-0 z-10 px-6 py-3.5 text-right">预计开票金额</th>
+                                        <th className="liquid-invoice-sticky sticky top-0 z-10 px-6 py-3.5 text-blue-700">原计划应收日</th>
+                                        <th className="liquid-invoice-sticky sticky top-0 z-10 px-6 py-3.5 text-cyan-700">当前计划开票日</th>
+                                        <th className="liquid-invoice-sticky sticky top-0 z-10 px-6 py-3.5">状态</th>
+                                        <th className="liquid-invoice-sticky sticky top-0 z-10 px-6 py-3.5 text-right">操作</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {filteredInvoices.map(inv => {
+                                        const isVirt = isVirtual(inv.tenantId);
+                                        const tenant = allTenantById.get(inv.tenantId);
+                                        const isPlan = isVirt;
+                                        const building = tenant ? buildingById.get(tenant.buildingId) : undefined;
+                                        const isPending = inv.status === 'Pending';
 
-                                const building = buildings.find(b => b.id === tenant?.buildingId);
+                                        return (
+                                            <tr key={inv.id} className="liquid-invoice-table-row group transition-colors">
+                                                <td className="liquid-invoice-table-cell px-6 py-4 font-bold text-slate-800">
+                                                    <div className="flex min-w-0 items-center gap-2">
+                                                        <span className="truncate">{tenant?.name || '未知客户'}</span>
+                                                        {isPlan && (
+                                                            <span className="liquid-invoice-plan-pill inline-flex shrink-0 items-center gap-0.5 rounded-full px-2 py-0.5 text-xs font-black">
+                                                                <Sparkles size={10}/> 预测
+                                                            </span>
+                                                        )}
+                                                    </div>
+                                                </td>
+                                                <td className="liquid-invoice-table-cell px-6 py-4 font-semibold text-slate-500">{building?.name || '-'}</td>
+                                                <td className="liquid-invoice-table-cell px-6 py-4 text-right font-mono font-black text-slate-900">{formatCurrency(inv.amount)}</td>
+                                                <td className="liquid-invoice-table-cell px-6 py-4 text-xs font-black tabular-nums text-blue-700">{inv.billDate}</td>
+                                                <td className="liquid-invoice-table-cell px-6 py-4 font-black tabular-nums text-cyan-700">{inv.targetInvoiceDate}</td>
+                                                <td className="liquid-invoice-table-cell px-6 py-4">
+                                                    <span className={`inline-flex w-fit items-center gap-1 rounded-full px-2.5 py-1 text-xs font-black ${isPending ? 'liquid-invoice-status-pending' : 'liquid-invoice-status-done'}`}>
+                                                        {isPending ? <AlertCircle size={12}/> : <CheckCircle2 size={12}/>}
+                                                        {isPending ? '待开票' : '已开票'}
+                                                    </span>
+                                                    {!isPending && inv.invoicedAt && <div className="mt-1 text-xs font-semibold text-slate-500">{inv.invoicedAt.slice(0,10)}</div>}
+                                                </td>
+                                                <td className="liquid-invoice-table-cell px-6 py-4 text-right">
+                                                    <div className="flex justify-end gap-2">
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => handleToggleStatus(inv)}
+                                                            disabled={isPlan}
+                                                            title={isPlan ? '预测数据不可操作，请先签约' : ''}
+                                                            className={`liquid-pressable rounded-full px-3 py-1.5 text-xs font-bold transition ${
+                                                                isPlan
+                                                                    ? 'liquid-invoice-disabled-action cursor-not-allowed'
+                                                                : isPending
+                                                                        ? 'liquid-invoice-row-action-strong'
+                                                                        : 'liquid-invoice-row-action'
+                                                            }`}
+                                                        >
+                                                            {isPending ? '确认开票' : '恢复待开'}
+                                                        </button>
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => handleOpenDefer(inv)}
+                                                            disabled={isPlan}
+                                                            className={`liquid-pressable rounded-full px-3 py-1.5 text-xs font-bold transition ${
+                                                                isPlan
+                                                                    ? 'liquid-invoice-disabled-action cursor-not-allowed'
+                                                                    : 'liquid-invoice-row-action'
+                                                            }`}
+                                                        >
+                                                            延期
+                                                        </button>
+                                                    </div>
+                                                </td>
+                                            </tr>
+                                        );
+                                    })}
+                                </tbody>
+                            </table>
+                        </div>
+
+                        <div className="liquid-invoice-mobile-list liquid-invoice-mobile-list--master-detail lg:hidden">
+                            <div className="liquid-invoice-tablet-master-detail">
+                                <div className="liquid-invoice-tablet-list min-w-0 space-y-3">
+                            {filteredInvoices.map(inv => {
+                                const isVirt = isVirtual(inv.tenantId);
+                                const tenant = allTenantById.get(inv.tenantId);
+                                const isPlan = isVirt;
+                                const building = tenant ? buildingById.get(tenant.buildingId) : undefined;
                                 const isPending = inv.status === 'Pending';
 
                                 return (
-                                    <tr key={inv.id} className="hover:bg-slate-50 transition-colors group">
-                                        <td className="px-6 py-4 font-medium text-slate-700">
-                                            <div className="flex items-center gap-2">
-                                                {tenant?.name || '未知客户'}
-                                                {isPlan && <span className="bg-indigo-100 text-indigo-600 text-[10px] px-1.5 py-0.5 rounded flex items-center gap-0.5 border border-indigo-200"><Sparkles size={10}/> 预测</span>}
+                                    <article
+                                        key={inv.id}
+                                        data-selected={tabletPreviewInvoice?.id === inv.id ? 'true' : 'false'}
+                                        onClick={(event) => {
+                                            const target = event.target as HTMLElement;
+                                            if (target.closest('button, a, input, select, textarea')) return;
+                                            setTabletPreviewInvoiceId(inv.id);
+                                        }}
+                                        className="liquid-invoice-mobile-card mobile-card-enter rounded-[22px] p-4"
+                                    >
+                                        <div className="flex items-start justify-between gap-3">
+                                            <div className="min-w-0">
+                                                <div className="flex items-center gap-2">
+                                                    <h4 className="truncate text-sm font-black text-slate-950">{tenant?.name || '未知客户'}</h4>
+                                                    {isPlan && (
+                                                        <span className="liquid-invoice-plan-pill inline-flex shrink-0 items-center gap-0.5 rounded-full px-2 py-0.5 text-xs font-black">
+                                                            <Sparkles size={10}/> 预测
+                                                        </span>
+                                                    )}
+                                                </div>
+                                                <p className="mt-1 text-xs font-semibold text-slate-500">{building?.name || '未关联楼宇'}</p>
                                             </div>
-                                        </td>
-                                        <td className="px-6 py-4 text-slate-500">{building?.name || '-'}</td>
-                                        <td className="px-6 py-4 font-mono font-bold text-slate-700">{formatCurrency(inv.amount)}</td>
-                                        <td className="px-6 py-4 text-blue-600 font-medium text-xs bg-blue-50/30">{inv.billDate}</td>
-                                        <td className="px-6 py-4 text-indigo-700 font-bold bg-indigo-50/30">{inv.targetInvoiceDate}</td>
-                                        <td className="px-6 py-4">
-                                            <span className={`px-2 py-1 rounded text-xs font-bold flex items-center gap-1 w-fit ${isPending ? 'bg-amber-50 text-amber-600' : 'bg-green-50 text-green-600'}`}>
+                                            <span className={`inline-flex shrink-0 items-center gap-1 rounded-full px-2.5 py-1 text-xs font-black ${isPending ? 'liquid-invoice-status-pending' : 'liquid-invoice-status-done'}`}>
                                                 {isPending ? <AlertCircle size={12}/> : <CheckCircle2 size={12}/>}
-                                                {isPending ? '待开票' : '已开票'}
+                                                {isPending ? '待开' : '已开'}
                                             </span>
-                                            {!isPending && inv.invoicedAt && <div className="text-[10px] text-slate-400 mt-1">{inv.invoicedAt.slice(0,10)}</div>}
-                                        </td>
-                                        <td className="px-6 py-4 text-right">
-                                            <div className="flex justify-end gap-2">
-                                                <button 
-                                                    onClick={() => handleToggleStatus(inv)}
-                                                    disabled={isPlan} // Disable confirming forecast items
-                                                    title={isPlan ? "预测数据不可操作，请先签约" : ""}
-                                                    className={`px-3 py-1.5 rounded text-xs font-medium border transition-colors ${
-                                                        isPlan 
-                                                            ? 'bg-slate-50 text-slate-300 border-slate-100 cursor-not-allowed' 
-                                                            : isPending 
-                                                                ? 'bg-blue-600 text-white border-blue-600 hover:bg-blue-700' 
-                                                                : 'bg-white text-slate-500 border-slate-200 hover:border-slate-300'
-                                                    }`}
-                                                >
-                                                    {isPending ? '确认开票' : '恢复待开'}
-                                                </button>
-                                                <button 
-                                                    onClick={() => handleOpenDefer(inv)}
-                                                    disabled={isPlan}
-                                                    className={`px-3 py-1.5 rounded text-xs font-medium border transition-colors ${isPlan ? 'bg-slate-50 text-slate-300 border-slate-100 cursor-not-allowed' : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'}`}
-                                                >
-                                                    延期
-                                                </button>
+                                        </div>
+                                        <div className="mt-4 text-2xl font-black tabular-nums text-slate-950">{formatCurrency(inv.amount)}</div>
+                                        <div className="mt-4 grid grid-cols-2 gap-2 text-xs">
+                                            <div className="liquid-invoice-mobile-date rounded-2xl px-3 py-2">
+                                                <div className="font-black text-slate-500">原计划应收日</div>
+                                                <div className="mt-1 font-black tabular-nums text-blue-700">{inv.billDate}</div>
                                             </div>
-                                        </td>
-                                    </tr>
+                                            <div className="liquid-invoice-mobile-date rounded-2xl px-3 py-2">
+                                                <div className="font-black text-slate-500">计划开票日</div>
+                                                <div className="mt-1 font-black tabular-nums text-cyan-700">{inv.targetInvoiceDate}</div>
+                                            </div>
+                                        </div>
+                                        {!isPending && inv.invoicedAt && (
+                                            <div className="mt-2 text-xs font-semibold text-slate-500">开票时间：{inv.invoicedAt.slice(0,10)}</div>
+                                        )}
+                                        <div className="mt-4 grid grid-cols-2 gap-2">
+                                            <button
+                                                type="button"
+                                                onClick={() => setTabletPreviewInvoiceId(inv.id)}
+                                                className="liquid-pressable hidden rounded-full px-3 py-2 text-xs font-black text-slate-600 hover:bg-white/80 sm:inline-flex lg:hidden"
+                                            >
+                                                预览
+                                            </button>
+                                            <button
+                                                type="button"
+                                                onClick={() => handleToggleStatus(inv)}
+                                                disabled={isPlan}
+                                                className={`liquid-pressable rounded-full px-3 py-2 text-xs font-black ${
+                                                    isPlan
+                                                        ? 'liquid-invoice-disabled-action cursor-not-allowed'
+                                                        : isPending
+                                                            ? 'liquid-invoice-row-action-strong'
+                                                            : 'liquid-invoice-row-action'
+                                                }`}
+                                            >
+                                                {isPending ? '确认开票' : '恢复待开'}
+                                            </button>
+                                            <button
+                                                type="button"
+                                                onClick={() => handleOpenDefer(inv)}
+                                                disabled={isPlan}
+                                                className={`liquid-pressable rounded-full px-3 py-2 text-xs font-black ${
+                                                    isPlan
+                                                        ? 'liquid-invoice-disabled-action cursor-not-allowed'
+                                                        : 'liquid-invoice-row-action'
+                                                }`}
+                                            >
+                                                延期
+                                            </button>
+                                        </div>
+                                    </article>
                                 );
                             })}
-                        </tbody>
-                    </table>
+                                </div>
+                                <div className="hidden sm:block lg:hidden">
+                                    {renderInvoiceTabletPreview()}
+                                </div>
+                            </div>
+                        </div>
+                    </>
                 ) : (
-                    <div className="h-full flex flex-col items-center justify-center text-slate-400">
-                        <FileText size={48} className="opacity-20 mb-4" />
-                        <p>该月份无待开票计划</p>
-                    </div>
+                    <InvoiceEmptyState
+                        title="该月份无待开票计划"
+                        detail={`${selectedMonth} 没有匹配的待开票或已开票记录，切换月份后会重新按同一开票口径展示。`}
+                    />
                 )}
             </div>
 
-            {/* Defer Modal */}
             {isDeferModalOpen && (
-                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm p-4">
-                    <div className="bg-white rounded-xl shadow-xl w-full max-w-sm p-6 animate-in zoom-in-50 duration-200">
-                        <h3 className="text-lg font-bold text-slate-800 mb-4 flex items-center gap-2"><Clock size={20}/> 延期开票</h3>
-                        <div className="space-y-4">
-                            <p className="text-sm text-slate-600 bg-slate-50 p-3 rounded">
-                                当前计划日: {deferTarget?.targetInvoiceDate} <br/>
+                <div className="liquid-elevated-backdrop fixed inset-0 z-50 flex items-end justify-center p-0 sm:items-center sm:p-4" onClick={closeDeferModal}>
+                    <section
+                        role="dialog"
+                        aria-modal="true"
+                        aria-labelledby="invoice-defer-modal-title"
+                        className="liquid-invoice-defer-panel w-full max-w-sm overflow-hidden rounded-t-[28px] animate-in slide-in-from-bottom-4 zoom-in-95 duration-200 sm:rounded-[26px] sm:slide-in-from-bottom-0"
+                        onClick={(event) => event.stopPropagation()}
+                    >
+                        <div className="liquid-elevated-header flex items-center justify-between gap-3 px-5 py-4">
+                            <h3 id="invoice-defer-modal-title" className="flex items-center gap-2 text-lg font-black text-slate-950">
+                                <Clock size={20} className="text-blue-600"/> 延期开票
+                            </h3>
+                            <button
+                                type="button"
+                                aria-label="关闭延期开票弹层"
+                                onClick={closeDeferModal}
+                                className="liquid-invoice-row-action liquid-pressable flex h-9 w-9 items-center justify-center rounded-full text-slate-500 hover:text-slate-900"
+                            >
+                                <X size={18} />
+                            </button>
+                        </div>
+                        <div className="space-y-4 px-5 py-5">
+                            <div className="liquid-invoice-defer-note rounded-[18px] px-4 py-3 text-sm font-semibold text-slate-600">
+                                当前计划日：<span className="font-black text-slate-900">{deferTarget?.targetInvoiceDate}</span>
+                                <br/>
                                 将该笔开票计划移动至：
-                            </p>
-                            <input 
-                                type="date" 
-                                className="w-full border p-2 rounded-lg"
+                            </div>
+                            <input
+                                type="date"
+                                className="liquid-invoice-defer-field w-full rounded-2xl px-3 py-2.5 text-sm font-semibold text-slate-900 outline-none focus-visible:ring-4 focus-visible:ring-blue-200/80"
                                 value={deferDate}
                                 onChange={e => setDeferDate(e.target.value)}
                             />
-                            <div className="flex justify-end gap-2 pt-2">
-                                <button onClick={() => setIsDeferModalOpen(false)} className="px-4 py-2 border rounded text-slate-600 hover:bg-slate-50">取消</button>
-                                <button onClick={handleConfirmDefer} className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700">确认延期</button>
-                            </div>
                         </div>
-                    </div>
+                        <div className="liquid-elevated-footer grid grid-cols-2 gap-2 px-5 py-4 pb-[calc(env(safe-area-inset-bottom)+1rem)] sm:flex sm:justify-end sm:pb-4">
+                            <button
+                                type="button"
+                                onClick={closeDeferModal}
+                                className="liquid-invoice-row-action liquid-pressable rounded-full px-4 py-2 text-sm font-bold"
+                            >
+                                取消
+                            </button>
+                            <button
+                                type="button"
+                                onClick={handleConfirmDefer}
+                                className="liquid-invoice-row-action-strong liquid-pressable rounded-full px-4 py-2 text-sm font-black"
+                            >
+                                确认延期
+                            </button>
+                        </div>
+                    </section>
                 </div>
             )}
         </div>

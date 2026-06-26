@@ -71,6 +71,36 @@ describe('applyBillingPeriodDeferNotes — 缓入拆行', () => {
         const sumDisplay = out.reduce((s, r) => s + receivableBudgetDisplay(r), 0);
         expect(sumDisplay).toBe(73943 + 50000 + 23943);
     });
+
+    it('特殊业态租户的缓缴备注不生成调入调出行', () => {
+        const specialTenant = { ...makeTenant('t-special', '特殊业态'), isSpecialBusiness: true };
+        const base: BillingDetail[] = [
+            {
+                tenantId: 't-special',
+                tenantName: '特殊业态',
+                unitIds: ['u1'],
+                amountDue: 10000,
+                amountPaid: 0,
+                status: 'Unpaid',
+            },
+        ];
+        const notes: Record<string, string> = {
+            __defer__special: JSON.stringify({
+                tenantId: 't-special',
+                fromYear: 2026,
+                fromMonth: 0,
+                toYear: 2026,
+                toMonth: 1,
+                amount: 3000,
+            }),
+        };
+
+        const outFrom = applyBillingPeriodDeferNotes(base, 2026, 0, notes, [specialTenant]);
+        const outTo = applyBillingPeriodDeferNotes([], 2026, 1, notes, [specialTenant]);
+
+        expect(outFrom).toEqual(base);
+        expect(outTo).toEqual([]);
+    });
 });
 
 describe('deferBillingNoteKeyFromDeferInDisplayTenantId', () => {

@@ -31,6 +31,15 @@ AUDIT_RETENTION_DAYS=180      # 可选，审计日志留存天数（首次清理
 设置后**重启网关**。启动日志应出现：`定时任务已启动：封账(...) + 审计清理(180d)`；
 未启用时显示：`定时任务未启用（GATEWAY_SCHEDULER_ENABLED=1 开启…）`。
 
+同时确认用户态历史欠费计算接口已随网关启动注册，启动日志应包含：
+
+```text
+POST /api/integration/app/compute/tenant-historical-arrears
+POST /api/v1/app/compute/tenant-historical-arrears
+```
+
+该接口不落库，用于移动端客户查询的历史欠费筛选；网关不可用时前端会回退本地按需计算，但生产环境建议优先保持该接口可用。
+
 ⚠️ 启用封账后，已封月欠款**冻结**（对已封月的补缴不再回头减欠款）——会计关账的正确语义，请知会财务。
 单实例运行，勿起多个网关进程（否则重复封账）。
 
@@ -45,6 +54,32 @@ Body: { "project_id": "shanghai_park", "year": 2026, "month": 1 }   # month 为�
 
 对每个园区、每个历史月各调一次（不带 year/month 时默认封上月）。可写脚本循环。
 封账语义为"关账"：封后该月欠款定格，后续对该月的补录不再改变其封账值；如需修正可对同月重复调用本接口覆盖。
+
+也可以使用仓库脚本批量回填：
+
+```bash
+PB_URL=http://127.0.0.1:1001 \
+PB_ADMIN_EMAIL=... \
+PB_ADMIN_PASSWORD=... \
+npm run seal:backfill -- --from 2026-01 --to 2026-05 --projects shanghai_park,beijing_park,shenzhen_park
+```
+
+默认策略：
+
+- 缺失的封账月：创建 `pb_sealed_months` 行；
+- 已存在但缺少 `details_json` 的旧封账月：重新计算并补齐客户级应收明细；
+- 已存在且已有 `details_json` 的封账月：跳过，避免无意义覆盖。
+
+如只想给旧封账行补 `details_json`、不创建缺失月份：
+
+```bash
+npm run seal:backfill -- --from 2026-01 --to 2026-05 --missing-details-only --dry-run
+npm run seal:backfill -- --from 2026-01 --to 2026-05 --missing-details-only
+```
+
+如需强制重算并覆盖已有封账行，追加 `--force`。上线前建议先跑 `--dry-run` 核对输出。
+
+移动端“历史欠费”筛选依赖 `details_json` 做客户级拆分；缺少该字段时筛选会禁用并提示原因，不能用园区累计欠款反推客户欠费。
 
 ## ④ Batch API（PB Admin UI）
 

@@ -1,7 +1,8 @@
-import type { Building, DashboardData, Tenant } from '../types';
+import type { Building, Tenant } from '../types';
 import { ContractStatus, UnitStatus } from '../types';
-import { parseDateLocal } from './billingService';
+import { parseDateLocal } from './billingLightweight';
 import { toFixedNumber } from './numberFormat';
+export { parkAreaMetricsFromDashboard } from './parkAreaMetricSnapshot';
 
 /** 看板 / 资产管理 / OpenClaw 快照共用的面积与出租率指标 */
 export type ParkAreaMetrics = {
@@ -23,6 +24,23 @@ export type ComputeParkAreaMetricsOptions = {
     buildingId?: string;
 };
 
+type MutableParkAreaMetrics = {
+    campusTotalArea: number;
+    selfUseArea: number;
+    leasableArea: number;
+    leasedArea: number;
+    leasableUnits: number;
+    leasedUnits: number;
+    vacantUnits: number;
+};
+
+type BuildingAreaAccumulator = {
+    metrics: MutableParkAreaMetrics;
+    selfUseUnitIds: Set<string>;
+    leasableUnitAreaById: Map<string, number>;
+    leasedUnitIds: Set<string>;
+};
+
 const LEASED_STATUSES = new Set<ContractStatus>([
     ContractStatus.Active,
     ContractStatus.Expiring,
@@ -38,6 +56,40 @@ function minValidDate(...dates: Array<Date | null>): Date | null {
     if (valid.length === 0) return null;
     return valid.reduce((min, date) => (date < min ? date : min));
 }
+
+const emptyMutableParkAreaMetrics = (): MutableParkAreaMetrics => ({
+    campusTotalArea: 0,
+    selfUseArea: 0,
+    leasableArea: 0,
+    leasedArea: 0,
+    leasableUnits: 0,
+    leasedUnits: 0,
+    vacantUnits: 0,
+});
+
+const finalizeParkAreaMetrics = (metrics: MutableParkAreaMetrics): ParkAreaMetrics => {
+    const vacantArea = Math.max(0, metrics.leasableArea - metrics.leasedArea);
+    const occupancyRate = metrics.leasableArea > 0 ? toFixedNumber((metrics.leasedArea / metrics.leasableArea) * 100) : 0;
+
+    return {
+        campusTotalArea: Number(metrics.campusTotalArea.toFixed(2)),
+        selfUseArea: Number(metrics.selfUseArea.toFixed(2)),
+        leasableArea: Number(metrics.leasableArea.toFixed(2)),
+        leasedArea: Number(metrics.leasedArea.toFixed(2)),
+        vacantArea: Number(vacantArea.toFixed(2)),
+        occupancyRate,
+        leasableUnits: metrics.leasableUnits,
+        leasedUnits: metrics.leasedUnits,
+        vacantUnits: metrics.vacantUnits,
+    };
+};
+
+const emptyBuildingAccumulator = (): BuildingAreaAccumulator => ({
+    metrics: emptyMutableParkAreaMetrics(),
+    selfUseUnitIds: new Set(),
+    leasableUnitAreaById: new Map(),
+    leasedUnitIds: new Set(),
+});
 
 /** 判断租户在 referenceDate 是否计入已租面积（与看板/OpenClaw/资产管理同源） */
 export function isTenantLeasedAtDate(
@@ -75,6 +127,8 @@ export function computeParkAreaMetrics(
     const referenceDate = endOfLocalDay(options.referenceDate ?? new Date());
     const buildingId = options.buildingId?.trim();
 
+    const buildingTypeById = new Map<string, Building['type']>();
+    const leasableUnitAreaById = new Map<string, number>();
     const selfUseUnitIds = new Set<string>();
     let campusTotalArea = 0;
     let selfUseArea = 0;
@@ -84,6 +138,7 @@ export function computeParkAreaMetrics(
     let vacantUnits = 0;
 
     buildings.forEach((building) => {
+        buildingTypeById.set(building.id, building.type);
         if (building.type === 'Site') return;
         if (buildingId && building.id !== buildingId) return;
 
@@ -95,18 +150,10 @@ export function computeParkAreaMetrics(
             } else {
                 leasableArea += unit.area;
                 leasableUnits += 1;
+                leasableUnitAreaById.set(unit.id, unit.area || 0);
                 if (unit.status === UnitStatus.Occupied) leasedUnits += 1;
                 else vacantUnits += 1;
             }
-        });
-    });
-
-    const leasableUnitAreaById = new Map<string, number>();
-    buildings.forEach((building) => {
-        if (building.type === 'Site') return;
-        if (buildingId && building.id !== buildingId) return;
-        building.units.forEach((unit) => {
-            if (!unit.isSelfUse) leasableUnitAreaById.set(unit.id, unit.area || 0);
         });
     });
 
@@ -114,8 +161,7 @@ export function computeParkAreaMetrics(
     const leasedUnitIds = new Set<string>();
     tenants.forEach((tenant) => {
         if (buildingId && tenant.buildingId !== buildingId) return;
-        const building = buildings.find((b) => b.id === tenant.buildingId);
-        if (building?.type === 'Site') return;
+        if (buildingTypeById.get(tenant.buildingId) === 'Site') return;
         if (isTenantLeasedAtDate(tenant, referenceDate, selfUseUnitIds)) {
             let hasMatchedUnit = false;
             tenant.unitIds.forEach((unitId) => {
@@ -146,30 +192,57 @@ export function computeParkAreaMetrics(
     };
 }
 
-/** 从 calculateDashboardMetrics 产出的 DashboardData 还原面积指标（供资产管理等页面只读展示） */
-export function parkAreaMetricsFromDashboard(data: Pick<
-    DashboardData,
-    | 'totalArea'
-    | 'leasedArea'
-    | 'occupancyRate'
-    | 'campusTotalArea'
-    | 'selfUseArea'
-    | 'vacantArea'
-    | 'leasableUnits'
-    | 'leasedUnits'
-    | 'vacantUnits'
->): ParkAreaMetrics {
-    const leasableArea = data.totalArea || 0;
-    const leasedArea = data.leasedArea || 0;
-    return {
-        campusTotalArea: data.campusTotalArea ?? leasableArea + (data.selfUseArea ?? 0),
-        selfUseArea: data.selfUseArea ?? 0,
-        leasableArea,
-        leasedArea,
-        vacantArea: data.vacantArea ?? Math.max(0, leasableArea - leasedArea),
-        occupancyRate: data.occupancyRate || 0,
-        leasableUnits: data.leasableUnits ?? 0,
-        leasedUnits: data.leasedUnits ?? 0,
-        vacantUnits: data.vacantUnits ?? 0,
-    };
+export function buildParkAreaMetricsByBuilding(
+    buildings: Building[],
+    tenants: Tenant[],
+    options: Pick<ComputeParkAreaMetricsOptions, 'referenceDate'> = {},
+): Map<string, ParkAreaMetrics> {
+    const referenceDate = endOfLocalDay(options.referenceDate ?? new Date());
+    const buildingTypeById = new Map<string, Building['type']>();
+    const accumulators = new Map<string, BuildingAreaAccumulator>();
+
+    for (const building of buildings) {
+        buildingTypeById.set(building.id, building.type);
+        const acc = emptyBuildingAccumulator();
+        accumulators.set(building.id, acc);
+        if (building.type === 'Site') continue;
+
+        for (const unit of building.units) {
+            acc.metrics.campusTotalArea += unit.area;
+            if (unit.isSelfUse) {
+                acc.metrics.selfUseArea += unit.area;
+                acc.selfUseUnitIds.add(unit.id);
+            } else {
+                acc.metrics.leasableArea += unit.area;
+                acc.metrics.leasableUnits += 1;
+                acc.leasableUnitAreaById.set(unit.id, unit.area || 0);
+                if (unit.status === UnitStatus.Occupied) acc.metrics.leasedUnits += 1;
+                else acc.metrics.vacantUnits += 1;
+            }
+        }
+    }
+
+    for (const tenant of tenants) {
+        if (buildingTypeById.get(tenant.buildingId) === 'Site') continue;
+        const acc = accumulators.get(tenant.buildingId);
+        if (!acc) continue;
+        if (!isTenantLeasedAtDate(tenant, referenceDate, acc.selfUseUnitIds)) continue;
+
+        let hasMatchedUnit = false;
+        for (const unitId of tenant.unitIds) {
+            const unitArea = acc.leasableUnitAreaById.get(unitId);
+            if (unitArea === undefined) continue;
+            hasMatchedUnit = true;
+            if (acc.leasedUnitIds.has(unitId)) continue;
+            acc.leasedUnitIds.add(unitId);
+            acc.metrics.leasedArea += unitArea;
+        }
+        if (!hasMatchedUnit) acc.metrics.leasedArea += tenant.totalArea || 0;
+    }
+
+    const byBuilding = new Map<string, ParkAreaMetrics>();
+    accumulators.forEach((acc, buildingId) => {
+        byBuilding.set(buildingId, finalizeParkAreaMetrics(acc.metrics));
+    });
+    return byBuilding;
 }

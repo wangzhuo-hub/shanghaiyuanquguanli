@@ -1,8 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import {
+    buildContractOnlyReceivableForPeriod,
     buildBillingDetailsForPeriod,
     buildKpiSummaryFromProcessedData,
     calculateDashboardMetrics,
+    createBillingCache,
+    mergeTenantsForReceivablePeriod,
     normalizeScenarioForReceivable,
     resolveAnnualInitialBudget,
     normalizeYearlyTargetsFromInitialization,
@@ -395,6 +398,58 @@ describe('syncInvoiceDedicatedSnapshotsFromLive', () => {
     });
 });
 
+describe('mergeTenantsForReceivablePeriod contract field comparisons', () => {
+    it('does not treat equal rent-free periods and unit terms as changed by reference alone', () => {
+        const snapshot = tenant({
+            id: 'tenant-terms',
+            name: '快照客户',
+            rentFreePeriods: [{ start: '2026-03-01', end: '2026-03-31', description: '免租' }],
+            unitTerms: [{
+                unitId: 'unit-101',
+                unitName: '101',
+                area: 100,
+                unitPrice: 3,
+                monthlyRent: 30000,
+                rentFreePeriods: [{ start: '2026-03-01', end: '2026-03-31', description: '免租' }],
+            }],
+        });
+        const live = tenant({
+            id: 'tenant-terms',
+            name: '实时客户',
+            rentFreePeriods: [{ start: '2026-03-01', end: '2026-03-31', description: '免租' }],
+            unitTerms: [{
+                unitId: 'unit-101',
+                unitName: '101',
+                area: 100,
+                unitPrice: 3,
+                monthlyRent: 30000,
+                rentFreePeriods: [{ start: '2026-03-01', end: '2026-03-31', description: '免租' }],
+            }],
+        });
+
+        const merged = mergeTenantsForReceivablePeriod(2026, 0, [live], [snapshot]);
+
+        expect(merged[0].name).toBe('快照客户');
+    });
+
+    it('still treats unit term field changes as contract changes', () => {
+        const snapshot = tenant({
+            id: 'tenant-terms',
+            name: '快照客户',
+            unitTerms: [{ unitId: 'unit-101', area: 100, monthlyRent: 30000, rentFreePeriods: [] }],
+        });
+        const live = tenant({
+            id: 'tenant-terms',
+            name: '实时客户',
+            unitTerms: [{ unitId: 'unit-101', area: 100, monthlyRent: 32000, rentFreePeriods: [] }],
+        });
+
+        const merged = mergeTenantsForReceivablePeriod(2026, 0, [live], [snapshot]);
+
+        expect(merged[0].name).toBe('实时客户');
+    });
+});
+
 describe('buildBillingDetailsForPeriod receivable scenario vs live assumptions', () => {
     const existingAsm = (shift: number): BudgetAssumption => ({
         id: `asm-${shift}`,
@@ -443,6 +498,43 @@ describe('buildBillingDetailsForPeriod receivable scenario vs live assumptions',
         expect(jan2026ScenarioOnly).toBeGreaterThan(0.005);
         expect(jan2026Merged).toBeGreaterThan(0.005);
         expect(jan2026Merged).not.toBeCloseTo(jan2026ScenarioOnly, 0.01);
+    });
+
+    it('合同应收缓存按上下文隔离，避免同年月不同假设串算', () => {
+        const data = dashboardData();
+        const cache = createBillingCache(data.buildings || [], data.payments || [], data.initializationData || []);
+        const base = buildContractOnlyReceivableForPeriod(
+            2026,
+            0,
+            {
+                tenants: data.tenants || [],
+                buildings: data.buildings || [],
+                payments: data.payments || [],
+                initializationData: [],
+                budgetAssumptions: [],
+                budgetAdjustments: [],
+                budgetScenarios: [],
+            },
+            cache,
+        );
+        const shifted = buildContractOnlyReceivableForPeriod(
+            2026,
+            0,
+            {
+                tenants: data.tenants || [],
+                buildings: data.buildings || [],
+                payments: data.payments || [],
+                initializationData: [],
+                budgetAssumptions: [existingAsm(-2)],
+                budgetAdjustments: [],
+                budgetScenarios: [],
+            },
+            cache,
+        );
+
+        expect(base.totalAmountDue).toBeGreaterThan(0.005);
+        expect(shifted.totalAmountDue).toBeGreaterThan(0.005);
+        expect(shifted.totalAmountDue).not.toBeCloseTo(base.totalAmountDue, 0.01);
     });
 });
 
@@ -776,5 +868,12 @@ describe('calculateDashboardMetrics lease area stats', () => {
         expect(processedData.newContractsArea).toBe(1000);
         expect(processedData.terminatedContractsArea).toBe(322);
         expect(processedData.netIncreaseArea).toBe(678);
+        expect(processedData.leaseStats).toMatchObject({
+            newLeasesYear: 1,
+            newLeasesYearArea: 1000,
+            terminatedYear: 2,
+            terminatedYearArea: 322,
+            netIncreaseYear: 678,
+        });
     });
 });

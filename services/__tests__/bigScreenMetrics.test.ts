@@ -1,7 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import type { DashboardData, ParkInfo } from '../../types';
 import { ContractStatus, DepositStatus, UnitStatus } from '../../types';
-import { buildBigScreenParkData, computeTotals } from '../bigScreenMetrics';
+import {
+  buildBigScreenDataFromParkInputs,
+  buildBigScreenParkData,
+  computeTotals,
+} from '../bigScreenMetrics';
 
 const shenzhenPark: ParkInfo = {
   projectId: 'shenzhen_park',
@@ -136,5 +140,31 @@ describe('computeTotals management fee', () => {
     expect(totals.managementFeeBillingEnabled).toBe(true);
     expect(totals.annualManagementFeeCollected).toBe(sz.annualManagementFeeCollected);
     expect(totals.currentMonthManagementFeeReceivable).toBe(sz.currentMonthManagementFeeReceivable);
+  });
+});
+
+describe('buildBigScreenDataFromParkInputs', () => {
+  it('aggregates server-side processed park inputs without recalculating in the caller', () => {
+    const processed = buildBigScreenParkData(shenzhenPark, baseData(), 2025, '2025-03');
+    const data = buildBigScreenDataFromParkInputs(
+      [
+        {
+          park: shenzhenPark,
+          rawData: baseData(),
+          processedData: {
+            ...baseData(),
+            currentMonthBilling: processed.billingDetails,
+          },
+        },
+      ],
+      2025,
+      '2025-03',
+      '2025-03-31T00:00:00.000Z',
+    );
+
+    expect(data.year).toBe(2025);
+    expect(data.parks).toHaveLength(1);
+    expect(data.totals.projectId).toBe('__totals__');
+    expect(data.refreshedAt).toBe('2025-03-31T00:00:00.000Z');
   });
 });

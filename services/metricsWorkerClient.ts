@@ -8,10 +8,18 @@ import type { DashboardMetricOptions, DashboardMetricResult } from './dashboardM
 let worker: Worker | null = null;
 let broken = false;
 let seq = 0;
-const pending = new Map<number, { resolve: (v: DashboardMetricResult) => void; reject: (e: unknown) => void }>();
+const DEFAULT_METRICS_WORKER_TIMEOUT_MS = 30_000;
+const pending = new Map<number, {
+    resolve: (v: DashboardMetricResult) => void;
+    reject: (e: unknown) => void;
+    timeoutId: ReturnType<typeof setTimeout>;
+}>();
 
 const failAll = (reason: string) => {
-    for (const p of pending.values()) p.reject(new Error(reason));
+    for (const p of pending.values()) {
+        clearTimeout(p.timeoutId);
+        p.reject(new Error(reason));
+    }
     pending.clear();
 };
 
@@ -29,6 +37,7 @@ const ensureWorker = (): Worker | null => {
             const p = pending.get(reqId);
             if (!p) return;
             pending.delete(reqId);
+            clearTimeout(p.timeoutId);
             if (error) p.reject(new Error(String(error)));
             else p.resolve({ processedData, fullYearMonthlyTrends });
         };
@@ -51,16 +60,22 @@ export const isMetricsWorkerAvailable = (): boolean => ensureWorker() != null;
 export const computeMetricsInWorker = (
     data: DashboardData,
     options: DashboardMetricOptions,
+    timeoutMs = DEFAULT_METRICS_WORKER_TIMEOUT_MS,
 ): Promise<DashboardMetricResult> => {
     const w = ensureWorker();
     if (!w) return Promise.reject(new Error('metrics worker unavailable'));
     const reqId = ++seq;
     return new Promise<DashboardMetricResult>((resolve, reject) => {
-        pending.set(reqId, { resolve, reject });
+        const timeoutId = setTimeout(() => {
+            pending.delete(reqId);
+            reject(new Error('metrics worker timeout'));
+        }, Math.max(1, timeoutMs));
+        pending.set(reqId, { resolve, reject, timeoutId });
         try {
             w.postMessage({ reqId, data, options });
         } catch (e) {
             pending.delete(reqId);
+            clearTimeout(timeoutId);
             reject(e);
         }
     });

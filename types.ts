@@ -549,6 +549,8 @@ export interface DashboardData {
   terminatedContractsCount: number; // New
   terminatedContractsArea: number; // New
   netIncreaseArea: number; // New
+  /** 新签/退租/净增的年、季、月展示统计。后台指标计算产出，前端卡片缺省时本地兜底。 */
+  leaseStats?: import('./services/leaseStats').LeaseStatsSummary;
   expiringSoonCount: number;
 
   // New: Yearly Targets Map
@@ -608,6 +610,8 @@ export interface SealedMonth {
   arrearsIncrement: number;
   /** 截至本月累计欠款（便利字段，消费侧以 increment 求和为准） */
   cumulativeArrears?: number;
+  /** 封账时定格的当月应收明细；客户级历史欠费筛选只能在该字段存在时按封账月拆分到客户 */
+  billingDetails?: BillingDetail[];
 }
 
 export interface ChatMessage {

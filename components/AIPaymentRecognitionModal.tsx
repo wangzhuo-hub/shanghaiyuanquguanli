@@ -1,8 +1,8 @@
-import React, { useState, useRef, useCallback } from 'react';
+import React, { useEffect, useState, useRef, useCallback } from 'react';
 import { X, Sparkles, Upload, FileText, Image as ImageIcon, FileSpreadsheet, Loader2, Check, Trash2, AlertCircle, CheckCircle, ChevronDown } from 'lucide-react';
 import { PaymentRecord, Tenant } from '../types';
-import * as XLSX from 'xlsx';
 import { getAiProxyChatUrl } from '../config/urls';
+import { readFirstSheetRows } from '../services/xlsxLoader';
 
 // ---- 类型定义 ----
 interface RecognizedItem {
@@ -26,6 +26,9 @@ interface AIPaymentRecognitionModalProps {
 }
 
 type InputTab = 'image' | 'text' | 'excel';
+
+const fieldClass = 'liquid-elevated-field rounded-xl p-1.5 text-xs text-slate-800 outline-none transition focus:border-blue-300 focus:ring-2 focus:ring-blue-100';
+const largeFieldClass = 'liquid-elevated-field w-full h-48 rounded-xl p-3 text-sm text-slate-800 outline-none resize-none transition placeholder:text-slate-500 focus:border-blue-300 focus:ring-2 focus:ring-blue-100';
 
 // ---- 模糊匹配 ----
 function fuzzyMatchTenant(name: string, tenants: Tenant[]): { id: string; confidence: number } {
@@ -133,6 +136,16 @@ export const AIPaymentRecognitionModal: React.FC<AIPaymentRecognitionModalProps>
   const [excelFileName, setExcelFileName] = useState('');
   const [excelData, setExcelData] = useState<any[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      onClose();
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isOpen, onClose]);
   const excelInputRef = useRef<HTMLInputElement>(null);
 
   // 活跃租户列表
@@ -194,23 +207,16 @@ export const AIPaymentRecognitionModal: React.FC<AIPaymentRecognitionModalProps>
   }, []);
 
   // ---- Excel 处理 ----
-  const handleExcelSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleExcelSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
     setExcelFileName(file.name);
-    const reader = new FileReader();
-    reader.onload = (ev) => {
-      try {
-        const data = new Uint8Array(ev.target?.result as ArrayBuffer);
-        const workbook = XLSX.read(data, { type: 'array' });
-        const firstSheet = workbook.Sheets[workbook.SheetNames[0]];
-        const jsonData = XLSX.utils.sheet_to_json(firstSheet, { defval: '' });
-        setExcelData(jsonData);
-      } catch (err: any) {
-        setError(`Excel 解析失败: ${err.message}`);
-      }
-    };
-    reader.readAsArrayBuffer(file);
+    try {
+      const jsonData = await readFirstSheetRows(await file.arrayBuffer());
+      setExcelData(jsonData);
+    } catch (err: any) {
+      setError(`Excel 解析失败: ${err.message}`);
+    }
   };
 
   // ---- AI 识别 ----
@@ -314,23 +320,29 @@ export const AIPaymentRecognitionModal: React.FC<AIPaymentRecognitionModalProps>
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4 animate-in fade-in duration-200" onPaste={handlePaste}>
-      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-5xl max-h-[90vh] flex flex-col animate-in zoom-in-95 duration-200">
+    <div className="liquid-elevated-backdrop fixed inset-0 z-50 flex items-end justify-center p-0 sm:p-3 md:items-center md:p-4 animate-in fade-in duration-200" onClick={onClose} onPaste={handlePaste}>
+      <section
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="ai-payment-recognition-title"
+        className="liquid-elevated-panel flex max-h-[94vh] w-full max-w-5xl flex-col rounded-t-[30px] md:max-h-[92vh] md:rounded-[28px] animate-in slide-in-from-bottom-4 duration-200 md:zoom-in-95"
+        onClick={(event) => event.stopPropagation()}
+      >
         {/* Header */}
-        <div className="flex items-center justify-between p-5 border-b border-slate-200 bg-gradient-to-r from-emerald-50 to-blue-50 rounded-t-2xl">
-          <div className="flex items-center gap-3">
-            <div className="p-2 bg-emerald-600 text-white rounded-xl"><Sparkles size={22} /></div>
-            <div>
-              <h2 className="text-lg font-bold text-slate-800">AI 智能收款录入</h2>
-              <p className="text-xs text-slate-500">支持银行流水截图、文字、Excel 自动识别</p>
+        <div className="liquid-elevated-header flex items-start justify-between gap-3 p-4 sm:p-5 border-b border-white/70">
+          <div className="flex min-w-0 items-start gap-3">
+            <div className="liquid-action-strong shrink-0 p-2.5 rounded-2xl"><Sparkles size={22} /></div>
+            <div className="min-w-0">
+              <h2 id="ai-payment-recognition-title" className="text-lg font-black text-slate-950">AI 智能收款录入</h2>
+              <p className="mt-1 text-xs font-semibold leading-5 text-slate-500">支持银行流水截图、文字、Excel 自动识别</p>
             </div>
           </div>
-          <button onClick={onClose} className="p-2 hover:bg-white/80 rounded-lg transition-colors text-slate-400 hover:text-slate-600"><X size={20} /></button>
+          <button onClick={onClose} className="liquid-glass-control liquid-pressable shrink-0 rounded-full p-2 text-slate-500 transition-colors hover:bg-blue-50/70 hover:text-slate-700 focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-blue-200/80" aria-label="关闭 AI 智能收款录入"><X size={20} /></button>
         </div>
 
-        <div className="flex-1 overflow-y-auto p-5 space-y-5">
+        <div className="flex-1 overflow-y-auto p-4 sm:p-5 space-y-5">
           {/* Input Tabs */}
-          <div className="flex gap-2 bg-slate-100 p-1 rounded-xl w-fit">
+          <div className="liquid-glass-control flex gap-1 overflow-x-auto rounded-full p-1 w-fit max-w-full">
             {([
               { key: 'image' as InputTab, icon: ImageIcon, label: '图片识别' },
               { key: 'text' as InputTab, icon: FileText, label: '文字粘贴' },
@@ -339,7 +351,7 @@ export const AIPaymentRecognitionModal: React.FC<AIPaymentRecognitionModalProps>
               <button
                 key={tab.key}
                 onClick={() => setActiveTab(tab.key)}
-                className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all ${activeTab === tab.key ? 'bg-white shadow-sm text-emerald-700' : 'text-slate-500 hover:text-slate-700'}`}
+                className={`flex shrink-0 items-center gap-2 rounded-full px-4 py-2 text-sm font-bold transition-all ${activeTab === tab.key ? 'liquid-ai-tab-active' : 'text-slate-500 hover:bg-blue-50/62 hover:text-slate-900'}`}
               >
                 <tab.icon size={16} />
                 {tab.label}
@@ -348,7 +360,7 @@ export const AIPaymentRecognitionModal: React.FC<AIPaymentRecognitionModalProps>
           </div>
 
           {/* Input Area */}
-          <div className="border border-slate-200 rounded-xl p-4 bg-slate-50/50">
+          <div className="liquid-elevated-card rounded-2xl p-4">
             {activeTab === 'image' && (
               <div>
                 {!imagePreview ? (
@@ -356,20 +368,20 @@ export const AIPaymentRecognitionModal: React.FC<AIPaymentRecognitionModalProps>
                     onDragOver={(e) => e.preventDefault()}
                     onDrop={handleImageDrop}
                     onClick={() => fileInputRef.current?.click()}
-                    className="border-2 border-dashed border-slate-300 rounded-xl p-10 text-center cursor-pointer hover:border-emerald-400 hover:bg-emerald-50/30 transition-all"
+                    className="liquid-ai-dropzone cursor-pointer rounded-2xl p-8 text-center transition-all sm:p-10"
                   >
-                    <Upload size={40} className="mx-auto text-slate-400 mb-3" />
+                    <Upload size={40} className="mx-auto text-slate-500 mb-3" />
                     <p className="text-sm text-slate-600 font-medium">点击上传或拖拽银行流水截图</p>
-                    <p className="text-xs text-slate-400 mt-1">也可以直接 Ctrl+V 粘贴截图</p>
-                    <p className="text-xs text-slate-400 mt-1">支持 JPG / PNG / WEBP</p>
+                    <p className="mt-1 text-xs font-semibold text-slate-500">也可以直接 Ctrl+V 粘贴截图</p>
+                    <p className="mt-1 text-xs font-semibold text-slate-500">支持 JPG / PNG / WEBP</p>
                   </div>
                 ) : (
                   <div className="space-y-3">
-                    <div className="relative bg-white rounded-lg border border-slate-200 p-2">
+                    <div className="liquid-elevated-table relative rounded-xl border border-slate-200/80 p-2">
                       <img src={imagePreview} alt="银行流水截图" className="max-h-60 mx-auto rounded" />
                       <button
                         onClick={() => { setImagePreview(''); if (fileInputRef.current) fileInputRef.current.value = ''; }}
-                        className="absolute top-2 right-2 p-1 bg-red-100 text-red-600 rounded-lg hover:bg-red-200"
+                        className="liquid-ai-remove-action liquid-pressable absolute right-2 top-2 rounded-full p-1.5"
                       ><X size={16} /></button>
                     </div>
                   </div>
@@ -384,7 +396,7 @@ export const AIPaymentRecognitionModal: React.FC<AIPaymentRecognitionModalProps>
                   value={textInput}
                   onChange={(e) => setTextInput(e.target.value)}
                   placeholder={`粘贴银行流水文本，例如：\n\n2026-03-01  上海管易云计算软件有限公司  租金  73,943.00\n2026-03-05  上海纪世嘉游信息技术有限公司  租金  63,459.00\n2026-03-10  XX物业公司  物业费  55,000.00\n\n支持任意格式的文本，AI会自动识别提取`}
-                  className="w-full h-48 p-3 border border-slate-200 rounded-lg text-sm focus:ring-2 focus:ring-emerald-500 focus:border-transparent outline-none resize-none bg-white"
+                  className={largeFieldClass}
                 />
               </div>
             )}
@@ -394,29 +406,29 @@ export const AIPaymentRecognitionModal: React.FC<AIPaymentRecognitionModalProps>
                 {!excelFileName ? (
                   <div
                     onClick={() => excelInputRef.current?.click()}
-                    className="border-2 border-dashed border-slate-300 rounded-xl p-10 text-center cursor-pointer hover:border-emerald-400 hover:bg-emerald-50/30 transition-all"
+                    className="liquid-ai-dropzone cursor-pointer rounded-2xl p-8 text-center transition-all sm:p-10"
                   >
-                    <FileSpreadsheet size={40} className="mx-auto text-slate-400 mb-3" />
+                    <FileSpreadsheet size={40} className="mx-auto text-slate-500 mb-3" />
                     <p className="text-sm text-slate-600 font-medium">点击上传 Excel 银行流水文件</p>
-                    <p className="text-xs text-slate-400 mt-1">支持 .xls / .xlsx 格式</p>
+                    <p className="mt-1 text-xs font-semibold text-slate-500">支持 .xls / .xlsx 格式</p>
                   </div>
                 ) : (
                   <div className="space-y-3">
-                    <div className="flex items-center gap-3 bg-white rounded-lg border border-slate-200 p-3">
-                      <FileSpreadsheet size={20} className="text-emerald-600" />
+                    <div className="liquid-elevated-table flex items-center gap-3 rounded-xl border border-slate-200/80 p-3">
+                      <FileSpreadsheet size={20} className="text-blue-600" />
                       <div className="flex-1">
                         <p className="text-sm font-medium text-slate-700">{excelFileName}</p>
-                        <p className="text-xs text-slate-400">{excelData.length} 行数据</p>
+                        <p className="text-xs font-semibold text-slate-500">{excelData.length} 行数据</p>
                       </div>
                       <button
                         onClick={() => { setExcelFileName(''); setExcelData([]); if (excelInputRef.current) excelInputRef.current.value = ''; }}
-                        className="p-1 text-red-500 hover:bg-red-50 rounded"
+                        className="liquid-ai-remove-action liquid-pressable rounded-full p-1.5"
                       ><X size={16} /></button>
                     </div>
                     {excelData.length > 0 && (
-                      <div className="overflow-x-auto max-h-40 bg-white rounded border border-slate-200">
+                      <div className="liquid-elevated-table overflow-x-auto max-h-40 rounded-xl border border-slate-200/80">
                         <table className="text-xs w-full">
-                          <thead className="bg-slate-50 sticky top-0">
+                          <thead className="liquid-contract-sticky sticky top-0">
                             <tr>{Object.keys(excelData[0]).map((k, i) => <th key={i} className="px-2 py-1 text-left text-slate-500 font-medium">{k}</th>)}</tr>
                           </thead>
                           <tbody>
@@ -427,7 +439,7 @@ export const AIPaymentRecognitionModal: React.FC<AIPaymentRecognitionModalProps>
                             ))}
                           </tbody>
                         </table>
-                        {excelData.length > 5 && <div className="text-center py-1 text-xs text-slate-400">...共 {excelData.length} 行</div>}
+                        {excelData.length > 5 && <div className="py-1 text-center text-xs font-semibold text-slate-500">...共 {excelData.length} 行</div>}
                       </div>
                     )}
                   </div>
@@ -438,21 +450,21 @@ export const AIPaymentRecognitionModal: React.FC<AIPaymentRecognitionModalProps>
           </div>
 
           {/* Recognize Button */}
-          <div className="flex items-center gap-3">
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-3">
             <button
               onClick={handleRecognize}
               disabled={isLoading}
-              className="px-6 py-2.5 bg-emerald-600 text-white rounded-xl hover:bg-emerald-700 transition-colors font-medium text-sm flex items-center gap-2 shadow-sm disabled:opacity-50"
+              className="liquid-action-strong liquid-pressable flex min-h-11 items-center justify-center gap-2 rounded-full px-6 py-2.5 text-sm font-bold shadow-sm transition-colors disabled:opacity-50"
             >
               {isLoading ? <Loader2 size={18} className="animate-spin" /> : <Sparkles size={18} />}
               {isLoading ? 'AI 识别中...' : 'AI 智能识别'}
             </button>
-            {isLoading && <span className="text-xs text-slate-400">正在调用AI分析数据，请稍候...</span>}
+            {isLoading && <span className="text-xs font-semibold text-slate-500">正在调用AI分析数据，请稍候...</span>}
           </div>
 
           {/* Error */}
           {error && (
-            <div className="flex items-center gap-2 px-4 py-3 bg-red-50 border border-red-100 rounded-xl text-sm text-red-700">
+            <div className="liquid-ai-error flex items-center gap-2 rounded-2xl px-4 py-3 text-sm">
               <AlertCircle size={16} />
               {error}
             </div>
@@ -461,24 +473,112 @@ export const AIPaymentRecognitionModal: React.FC<AIPaymentRecognitionModalProps>
           {/* Results Table */}
           {results.length > 0 && (
             <div className="space-y-3">
-              <div className="flex items-center justify-between">
+              <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                 <h3 className="text-sm font-bold text-slate-700 flex items-center gap-2">
-                  <CheckCircle size={16} className="text-emerald-600" />
+                  <CheckCircle size={16} className="text-cyan-600" />
                   识别结果（{results.length} 笔）
                 </h3>
-                <div className="flex items-center gap-3 text-xs text-slate-500">
+                <div className="flex flex-wrap items-center gap-2 text-xs font-semibold text-slate-500">
                   <span>已选 {selectedCount} 笔</span>
                   <span>已匹配 {matchedCount} 笔</span>
-                  <button onClick={toggleSelectAll} className="text-blue-600 hover:underline">
+                  <button onClick={toggleSelectAll} className="liquid-glass-control liquid-pressable rounded-full px-3 py-1.5 text-blue-700 hover:bg-white/75">
                     {results.every(r => r.selected) ? '取消全选' : '全选'}
                   </button>
                 </div>
               </div>
 
-              <div className="border border-slate-200 rounded-xl overflow-hidden bg-white">
+              <div className="grid gap-3 md:hidden">
+                {results.map(r => {
+                  const tenantName = activeTenants.find(t => t.id === r.matchedTenantId)?.name;
+                  return (
+                    <div key={r.id} className={`liquid-elevated-card rounded-[22px] p-3.5 ${r.selected ? '' : 'opacity-60'}`}>
+                      <div className="flex items-start justify-between gap-3">
+                        <label className="flex min-w-0 flex-1 items-start gap-3">
+                          <input type="checkbox" checked={r.selected} onChange={() => toggleSelect(r.id)} className="mt-1 h-4 w-4 rounded" />
+                          <span className="min-w-0">
+                            <span className="block truncate text-sm font-black text-slate-950">{r.payerName}</span>
+                            <span className={`mt-1 inline-flex rounded-full px-2 py-0.5 text-xs font-black ${
+                              r.matchedTenantId ? (r.confidence >= 0.7 ? 'bg-sky-100/80 text-blue-700' : 'bg-amber-100/80 text-amber-700') : 'bg-rose-100/80 text-rose-600'
+                            }`}>
+                              {r.matchedTenantId ? (r.confidence >= 0.7 ? '已匹配' : '低置信度') : '未匹配'}
+                            </span>
+                          </span>
+                        </label>
+                        <button onClick={() => removeResult(r.id)} className="liquid-ai-remove-action liquid-pressable shrink-0 rounded-full p-2" aria-label="删除识别结果"><Trash2 size={15} /></button>
+                      </div>
+
+                      <div className="mt-3 grid grid-cols-2 gap-2">
+                        <label className="block">
+                          <span className="mb-1 block text-xs font-black text-slate-500">金额</span>
+                          <input
+                            type="number"
+                            inputMode="decimal"
+                            enterKeyHint="done"
+                            value={r.amount}
+                            onChange={(e) => updateResult(r.id, 'amount', Number(e.target.value))}
+                            className="liquid-elevated-field min-h-11 w-full rounded-2xl px-3 py-2 text-right text-sm font-black tabular-nums text-slate-900 outline-none focus-visible:ring-4 focus-visible:ring-blue-500/10"
+                          />
+                        </label>
+                        <label className="block">
+                          <span className="mb-1 block text-xs font-black text-slate-500">日期</span>
+                          <input
+                            type="date"
+                            value={r.date}
+                            onChange={(e) => updateResult(r.id, 'date', e.target.value)}
+                            className="liquid-elevated-field min-h-11 w-full rounded-2xl px-3 py-2 text-sm font-bold text-slate-900 outline-none focus-visible:ring-4 focus-visible:ring-blue-500/10"
+                          />
+                        </label>
+                      </div>
+
+                      <label className="mt-3 block">
+                        <span className="mb-1 block text-xs font-black text-slate-500">匹配客户</span>
+                        <div className="relative">
+                          <select
+                            value={r.matchedTenantId}
+                            onChange={(e) => updateResult(r.id, 'matchedTenantId', e.target.value)}
+                            className={`min-h-11 w-full appearance-none rounded-2xl border px-3 py-2 pr-9 text-sm font-bold outline-none transition focus:ring-4 focus:ring-blue-100 ${r.matchedTenantId ? (r.confidence >= 0.7 ? 'liquid-ai-match-high' : 'liquid-ai-match-low') : 'liquid-ai-match-missing'}`}
+                          >
+                            <option value="">-- 请选择客户 --</option>
+                            {activeTenants.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
+                          </select>
+                          <ChevronDown size={14} className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-slate-500" />
+                        </div>
+                        {tenantName && <span className="mt-1 block truncate text-xs font-bold text-slate-500">{tenantName}</span>}
+                      </label>
+
+                      <div className="mt-3 grid gap-2 sm:grid-cols-[130px_1fr]">
+                        <label className="block">
+                          <span className="mb-1 block text-xs font-black text-slate-500">类型</span>
+                          <select
+                            value={r.type}
+                            onChange={(e) => updateResult(r.id, 'type', e.target.value)}
+                            className="liquid-elevated-field min-h-11 w-full rounded-2xl px-3 py-2 text-sm font-bold text-slate-900 outline-none focus-visible:ring-4 focus-visible:ring-blue-500/10"
+                          >
+                            <option value="Rent">租金</option>
+                            <option value="Deposit">押金</option>
+                            <option value="ManagementFee">物业费</option>
+                            <option value="Other">其他</option>
+                          </select>
+                        </label>
+                        <label className="block">
+                          <span className="mb-1 block text-xs font-black text-slate-500">备注</span>
+                          <input
+                            value={r.remarks}
+                            onChange={(e) => updateResult(r.id, 'remarks', e.target.value)}
+                            className="liquid-elevated-field min-h-11 w-full rounded-2xl px-3 py-2 text-sm font-semibold text-slate-900 outline-none placeholder:text-slate-500 focus-visible:ring-4 focus-visible:ring-blue-500/10"
+                            placeholder="备注"
+                          />
+                        </label>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+
+              <div className="liquid-elevated-table hidden rounded-2xl overflow-hidden border border-slate-200/80 md:block">
                 <div className="overflow-x-auto">
                   <table className="w-full text-sm">
-                    <thead className="bg-slate-50 border-b border-slate-200">
+                    <thead className="liquid-contract-sticky border-b border-white/70">
                       <tr>
                         <th className="px-3 py-2.5 text-left w-8">
                           <input type="checkbox" checked={results.every(r => r.selected)} onChange={toggleSelectAll} className="rounded" />
@@ -494,7 +594,7 @@ export const AIPaymentRecognitionModal: React.FC<AIPaymentRecognitionModalProps>
                     </thead>
                     <tbody className="divide-y divide-slate-100">
                       {results.map(r => (
-                        <tr key={r.id} className={`${r.selected ? '' : 'opacity-50'} hover:bg-slate-50 transition-colors`}>
+                        <tr key={r.id} className={`${r.selected ? '' : 'opacity-50'} hover:bg-blue-50/32 transition-colors`}>
                           <td className="px-3 py-2">
                             <input type="checkbox" checked={r.selected} onChange={() => toggleSelect(r.id)} className="rounded" />
                           </td>
@@ -506,23 +606,25 @@ export const AIPaymentRecognitionModal: React.FC<AIPaymentRecognitionModalProps>
                               <select
                                 value={r.matchedTenantId}
                                 onChange={(e) => updateResult(r.id, 'matchedTenantId', e.target.value)}
-                                className={`w-full p-1.5 pr-7 rounded border text-xs appearance-none ${r.matchedTenantId ? (r.confidence >= 0.7 ? 'border-emerald-300 bg-emerald-50' : 'border-amber-300 bg-amber-50') : 'border-red-300 bg-red-50'}`}
+                                className={`w-full appearance-none rounded-xl border p-1.5 pr-7 text-xs outline-none transition focus:ring-2 focus:ring-blue-100 ${r.matchedTenantId ? (r.confidence >= 0.7 ? 'liquid-ai-match-high' : 'liquid-ai-match-low') : 'liquid-ai-match-missing'}`}
                               >
                                 <option value="">-- 请选择客户 --</option>
                                 {activeTenants.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
                               </select>
-                              <ChevronDown size={12} className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
+                              <ChevronDown size={12} className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-500 pointer-events-none" />
                             </div>
                             {r.matchedTenantId && r.confidence < 0.7 && (
-                              <span className="text-[10px] text-amber-600 mt-0.5 block">低置信度匹配，请确认</span>
+                              <span className="mt-1 block text-xs font-bold text-amber-700">低置信度匹配，请确认</span>
                             )}
                           </td>
                           <td className="px-3 py-2">
                             <input
                               type="number"
+                              inputMode="decimal"
+                              enterKeyHint="done"
                               value={r.amount}
                               onChange={(e) => updateResult(r.id, 'amount', Number(e.target.value))}
-                              className="w-24 p-1.5 rounded border border-slate-200 text-xs text-right font-mono"
+                              className={`${fieldClass} w-24 text-right font-mono`}
                             />
                           </td>
                           <td className="px-3 py-2">
@@ -530,14 +632,14 @@ export const AIPaymentRecognitionModal: React.FC<AIPaymentRecognitionModalProps>
                               type="date"
                               value={r.date}
                               onChange={(e) => updateResult(r.id, 'date', e.target.value)}
-                              className="p-1.5 rounded border border-slate-200 text-xs"
+                              className={fieldClass}
                             />
                           </td>
                           <td className="px-3 py-2">
                             <select
                               value={r.type}
                               onChange={(e) => updateResult(r.id, 'type', e.target.value)}
-                              className="p-1.5 rounded border border-slate-200 text-xs"
+                              className={fieldClass}
                             >
                               <option value="Rent">租金</option>
                               <option value="Deposit">押金</option>
@@ -549,12 +651,12 @@ export const AIPaymentRecognitionModal: React.FC<AIPaymentRecognitionModalProps>
                             <input
                               value={r.remarks}
                               onChange={(e) => updateResult(r.id, 'remarks', e.target.value)}
-                              className="w-full p-1.5 rounded border border-slate-200 text-xs"
+                              className={`${fieldClass} w-full`}
                               placeholder="备注"
                             />
                           </td>
                           <td className="px-3 py-2">
-                            <button onClick={() => removeResult(r.id)} className="p-1 text-red-400 hover:text-red-600 hover:bg-red-50 rounded"><Trash2 size={14} /></button>
+                            <button onClick={() => removeResult(r.id)} className="liquid-ai-remove-action liquid-pressable rounded-full p-1.5"><Trash2 size={14} /></button>
                           </td>
                         </tr>
                       ))}
@@ -568,20 +670,20 @@ export const AIPaymentRecognitionModal: React.FC<AIPaymentRecognitionModalProps>
 
         {/* Footer */}
         {results.length > 0 && (
-          <div className="flex items-center justify-between p-5 border-t border-slate-200 bg-slate-50 rounded-b-2xl">
-            <div className="text-sm text-slate-500">
+          <div className="liquid-elevated-footer flex flex-col gap-3 border-t border-white/70 p-4 pb-[calc(env(safe-area-inset-bottom)+1rem)] sm:flex-row sm:items-center sm:justify-between sm:p-5">
+            <div className="text-sm font-semibold text-slate-500">
               {matchedCount === selectedCount ? (
-                <span className="text-emerald-600 flex items-center gap-1"><CheckCircle size={14} /> 全部已匹配客户</span>
+                <span className="text-cyan-700 flex items-center gap-1"><CheckCircle size={14} /> 全部已匹配客户</span>
               ) : (
                 <span className="text-amber-600 flex items-center gap-1"><AlertCircle size={14} /> {selectedCount - matchedCount} 笔未匹配客户，将跳过</span>
               )}
             </div>
-            <div className="flex gap-2">
-              <button onClick={onClose} className="px-4 py-2 bg-white border border-slate-200 text-slate-600 rounded-lg hover:bg-slate-50 text-sm">取消</button>
+            <div className="grid grid-cols-2 gap-2 sm:flex">
+              <button onClick={onClose} className="liquid-elevated-field liquid-pressable min-h-11 rounded-full px-4 py-2 text-sm font-bold text-slate-600 hover:bg-blue-50/60">取消</button>
               <button
                 onClick={handleImport}
                 disabled={matchedCount === 0}
-                className="px-6 py-2 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 text-sm font-medium flex items-center gap-2 shadow-sm disabled:opacity-50"
+                className="liquid-action-strong liquid-pressable flex min-h-11 items-center justify-center gap-2 rounded-full px-6 py-2 text-sm font-bold shadow-sm disabled:opacity-50"
               >
                 <Check size={16} />
                 导入 {matchedCount} 笔收款
@@ -589,7 +691,7 @@ export const AIPaymentRecognitionModal: React.FC<AIPaymentRecognitionModalProps>
             </div>
           </div>
         )}
-      </div>
+      </section>
     </div>
   );
 };

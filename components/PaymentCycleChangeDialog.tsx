@@ -1,19 +1,54 @@
-import React, { useState, useMemo } from 'react';
-import { X, Save, AlertCircle } from 'lucide-react';
-import { Tenant, PaymentCycle, PaymentCycleChange } from '../types';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { X, Save, AlertCircle, CalendarClock } from 'lucide-react';
+import { CloudConfig, Tenant, PaymentCycle, PaymentCycleChange } from '../types';
 import { paymentCycleLabelMap } from '../services/sharedUtils';
-import { generateBudgetedBills } from '../services/billingService';
+import type { BudgetedBill } from '../services/billingService';
+import { createBudgetedBillCache, type BillGenerationCache } from '../services/billGenerationCache';
+import { fetchCloudBudgetedBillsPreviewBatch } from '../services/cloudComputeClient';
+import { shouldRunLocalBudgetedBillPreviewFallback } from '../services/computeFallbackPolicy';
+import { indexBudgetedBillPreviewBatchResult } from '../services/budgetedBillPreviewBatch';
 import { formatCurrency } from '../services/numberFormat';
 
 interface Props {
   tenant: Tenant;
+  cloudConfig?: CloudConfig;
+  serverComputeEnabled?: boolean;
   onConfirm: (change: PaymentCycleChange) => void;
   onClose: () => void;
 }
 
 const cycleOptions: PaymentCycle[] = ['Monthly', 'BiMonthly', 'Quarterly', 'SemiAnnual', 'Annual', 'HalfMonthly', 'Custom'];
 
-export const PaymentCycleChangeDialog: React.FC<Props> = ({ tenant, onConfirm, onClose }) => {
+type CyclePreviewState = {
+  before: BudgetedBill[];
+  after: BudgetedBill[];
+  simulated: BudgetedBill[];
+  loading: boolean;
+  error?: string;
+};
+
+const emptyPreviewState: CyclePreviewState = {
+  before: [],
+  after: [],
+  simulated: [],
+  loading: false,
+};
+
+export const PaymentCycleChangeDialog: React.FC<Props> = ({
+  tenant,
+  cloudConfig,
+  serverComputeEnabled = false,
+  onConfirm,
+  onClose,
+}) => {
+  const billCacheRef = useRef<BillGenerationCache | null>(null);
+  const getLocalBillCache = useCallback(async (): Promise<BillGenerationCache> => {
+    if (billCacheRef.current) return billCacheRef.current;
+    const { generateBudgetedBills } = await import('../services/billingService');
+    const cache = createBudgetedBillCache({ maxEntries: 48, generateBudgetedBills });
+    billCacheRef.current = cache;
+    return cache;
+  }, []);
   const [toCycle, setToCycle] = useState<PaymentCycle>('Monthly');
   const [toCycleMonths, setToCycleMonths] = useState<number>(1);
   const [effectiveDate, setEffectiveDate] = useState(() => {
@@ -27,13 +62,23 @@ export const PaymentCycleChangeDialog: React.FC<Props> = ({ tenant, onConfirm, o
   const fromCycle = tenant.paymentCycle;
   const fromCycleMonths = tenant.paymentCycleMonths;
 
-  // 预览：变更后的账单（模拟）
-  const previewBills = useMemo(() => {
-    if (!effectiveDate) return { before: [], after: [] };
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      onClose();
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [onClose]);
+
+  const buildUpdatedTenant = useCallback((): Tenant => ({
+    ...tenant,
+    paymentCycle: toCycle,
+    paymentCycleMonths: toCycle === 'Custom' ? toCycleMonths : undefined,
+  }), [tenant, toCycle, toCycleMonths]);
+
+  const splitBillsByEffectiveDate = useCallback((allBills: BudgetedBill[]) => {
     const effectiveTime = new Date(effectiveDate).getTime();
-    const leaseStart = new Date(tenant.leaseStart);
-    const leaseEnd = new Date(tenant.leaseEnd);
-    const allBills = generateBudgetedBills(tenant, [], [], leaseStart, leaseEnd);
     const before: typeof allBills = [];
     const after: typeof allBills = [];
     for (const bill of allBills) {
@@ -42,20 +87,146 @@ export const PaymentCycleChangeDialog: React.FC<Props> = ({ tenant, onConfirm, o
       else after.push(bill);
     }
     return { before, after };
-  }, [tenant, effectiveDate]);
+  }, [effectiveDate]);
 
-  // 模拟变更后账单
-  const simulatedBills = useMemo(() => {
-    if (!effectiveDate) return [];
-    const updated: Tenant = {
-      ...tenant,
-      paymentCycle: toCycle,
-      paymentCycleMonths: toCycle === 'Custom' ? toCycleMonths : undefined,
-    };
+  const buildLocalPreview = useCallback(async (): Promise<CyclePreviewState> => {
+    if (!effectiveDate) return emptyPreviewState;
+    const cache = await getLocalBillCache();
     const leaseStart = new Date(tenant.leaseStart);
     const leaseEnd = new Date(tenant.leaseEnd);
-    return generateBudgetedBills(updated, [], [], leaseStart, leaseEnd).filter(b => b.date.getTime() >= new Date(effectiveDate).getTime());
-  }, [tenant, toCycle, toCycleMonths, effectiveDate]);
+    const allBills = cache.get({
+      tenant,
+      assumptions: [],
+      adjustments: [],
+      start: leaseStart,
+      end: leaseEnd,
+      scopeHint: `cycle-change:${tenant.id}:before`,
+    });
+    const updatedBills = cache.get({
+      tenant: buildUpdatedTenant(),
+      assumptions: [],
+      adjustments: [],
+      start: leaseStart,
+      end: leaseEnd,
+      scopeHint: `cycle-change:${tenant.id}:after`,
+    });
+    return {
+      ...splitBillsByEffectiveDate(allBills),
+      simulated: updatedBills.filter(b => b.date.getTime() >= new Date(effectiveDate).getTime()),
+      loading: false,
+    };
+  }, [buildUpdatedTenant, effectiveDate, getLocalBillCache, splitBillsByEffectiveDate, tenant]);
+
+  const [previewState, setPreviewState] = useState<CyclePreviewState>(emptyPreviewState);
+
+  useEffect(() => {
+    if (!effectiveDate) {
+      setPreviewState(emptyPreviewState);
+      return;
+    }
+
+    const leaseStart = new Date(tenant.leaseStart);
+    const leaseEnd = new Date(tenant.leaseEnd);
+    const canUseServer = serverComputeEnabled && !!cloudConfig?.projectId;
+    let cancelled = false;
+    const setLocalPreview = () => {
+      setPreviewState((prev) => ({ ...prev, loading: true, error: undefined }));
+      buildLocalPreview()
+        .then((state) => {
+          if (!cancelled) setPreviewState(state);
+        })
+        .catch((err: unknown) => {
+          if (!cancelled) {
+            setPreviewState({
+              ...emptyPreviewState,
+              error: err instanceof Error ? err.message : '本地账单预览计算模块加载失败。',
+            });
+          }
+        });
+    };
+
+    if (!canUseServer || !cloudConfig) {
+      if (!shouldRunLocalBudgetedBillPreviewFallback({ canUseServer, serverAttempted: false })) {
+        setPreviewState({
+          ...emptyPreviewState,
+          error: '后台账单预览计算不可用，未执行前端本地重算。',
+        });
+        return;
+      }
+      setLocalPreview();
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    setPreviewState((prev) => ({ ...prev, loading: true }));
+    const updatedTenant = buildUpdatedTenant();
+
+    fetchCloudBudgetedBillsPreviewBatch(cloudConfig, {
+      items: [{
+        id: 'current',
+        tenant,
+        assumptions: [],
+        adjustments: [],
+        startDate: leaseStart,
+        endDate: leaseEnd,
+      }, {
+        id: 'updated',
+        tenant: updatedTenant,
+        assumptions: [],
+        adjustments: [],
+        startDate: leaseStart,
+        endDate: leaseEnd,
+      }],
+    }).then((result) => {
+      if (cancelled) return;
+      const lookup = indexBudgetedBillPreviewBatchResult(result, ['current', 'updated']);
+      if (lookup.ok) {
+        const currentBills = lookup.billsById.get('current') || [];
+        const updatedBills = lookup.billsById.get('updated') || [];
+        setPreviewState({
+          ...splitBillsByEffectiveDate(currentBills),
+          simulated: updatedBills.filter(b => b.date.getTime() >= new Date(effectiveDate).getTime()),
+          loading: false,
+        });
+        return;
+      }
+      if (shouldRunLocalBudgetedBillPreviewFallback({ canUseServer, serverAttempted: true })) {
+        setLocalPreview();
+        return;
+      }
+      setPreviewState({
+        ...emptyPreviewState,
+        error: lookup.message || '后台批量账单预览计算失败，未执行前端本地重算。',
+      });
+    }).catch((err: unknown) => {
+      if (!cancelled) {
+        if (shouldRunLocalBudgetedBillPreviewFallback({ canUseServer, serverAttempted: true })) {
+          setLocalPreview();
+          return;
+        }
+        setPreviewState({
+          ...emptyPreviewState,
+          error: err instanceof Error ? err.message : '后台账单预览计算失败，未执行前端本地重算。',
+        });
+      }
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    buildLocalPreview,
+    buildUpdatedTenant,
+    cloudConfig,
+    effectiveDate,
+    serverComputeEnabled,
+    splitBillsByEffectiveDate,
+    tenant,
+  ]);
+
+  const previewBills = { before: previewState.before, after: previewState.after };
+  const simulatedBills = previewState.simulated;
 
   const handleConfirm = () => {
     if (!effectiveDate) { setError('请选择生效日期'); return; }
@@ -78,34 +249,55 @@ export const PaymentCycleChangeDialog: React.FC<Props> = ({ tenant, onConfirm, o
   };
 
   return (
-    <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/40">
-      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg mx-4 max-h-[85vh] overflow-y-auto">
-        <div className="flex items-center justify-between p-5 border-b sticky top-0 bg-white z-10">
-          <h3 className="text-lg font-bold text-slate-800">变更付款周期</h3>
-          <button onClick={onClose} className="text-slate-400 hover:text-slate-600 p-1 rounded-full hover:bg-slate-100"><X size={20}/></button>
+    <div className="liquid-elevated-backdrop fixed inset-0 z-[9999] flex items-end justify-center p-3 sm:p-4 md:items-center" onClick={onClose}>
+      <section
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="payment-cycle-change-dialog-title"
+        className="liquid-elevated-panel flex max-h-[92vh] w-full max-w-2xl flex-col overflow-hidden rounded-[28px]"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <div className="liquid-elevated-header sticky top-0 z-10 flex items-start justify-between gap-3 border-b border-white/60 px-4 py-4 sm:px-5">
+          <div className="flex min-w-0 items-start gap-3">
+            <div className="liquid-icon-well flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl text-blue-700">
+              <CalendarClock size={20} />
+            </div>
+            <div className="min-w-0">
+              <p className="text-xs font-black uppercase text-blue-700/75">Payment Cycle</p>
+              <h3 id="payment-cycle-change-dialog-title" className="truncate text-lg font-black text-slate-950">变更付款周期</h3>
+            </div>
+          </div>
+          <button onClick={onClose} className="liquid-glass-control liquid-pressable inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-slate-500 hover:text-slate-900" aria-label="关闭付款周期变更"><X size={18}/></button>
         </div>
 
-        <div className="p-5 space-y-4">
+        <div className="flex-1 space-y-4 overflow-y-auto px-4 py-4 sm:px-5">
           {/* 当前信息 */}
-          <div className="bg-slate-50 rounded-xl p-4 space-y-2">
-            <div className="text-sm font-medium text-slate-600">当前合同</div>
-            <div className="text-sm text-slate-700">
-              客户：<span className="font-medium">{tenant.name}</span>
-            </div>
-            <div className="text-sm text-slate-700">
-              当前周期：<span className="font-medium">{paymentCycleLabelMap[fromCycle]}</span>
-              {fromCycle === 'Custom' && fromCycleMonths ? ` (${fromCycleMonths}个月)` : ''}
-            </div>
-            <div className="text-sm text-slate-700">
-              租期：{tenant.leaseStart} ~ {tenant.leaseEnd}
+          <div className="liquid-glass-readable rounded-3xl p-4">
+            <div className="mb-3 text-sm font-black text-slate-800">当前合同</div>
+            <div className="grid gap-3 text-sm md:grid-cols-3">
+              <div>
+                <p className="text-xs font-black text-slate-500">客户</p>
+                <p className="mt-1 truncate font-black text-slate-950">{tenant.name}</p>
+              </div>
+              <div>
+                <p className="text-xs font-black text-slate-500">当前周期</p>
+                <p className="mt-1 font-black text-blue-700">
+                  {paymentCycleLabelMap[fromCycle]}
+                  {fromCycle === 'Custom' && fromCycleMonths ? ` (${fromCycleMonths}个月)` : ''}
+                </p>
+              </div>
+              <div>
+                <p className="text-xs font-black text-slate-500">租期</p>
+                <p className="mt-1 font-bold text-slate-700">{tenant.leaseStart} ~ {tenant.leaseEnd}</p>
+              </div>
             </div>
           </div>
 
           {/* 变更配置 */}
           <div>
-            <label className="block text-sm font-medium text-slate-600 mb-1">新付款周期 <span className="text-red-500">*</span></label>
+            <label className="mb-1.5 block text-xs font-black text-slate-500">新付款周期 <span className="text-rose-500">*</span></label>
             <select
-              className="w-full border border-slate-300 p-2.5 rounded-lg text-sm"
+              className="liquid-elevated-field w-full rounded-2xl px-3.5 py-3 text-base font-black text-slate-950 outline-none focus:ring-4 focus:ring-blue-500/10 md:text-sm md:font-semibold md:text-slate-900"
               value={toCycle}
               onChange={e => {
                 setToCycle(e.target.value as PaymentCycle);
@@ -120,10 +312,12 @@ export const PaymentCycleChangeDialog: React.FC<Props> = ({ tenant, onConfirm, o
 
           {toCycle === 'Custom' && (
             <div>
-              <label className="block text-sm font-medium text-slate-600 mb-1">自定义月数</label>
+              <label className="mb-1.5 block text-xs font-black text-slate-500">自定义月数</label>
               <input
                 type="number" min="0.5" step="0.5"
-                className="w-full border border-slate-300 p-2.5 rounded-lg text-sm"
+                inputMode="decimal"
+                enterKeyHint="done"
+                className="liquid-elevated-field w-full rounded-2xl px-3.5 py-3 text-base font-black tabular-nums text-slate-950 outline-none focus:ring-4 focus:ring-blue-500/10 md:text-sm md:font-semibold md:text-slate-900"
                 value={toCycleMonths || ''}
                 onChange={e => setToCycleMonths(Math.max(0.5, Number(e.target.value) || 0.5))}
               />
@@ -131,58 +325,68 @@ export const PaymentCycleChangeDialog: React.FC<Props> = ({ tenant, onConfirm, o
           )}
 
           <div>
-            <label className="block text-sm font-medium text-slate-600 mb-1">生效日期 <span className="text-red-500">*</span></label>
+            <label className="mb-1.5 block text-xs font-black text-slate-500">生效日期 <span className="text-rose-500">*</span></label>
             <input
               type="date"
-              className="w-full border border-slate-300 p-2.5 rounded-lg text-sm"
+              className="liquid-elevated-field w-full rounded-2xl px-3.5 py-3 text-base font-black tabular-nums text-slate-950 outline-none focus:ring-4 focus:ring-blue-500/10 md:text-sm md:font-semibold md:text-slate-900"
               value={effectiveDate}
               onChange={e => { setEffectiveDate(e.target.value); setError(''); }}
             />
-            <p className="text-xs text-slate-400 mt-1">生效日期前的账单按原周期，生效日期起按新周期</p>
+            <p className="mt-1 text-xs font-semibold text-slate-500">生效日期前的账单按原周期，生效日期起按新周期</p>
           </div>
 
           <div>
-            <label className="block text-sm font-medium text-slate-600 mb-1">变更原因</label>
+            <label className="mb-1.5 block text-xs font-black text-slate-500">变更原因</label>
             <textarea
-              className="w-full border border-slate-300 p-2.5 rounded-lg text-sm"
-              rows={2}
+              className="liquid-elevated-field w-full resize-none rounded-2xl px-3.5 py-3 text-base font-semibold leading-relaxed text-slate-950 outline-none focus:ring-4 focus:ring-blue-500/10 md:text-sm md:text-slate-900"
+              rows={3}
               value={reason}
               onChange={e => setReason(e.target.value)}
               placeholder="如：客户业务调整、协商变更等"
             />
           </div>
 
-          {error && <div className="text-red-500 text-sm flex items-center gap-1"><AlertCircle size={14}/> {error}</div>}
+          {error && <div className="liquid-elevated-alert flex items-center gap-2 rounded-2xl px-3.5 py-2.5 text-sm font-bold"><AlertCircle size={14}/> {error}</div>}
 
           {/* 账单预览 */}
           {effectiveDate && (
             <div>
-              <label className="block text-sm font-medium text-slate-600 mb-2">
+              <label className="mb-2 block text-xs font-black text-slate-500">
                 账单变更预览
-                <span className="text-xs text-slate-400 ml-2">
+                <span className="ml-2 text-xs font-semibold text-slate-500">
                   ({new Date(effectiveDate).toISOString().slice(0, 10)} 为分界)
                 </span>
               </label>
-              <div className="grid grid-cols-2 gap-3">
-                <div className="bg-slate-50 rounded-lg p-3">
-                  <div className="text-xs font-medium text-slate-500 mb-1.5">变更前账单 (原{paymentCycleLabelMap[fromCycle]})</div>
-                  {previewBills.before.length > 0 ? previewBills.before.map((b, i) => (
-                    <div key={i} className="flex justify-between text-xs py-0.5">
-                      <span className="text-slate-500">{b.date.toISOString().slice(0, 10)}</span>
-                      <span className="font-mono text-slate-600">{formatCurrency(b.amount)}</span>
-                    </div>
-                  )) : <div className="text-xs text-slate-400 italic">无历史账单</div>}
+              {previewState.error ? (
+                <div className="liquid-elevated-alert liquid-elevated-alert--amber mb-3 flex items-start gap-2 rounded-2xl px-3 py-2 text-xs font-bold">
+                  <AlertCircle size={14} className="mt-0.5 shrink-0" />
+                  <span>{previewState.error}</span>
                 </div>
-                <div className="bg-blue-50 rounded-lg p-3">
-                  <div className="text-xs font-medium text-blue-600 mb-1.5">变更后账单 ({paymentCycleLabelMap[toCycle]})</div>
-                  {simulatedBills.length > 0 ? simulatedBills.slice(0, 6).map((b, i) => (
-                    <div key={i} className="flex justify-between text-xs py-0.5">
-                      <span className="text-blue-600">{b.date.toISOString().slice(0, 10)}</span>
-                      <span className="font-mono text-blue-700">{formatCurrency(b.amount)}</span>
+              ) : null}
+              <div className="grid gap-3 md:grid-cols-2">
+                <div className="liquid-glass-readable rounded-3xl p-3.5">
+                  <div className="mb-2 text-xs font-black text-slate-500">变更前账单 (原{paymentCycleLabelMap[fromCycle]})</div>
+                  {previewState.loading ? (
+                    <div className="text-xs font-bold italic text-slate-500">计算中...</div>
+                  ) : previewBills.before.length > 0 ? previewBills.before.map((b, i) => (
+                    <div key={i} className="liquid-elevated-preview-row flex justify-between rounded-xl px-2 py-1 text-xs font-bold">
+                      <span className="text-slate-500">{b.date.toISOString().slice(0, 10)}</span>
+                      <span className="font-mono text-slate-700">{formatCurrency(b.amount)}</span>
                     </div>
-                  )) : <div className="text-xs text-blue-400 italic">无后续账单</div>}
+                  )) : <div className="text-xs font-bold italic text-slate-500">无历史账单</div>}
+                </div>
+                <div className="liquid-glass-readable rounded-3xl border-blue-200/70 p-3.5">
+                  <div className="mb-2 text-xs font-black text-blue-700">变更后账单 ({paymentCycleLabelMap[toCycle]})</div>
+                  {previewState.loading ? (
+                    <div className="text-xs font-bold italic text-blue-700">计算中...</div>
+                  ) : simulatedBills.length > 0 ? simulatedBills.slice(0, 6).map((b, i) => (
+                    <div key={i} className="liquid-elevated-preview-row liquid-elevated-preview-row--blue flex justify-between rounded-xl px-2 py-1 text-xs font-bold">
+                      <span className="text-blue-700">{b.date.toISOString().slice(0, 10)}</span>
+                      <span className="font-mono text-blue-800">{formatCurrency(b.amount)}</span>
+                    </div>
+                  )) : <div className="text-xs font-bold italic text-blue-700">无后续账单</div>}
                   {simulatedBills.length > 6 && (
-                    <div className="text-xs text-blue-400 mt-1">... 共 {simulatedBills.length} 笔</div>
+                    <div className="mt-1 text-xs font-bold text-blue-700">... 共 {simulatedBills.length} 笔</div>
                   )}
                 </div>
               </div>
@@ -192,15 +396,18 @@ export const PaymentCycleChangeDialog: React.FC<Props> = ({ tenant, onConfirm, o
           {/* 变更历史 */}
           {(tenant.paymentCycleChanges && tenant.paymentCycleChanges.length > 0) && (
             <div>
-              <label className="block text-sm font-medium text-slate-600 mb-2">历史变更记录</label>
-              <div className="max-h-32 overflow-y-auto space-y-1.5">
+              <label className="mb-2 block text-xs font-black text-slate-500">历史变更记录</label>
+              <div className="liquid-glass-readable max-h-36 space-y-1.5 overflow-y-auto rounded-3xl p-2">
                 {[...tenant.paymentCycleChanges].reverse().map(r => (
-                  <div key={r.id} className="text-xs bg-slate-50 p-2 rounded border border-slate-100">
-                    <span className="text-slate-500">{paymentCycleLabelMap[r.fromCycle]}</span>
-                    <span className="mx-1.5 text-slate-300">→</span>
-                    <span className="font-medium text-slate-700">{paymentCycleLabelMap[r.toCycle]}</span>
-                    <span className="ml-2 text-slate-400">生效: {r.effectiveDate}</span>
-                    {r.reason && <span className="ml-2 text-slate-400">({r.reason})</span>}
+                  <div key={r.id} className="liquid-elevated-history-row rounded-2xl p-2.5 text-xs">
+                    <div className="font-black text-slate-800">
+                      <span className="text-slate-500">{paymentCycleLabelMap[r.fromCycle]}</span>
+                      <span className="mx-1.5 font-black text-slate-500">→</span>
+                      <span>{paymentCycleLabelMap[r.toCycle]}</span>
+                    </div>
+                    <div className="mt-1 font-bold text-slate-500">
+                      生效: {r.effectiveDate}{r.reason ? ` · ${r.reason}` : ''}
+                    </div>
                   </div>
                 ))}
               </div>
@@ -208,11 +415,11 @@ export const PaymentCycleChangeDialog: React.FC<Props> = ({ tenant, onConfirm, o
           )}
         </div>
 
-        <div className="flex justify-end gap-3 p-5 border-t bg-slate-50 sticky bottom-0">
-          <button onClick={onClose} className="px-4 py-2 text-sm text-slate-600 hover:bg-slate-200 rounded-lg">取消</button>
-          <button onClick={handleConfirm} className="px-4 py-2 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 flex items-center gap-1.5"><Save size={14}/> 确认变更</button>
+        <div className="liquid-elevated-footer sticky bottom-0 grid grid-cols-2 gap-2 border-t border-white/60 px-4 py-4 pb-[calc(env(safe-area-inset-bottom)+1rem)] sm:flex sm:justify-end sm:px-5 sm:pb-4">
+          <button onClick={onClose} className="liquid-glass-control liquid-pressable rounded-full px-4 py-2.5 text-sm font-black text-slate-600">取消</button>
+          <button onClick={handleConfirm} className="liquid-action-strong liquid-pressable flex items-center justify-center gap-1.5 rounded-full px-4 py-2.5 text-sm font-black"><Save size={14}/> 确认变更</button>
         </div>
-      </div>
+      </section>
     </div>
   );
 };

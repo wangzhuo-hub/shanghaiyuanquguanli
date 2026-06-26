@@ -1,9 +1,9 @@
-import React, { useState, useRef, useCallback } from 'react';
+import React, { useEffect, useState, useRef, useCallback } from 'react';
 import { X, Sparkles, Upload, FileText, Image as ImageIcon, FileSpreadsheet, Loader2, Check, AlertCircle, CheckCircle, Building as BuildingIcon } from 'lucide-react';
 import { Tenant, Building, ContractStatus, DepositStatus, UnitStatus, PaymentCycle } from '../types';
-import * as XLSX from 'xlsx';
 import { getAiProxyChatUrl } from '../config/urls';
 import { formatArea } from '../services/numberFormat';
+import { readFirstSheetRows } from '../services/xlsxLoader';
 
 // ---- AI 识别结果 ----
 interface RecognizedContract {
@@ -38,6 +38,10 @@ interface AIContractRecognitionModalProps {
 }
 
 type InputTab = 'image' | 'text' | 'excel';
+
+const fieldClass = 'liquid-elevated-field min-h-11 w-full rounded-2xl px-3 py-2 text-sm font-semibold text-slate-900 outline-none transition placeholder:text-slate-500 focus:border-blue-300 focus:ring-4 focus:ring-blue-100';
+const textareaClass = 'liquid-elevated-field h-48 w-full resize-none rounded-2xl p-3 text-sm font-semibold text-slate-900 outline-none transition placeholder:text-slate-500 focus:border-blue-300 focus:ring-4 focus:ring-blue-100';
+const sectionTitleClass = 'mb-3 text-xs font-black uppercase tracking-wider text-blue-700';
 
 // ---- AI 代理调用 ----
 async function callAIForContractRecognition(payload: { type: InputTab; content: string }): Promise<RecognizedContract> {
@@ -191,6 +195,16 @@ export const AIContractRecognitionModal: React.FC<AIContractRecognitionModalProp
   const [excelFileName, setExcelFileName] = useState('');
   const [excelData, setExcelData] = useState<any[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      onClose();
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isOpen, onClose]);
   const excelInputRef = useRef<HTMLInputElement>(null);
 
   // ---- 图片处理 ----
@@ -228,23 +242,16 @@ export const AIContractRecognitionModal: React.FC<AIContractRecognitionModalProp
   }, []);
 
   // ---- Excel 处理 ----
-  const handleExcelSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleExcelSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
     setExcelFileName(file.name);
-    const reader = new FileReader();
-    reader.onload = (ev) => {
-      try {
-        const data = new Uint8Array(ev.target?.result as ArrayBuffer);
-        const workbook = XLSX.read(data, { type: 'array' });
-        const firstSheet = workbook.Sheets[workbook.SheetNames[0]];
-        const jsonData = XLSX.utils.sheet_to_json(firstSheet, { defval: '' });
-        setExcelData(jsonData);
-      } catch (err: any) {
-        setError(`Excel 解析失败: ${err.message}`);
-      }
-    };
-    reader.readAsArrayBuffer(file);
+    try {
+      const jsonData = await readFirstSheetRows(await file.arrayBuffer());
+      setExcelData(jsonData);
+    } catch (err: any) {
+      setError(`Excel 解析失败: ${err.message}`);
+    }
   };
 
   // ---- AI 识别 ----
@@ -351,23 +358,29 @@ export const AIContractRecognitionModal: React.FC<AIContractRecognitionModalProp
   const selectedBuilding = buildings.find(b => b.id === matchedBuildingId);
 
   return (
-    <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4 animate-in fade-in duration-200" onPaste={handlePaste}>
-      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-4xl max-h-[90vh] flex flex-col animate-in zoom-in-95 duration-200">
+    <div className="liquid-elevated-backdrop fixed inset-0 z-50 flex items-end justify-center p-0 sm:p-3 md:items-center md:p-4 animate-in fade-in duration-200" onClick={onClose} onPaste={handlePaste}>
+      <section
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="ai-contract-recognition-title"
+        className="liquid-elevated-panel flex max-h-[94vh] w-full max-w-4xl flex-col rounded-t-[30px] md:max-h-[92vh] md:rounded-[28px] animate-in slide-in-from-bottom-4 duration-200 md:zoom-in-95"
+        onClick={(event) => event.stopPropagation()}
+      >
         {/* Header */}
-        <div className="flex items-center justify-between p-5 border-b border-slate-200 bg-gradient-to-r from-blue-50 to-indigo-50 rounded-t-2xl">
-          <div className="flex items-center gap-3">
-            <div className="p-2 bg-blue-600 text-white rounded-xl"><Sparkles size={22} /></div>
-            <div>
-              <h2 className="text-lg font-bold text-slate-800">AI 智能合同录入</h2>
-              <p className="text-xs text-slate-500">支持合同截图、文字信息、Excel 自动识别</p>
+        <div className="liquid-elevated-header flex items-start justify-between gap-3 p-4 sm:p-5 border-b border-white/70">
+          <div className="flex min-w-0 items-start gap-3">
+            <div className="liquid-action-strong shrink-0 p-2.5 rounded-2xl"><Sparkles size={22} /></div>
+            <div className="min-w-0">
+              <h2 id="ai-contract-recognition-title" className="text-lg font-black text-slate-950">AI 智能合同录入</h2>
+              <p className="mt-1 text-xs font-semibold leading-5 text-slate-500">支持合同截图、文字信息、Excel 自动识别</p>
             </div>
           </div>
-          <button onClick={onClose} className="p-2 hover:bg-white/80 rounded-lg transition-colors text-slate-400 hover:text-slate-600"><X size={20} /></button>
+          <button onClick={onClose} className="liquid-glass-control liquid-pressable shrink-0 rounded-full p-2 text-slate-500 transition-colors hover:bg-blue-50/70 hover:text-slate-700 focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-blue-200/80" aria-label="关闭 AI 智能合同录入"><X size={20} /></button>
         </div>
 
-        <div className="flex-1 overflow-y-auto p-5 space-y-5">
+        <div className="flex-1 overflow-y-auto p-4 sm:p-5 space-y-5">
           {/* Input Tabs */}
-          <div className="flex gap-2 bg-slate-100 p-1 rounded-xl w-fit">
+          <div className="liquid-glass-control flex gap-1 overflow-x-auto rounded-full p-1 w-fit max-w-full">
             {([
               { key: 'image' as InputTab, icon: ImageIcon, label: '合同截图' },
               { key: 'text' as InputTab, icon: FileText, label: '文字信息' },
@@ -376,7 +389,7 @@ export const AIContractRecognitionModal: React.FC<AIContractRecognitionModalProp
               <button
                 key={tab.key}
                 onClick={() => setActiveTab(tab.key)}
-                className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all ${activeTab === tab.key ? 'bg-white shadow-sm text-blue-700' : 'text-slate-500 hover:text-slate-700'}`}
+                className={`flex shrink-0 items-center gap-2 rounded-full px-4 py-2 text-sm font-bold transition-all ${activeTab === tab.key ? 'liquid-ai-tab-active' : 'text-slate-500 hover:bg-blue-50/62 hover:text-slate-900'}`}
               >
                 <tab.icon size={16} />
                 {tab.label}
@@ -385,7 +398,7 @@ export const AIContractRecognitionModal: React.FC<AIContractRecognitionModalProp
           </div>
 
           {/* Input Area */}
-          <div className="border border-slate-200 rounded-xl p-4 bg-slate-50/50">
+          <div className="liquid-elevated-card rounded-2xl p-4">
             {activeTab === 'image' && (
               <div>
                 {!imagePreview ? (
@@ -393,19 +406,19 @@ export const AIContractRecognitionModal: React.FC<AIContractRecognitionModalProp
                     onDragOver={e => e.preventDefault()}
                     onDrop={handleImageDrop}
                     onClick={() => fileInputRef.current?.click()}
-                    className="border-2 border-dashed border-slate-300 rounded-xl p-10 text-center cursor-pointer hover:border-blue-400 hover:bg-blue-50/30 transition-all"
+                    className="liquid-ai-dropzone cursor-pointer rounded-2xl p-8 text-center transition-all sm:p-10"
                   >
-                    <Upload size={40} className="mx-auto text-slate-400 mb-3" />
+                    <Upload size={40} className="mx-auto text-slate-500 mb-3" />
                     <p className="text-sm text-slate-600 font-medium">点击上传或拖拽合同/协议截图</p>
-                    <p className="text-xs text-slate-400 mt-1">也可以直接 Ctrl+V 粘贴截图</p>
-                    <p className="text-xs text-slate-400 mt-1">支持 JPG / PNG / WEBP</p>
+                    <p className="mt-1 text-xs font-semibold text-slate-500">也可以直接 Ctrl+V 粘贴截图</p>
+                    <p className="mt-1 text-xs font-semibold text-slate-500">支持 JPG / PNG / WEBP</p>
                   </div>
                 ) : (
                   <div className="space-y-3">
-                    <div className="relative bg-white rounded-lg border border-slate-200 p-2">
+                    <div className="liquid-elevated-table relative rounded-xl border border-slate-200/80 p-2">
                       <img src={imagePreview} alt="合同截图" className="max-h-60 mx-auto rounded" />
                       <button onClick={() => { setImagePreview(''); if (fileInputRef.current) fileInputRef.current.value = ''; }}
-                        className="absolute top-2 right-2 p-1 bg-red-100 text-red-600 rounded-lg hover:bg-red-200"><X size={16} /></button>
+                        className="liquid-ai-remove-action liquid-pressable absolute right-2 top-2 rounded-full p-1.5"><X size={16} /></button>
                     </div>
                   </div>
                 )}
@@ -418,7 +431,7 @@ export const AIContractRecognitionModal: React.FC<AIContractRecognitionModalProp
                 value={textInput}
                 onChange={e => setTextInput(e.target.value)}
                 placeholder={`粘贴合同信息，例如：\n\n客户名称：上海XX科技有限公司\n租赁位置：1号楼 305-308\n合同期：2026-04-01 至 2029-03-31\n面积：120㎡\n单价：2.80元/㎡/天\n月租金：10,220元\n支付方式：季付\n押金：30,660元\n免租期：2026-04-01至2026-05-31 装修免租\n\nAI 会自动识别并提取关键信息`}
-                className="w-full h-48 p-3 border border-slate-200 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none resize-none bg-white"
+                className={textareaClass}
               />
             )}
 
@@ -426,21 +439,21 @@ export const AIContractRecognitionModal: React.FC<AIContractRecognitionModalProp
               <div>
                 {!excelFileName ? (
                   <div onClick={() => excelInputRef.current?.click()}
-                    className="border-2 border-dashed border-slate-300 rounded-xl p-10 text-center cursor-pointer hover:border-blue-400 hover:bg-blue-50/30 transition-all">
-                    <FileSpreadsheet size={40} className="mx-auto text-slate-400 mb-3" />
+                    className="liquid-ai-dropzone cursor-pointer rounded-2xl p-8 text-center transition-all sm:p-10">
+                    <FileSpreadsheet size={40} className="mx-auto text-slate-500 mb-3" />
                     <p className="text-sm text-slate-600 font-medium">点击上传合同信息 Excel</p>
-                    <p className="text-xs text-slate-400 mt-1">支持 .xls / .xlsx 格式</p>
+                    <p className="mt-1 text-xs font-semibold text-slate-500">支持 .xls / .xlsx 格式</p>
                   </div>
                 ) : (
                   <div className="space-y-3">
-                    <div className="flex items-center gap-3 bg-white rounded-lg border border-slate-200 p-3">
+                    <div className="liquid-elevated-table flex items-center gap-3 rounded-xl border border-slate-200/80 p-3">
                       <FileSpreadsheet size={20} className="text-blue-600" />
                       <div className="flex-1">
                         <p className="text-sm font-medium text-slate-700">{excelFileName}</p>
-                        <p className="text-xs text-slate-400">{excelData.length} 行数据</p>
+                        <p className="text-xs font-semibold text-slate-500">{excelData.length} 行数据</p>
                       </div>
                       <button onClick={() => { setExcelFileName(''); setExcelData([]); if (excelInputRef.current) excelInputRef.current.value = ''; }}
-                        className="p-1 text-red-500 hover:bg-red-50 rounded"><X size={16} /></button>
+                        className="liquid-ai-remove-action liquid-pressable rounded-full p-1.5"><X size={16} /></button>
                     </div>
                   </div>
                 )}
@@ -450,18 +463,18 @@ export const AIContractRecognitionModal: React.FC<AIContractRecognitionModalProp
           </div>
 
           {/* Recognize Button */}
-          <div className="flex items-center gap-3">
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-3">
             <button onClick={handleRecognize} disabled={isLoading}
-              className="px-6 py-2.5 bg-blue-600 text-white rounded-xl hover:bg-blue-700 transition-colors font-medium text-sm flex items-center gap-2 shadow-sm disabled:opacity-50">
+              className="liquid-action-strong liquid-pressable flex min-h-11 items-center justify-center gap-2 rounded-full px-6 py-2.5 text-sm font-bold shadow-sm transition-colors disabled:opacity-50">
               {isLoading ? <Loader2 size={18} className="animate-spin" /> : <Sparkles size={18} />}
               {isLoading ? 'AI 识别中...' : 'AI 智能识别'}
             </button>
-            {isLoading && <span className="text-xs text-slate-400">正在调用AI分析合同信息，请稍候...</span>}
+            {isLoading && <span className="text-xs font-semibold text-slate-500">正在调用AI分析合同信息，请稍候...</span>}
           </div>
 
           {/* Error */}
           {error && (
-            <div className="flex items-center gap-2 px-4 py-3 bg-red-50 border border-red-100 rounded-xl text-sm text-red-700">
+            <div className="liquid-ai-error flex items-center gap-2 rounded-2xl px-4 py-3 text-sm">
               <AlertCircle size={16} />{error}
             </div>
           )}
@@ -469,29 +482,49 @@ export const AIContractRecognitionModal: React.FC<AIContractRecognitionModalProp
           {/* Recognized Results - Editable Form */}
           {recognized && (
             <div className="space-y-4">
-              <h3 className="text-sm font-bold text-slate-700 flex items-center gap-2">
+              <h3 className="flex items-center gap-2 text-sm font-bold text-slate-700">
                 <CheckCircle size={16} className="text-blue-600" /> AI 识别结果 — 请确认并修改
               </h3>
 
-              <div className="bg-white border border-slate-200 rounded-xl p-5 space-y-5">
+              <div className="grid gap-2 sm:grid-cols-3">
+                <div className="liquid-glass-readable rounded-2xl px-3.5 py-3">
+                  <div className="flex items-center gap-2 text-xs font-black text-slate-500">
+                    <BuildingIcon size={13} />
+                    楼宇匹配
+                  </div>
+                  <div className={`mt-1 truncate text-sm font-black ${matchedBuildingId ? 'text-blue-700' : 'text-amber-700'}`}>
+                    {selectedBuilding?.name || editData.buildingName || '待选择'}
+                  </div>
+                </div>
+                <div className="liquid-glass-readable rounded-2xl px-3.5 py-3">
+                  <div className="text-xs font-black text-slate-500">已选房源</div>
+                  <div className="mt-1 text-sm font-black text-slate-950">{matchedUnitIds.length} 间</div>
+                </div>
+                <div className="liquid-glass-readable rounded-2xl px-3.5 py-3">
+                  <div className="text-xs font-black text-slate-500">识别面积</div>
+                  <div className="mt-1 text-sm font-black text-slate-950">{editData.totalArea ? formatArea(editData.totalArea) : '待确认'}</div>
+                </div>
+              </div>
+
+              <div className="liquid-elevated-card rounded-2xl p-4 sm:p-5 space-y-5">
                 {/* 基本信息 */}
                 <div>
-                  <div className="text-xs font-bold text-blue-600 mb-3 uppercase tracking-wider">核心签约信息</div>
+                  <div className={sectionTitleClass}>核心签约信息</div>
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                     <div>
                       <label className="block text-xs font-medium text-slate-500 mb-1">企业名称</label>
                       <input value={editData.name || ''} onChange={e => setEditData({ ...editData, name: e.target.value })}
-                        className="w-full p-2 border border-slate-200 rounded-lg text-sm" />
+                        className={fieldClass} />
                     </div>
                     <div>
                       <label className="block text-xs font-medium text-slate-500 mb-1">所属楼宇</label>
                       <select value={matchedBuildingId} onChange={e => handleBuildingChange(e.target.value)}
-                        className={`w-full p-2 border rounded-lg text-sm ${matchedBuildingId ? 'border-green-300 bg-green-50' : 'border-amber-300 bg-amber-50'}`}>
+                        className={`liquid-elevated-field w-full rounded-xl p-2 text-sm outline-none transition focus:ring-2 ${matchedBuildingId ? 'liquid-ai-match-high focus:ring-cyan-100' : 'liquid-ai-match-low focus:ring-amber-100'}`}>
                         <option value="">-- 请选择楼宇 --</option>
                         {buildings.map(b => <option key={b.id} value={b.id}>{b.name}{b.type === 'Site' ? ' (场地)' : ''}</option>)}
                       </select>
                       {editData.buildingName && !matchedBuildingId && (
-                        <span className="text-[10px] text-amber-600 mt-0.5 block">AI识别"{editData.buildingName}"未匹配，请手动选择</span>
+                        <span className="mt-1 block text-xs font-bold text-amber-700">AI识别"{editData.buildingName}"未匹配，请手动选择</span>
                       )}
                     </div>
                   </div>
@@ -505,7 +538,7 @@ export const AIContractRecognitionModal: React.FC<AIContractRecognitionModalProp
                           <span className="text-blue-500 ml-2">AI识别: {editData.unitNames.join(', ')}</span>
                         )}
                       </label>
-                      <div className="grid grid-cols-6 sm:grid-cols-8 gap-1.5 bg-slate-50 p-2 rounded-lg border border-slate-200 max-h-32 overflow-y-auto font-mono text-xs">
+                      <div className="liquid-elevated-table grid grid-cols-4 sm:grid-cols-8 gap-1.5 p-2 rounded-xl border border-slate-200/80 max-h-36 overflow-y-auto font-mono text-xs">
                         {selectedBuilding.units
                           .filter(u => !u.isSelfUse && (u.status === UnitStatus.Vacant || matchedUnitIds.includes(u.id)))
                           .map(u => (
@@ -515,9 +548,10 @@ export const AIContractRecognitionModal: React.FC<AIContractRecognitionModalProp
                                   prev.includes(u.id) ? prev.filter(id => id !== u.id) : [...prev, u.id]
                                 );
                               }}
-                              className={`px-1.5 py-1.5 rounded border transition-all text-center ${matchedUnitIds.includes(u.id) ? 'bg-blue-600 text-white border-blue-600 font-bold' : 'bg-white border-slate-200 hover:border-blue-400'}`}>
+                              data-selected={matchedUnitIds.includes(u.id) ? 'true' : undefined}
+                              className="liquid-ai-unit-chip rounded-lg px-1.5 py-1.5 text-center transition-all hover:border-blue-400">
                               <div>{u.name}</div>
-                              <div className="opacity-70 font-normal text-[10px]">{formatArea(u.area)}</div>
+                              <div className="text-xs font-semibold text-slate-500">{formatArea(u.area)}</div>
                             </button>
                           ))}
                       </div>
@@ -527,54 +561,54 @@ export const AIContractRecognitionModal: React.FC<AIContractRecognitionModalProp
 
                 {/* 合同日期 */}
                 <div>
-                  <div className="text-xs font-bold text-blue-600 mb-3 uppercase tracking-wider">合同期限</div>
+                  <div className={sectionTitleClass}>合同期限</div>
                   <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
                     <div>
                       <label className="block text-xs font-medium text-slate-500 mb-1">签约日期</label>
                       <input type="date" value={editData.signingDate || ''} onChange={e => setEditData({ ...editData, signingDate: e.target.value })}
-                        className="w-full p-2 border border-slate-200 rounded-lg text-sm" />
+                        className={fieldClass} />
                     </div>
                     <div>
                       <label className="block text-xs font-medium text-slate-500 mb-1">起租日期</label>
                       <input type="date" value={editData.leaseStart || ''} onChange={e => setEditData({ ...editData, leaseStart: e.target.value })}
-                        className="w-full p-2 border border-slate-200 rounded-lg text-sm" />
+                        className={fieldClass} />
                     </div>
                     <div>
                       <label className="block text-xs font-medium text-slate-500 mb-1">结束日期</label>
                       <input type="date" value={editData.leaseEnd || ''} onChange={e => setEditData({ ...editData, leaseEnd: e.target.value })}
-                        className="w-full p-2 border border-slate-200 rounded-lg text-sm" />
+                        className={fieldClass} />
                     </div>
                     <div>
-                      <label className="block text-xs font-medium text-emerald-600 mb-1">入驻时间</label>
+                      <label className="block text-xs font-medium text-blue-600 mb-1">入驻时间</label>
                       <input type="date" value={editData.moveInDate || ''} onChange={e => setEditData({ ...editData, moveInDate: e.target.value })}
-                        className="w-full p-2 border border-emerald-300 rounded-lg text-sm bg-emerald-50/50" />
+                        className={fieldClass} />
                     </div>
                   </div>
                 </div>
 
                 {/* 租金 */}
                 <div>
-                  <div className="text-xs font-bold text-emerald-600 mb-3 uppercase tracking-wider">租金与支付</div>
-                  <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                  <div className={sectionTitleClass}>租金与支付</div>
+                  <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 md:grid-cols-4">
                     <div>
                       <label className="block text-xs font-medium text-slate-500 mb-1">面积 (㎡)</label>
-                      <input type="number" value={editData.totalArea || ''} onChange={e => setEditData({ ...editData, totalArea: Number(e.target.value) })}
-                        className="w-full p-2 border border-slate-200 rounded-lg text-sm" />
+                      <input type="number" inputMode="decimal" enterKeyHint="done" value={editData.totalArea || ''} onChange={e => setEditData({ ...editData, totalArea: Number(e.target.value) })}
+                        className={fieldClass} />
                     </div>
                     <div>
                       <label className="block text-xs font-medium text-slate-500 mb-1">日单价 (元/㎡/天)</label>
-                      <input type="number" step="0.01" value={editData.unitPrice || ''} onChange={e => setEditData({ ...editData, unitPrice: Number(e.target.value) })}
-                        className="w-full p-2 border border-slate-200 rounded-lg text-sm" />
+                      <input type="number" inputMode="decimal" enterKeyHint="done" step="0.01" value={editData.unitPrice || ''} onChange={e => setEditData({ ...editData, unitPrice: Number(e.target.value) })}
+                        className={fieldClass} />
                     </div>
                     <div>
                       <label className="block text-xs font-medium text-slate-500 mb-1">月租金 (元)</label>
-                      <input type="number" value={editData.monthlyRent || ''} onChange={e => setEditData({ ...editData, monthlyRent: Number(e.target.value) })}
-                        className="w-full p-2 border border-slate-200 rounded-lg text-sm" />
+                      <input type="number" inputMode="decimal" enterKeyHint="done" value={editData.monthlyRent || ''} onChange={e => setEditData({ ...editData, monthlyRent: Number(e.target.value) })}
+                        className={fieldClass} />
                     </div>
                     <div>
                       <label className="block text-xs font-medium text-slate-500 mb-1">支付频率</label>
                       <select value={editData.paymentCycle || 'Quarterly'} onChange={e => setEditData({ ...editData, paymentCycle: e.target.value })}
-                        className="w-full p-2 border border-slate-200 rounded-lg text-sm">
+                        className={fieldClass}>
                         <option value="HalfMonthly">半月付</option>
                         <option value="Monthly">月付</option>
                         <option value="BiMonthly">两月付</option>
@@ -585,16 +619,16 @@ export const AIContractRecognitionModal: React.FC<AIContractRecognitionModalProp
                       </select>
                     </div>
                   </div>
-                  <div className="grid grid-cols-2 gap-4 mt-3">
+                  <div className="mt-3 grid grid-cols-1 gap-4 sm:grid-cols-2">
                     <div>
                       <label className="block text-xs font-medium text-slate-500 mb-1">押金金额 (元)</label>
-                      <input type="number" value={editData.depositAmount || ''} onChange={e => setEditData({ ...editData, depositAmount: Number(e.target.value) })}
-                        className="w-full p-2 border border-slate-200 rounded-lg text-sm" />
+                      <input type="number" inputMode="decimal" enterKeyHint="done" value={editData.depositAmount || ''} onChange={e => setEditData({ ...editData, depositAmount: Number(e.target.value) })}
+                        className={fieldClass} />
                     </div>
                     <div>
                       <label className="block text-xs font-medium text-slate-500 mb-1">行业</label>
                       <input value={editData.industry || ''} onChange={e => setEditData({ ...editData, industry: e.target.value })}
-                        className="w-full p-2 border border-slate-200 rounded-lg text-sm" />
+                        className={fieldClass} />
                     </div>
                   </div>
                 </div>
@@ -602,22 +636,22 @@ export const AIContractRecognitionModal: React.FC<AIContractRecognitionModalProp
                 {/* 免租期 */}
                 {(editData.rentFreeStart || editData.rentFreeEnd) && (
                   <div>
-                    <div className="text-xs font-bold text-indigo-600 mb-3 uppercase tracking-wider">免租期</div>
+                    <div className={sectionTitleClass}>免租期</div>
                     <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                       <div>
                         <label className="block text-xs font-medium text-slate-500 mb-1">开始日期</label>
                         <input type="date" value={editData.rentFreeStart || ''} onChange={e => setEditData({ ...editData, rentFreeStart: e.target.value })}
-                          className="w-full p-2 border border-slate-200 rounded-lg text-sm" />
+                          className={fieldClass} />
                       </div>
                       <div>
                         <label className="block text-xs font-medium text-slate-500 mb-1">结束日期</label>
                         <input type="date" value={editData.rentFreeEnd || ''} onChange={e => setEditData({ ...editData, rentFreeEnd: e.target.value })}
-                          className="w-full p-2 border border-slate-200 rounded-lg text-sm" />
+                          className={fieldClass} />
                       </div>
                       <div>
                         <label className="block text-xs font-medium text-slate-500 mb-1">说明</label>
                         <input value={editData.rentFreeDesc || ''} onChange={e => setEditData({ ...editData, rentFreeDesc: e.target.value })}
-                          className="w-full p-2 border border-slate-200 rounded-lg text-sm" placeholder="如：装修免租" />
+                          className={fieldClass} placeholder="如：装修免租" />
                       </div>
                     </div>
                   </div>
@@ -625,27 +659,27 @@ export const AIContractRecognitionModal: React.FC<AIContractRecognitionModalProp
 
                 {/* 联系人 */}
                 <div>
-                  <div className="text-xs font-bold text-slate-500 mb-3 uppercase tracking-wider">联系人信息</div>
-                  <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                  <div className={sectionTitleClass}>联系人信息</div>
+                  <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 md:grid-cols-4">
                     <div>
                       <label className="block text-xs font-medium text-slate-500 mb-1">联系人</label>
                       <input value={editData.contactName || ''} onChange={e => setEditData({ ...editData, contactName: e.target.value })}
-                        className="w-full p-2 border border-slate-200 rounded-lg text-sm" />
+                        className={fieldClass} />
                     </div>
                     <div>
                       <label className="block text-xs font-medium text-slate-500 mb-1">联系电话</label>
                       <input value={editData.contactInfo || ''} onChange={e => setEditData({ ...editData, contactInfo: e.target.value })}
-                        className="w-full p-2 border border-slate-200 rounded-lg text-sm" />
+                        className={fieldClass} />
                     </div>
                     <div>
                       <label className="block text-xs font-medium text-slate-500 mb-1">法人</label>
                       <input value={editData.legalRepName || ''} onChange={e => setEditData({ ...editData, legalRepName: e.target.value })}
-                        className="w-full p-2 border border-slate-200 rounded-lg text-sm" />
+                        className={fieldClass} />
                     </div>
                     <div>
                       <label className="block text-xs font-medium text-slate-500 mb-1">成立日期</label>
                       <input type="date" value={editData.foundingDate || ''} onChange={e => setEditData({ ...editData, foundingDate: e.target.value })}
-                        className="w-full p-2 border border-slate-200 rounded-lg text-sm" />
+                        className={fieldClass} />
                     </div>
                   </div>
                 </div>
@@ -656,24 +690,24 @@ export const AIContractRecognitionModal: React.FC<AIContractRecognitionModalProp
 
         {/* Footer */}
         {recognized && (
-          <div className="flex items-center justify-between p-5 border-t border-slate-200 bg-slate-50 rounded-b-2xl">
-            <div className="text-sm text-slate-500">
+          <div className="liquid-elevated-footer flex flex-col gap-3 border-t border-white/70 p-4 pb-[calc(env(safe-area-inset-bottom)+1rem)] sm:flex-row sm:items-center sm:justify-between sm:p-5">
+            <div className="text-sm font-semibold text-slate-500">
               {editData.name ? (
-                <span className="text-blue-600 flex items-center gap-1"><CheckCircle size={14} /> {editData.name}</span>
+                <span className="flex items-center gap-1 text-blue-600"><CheckCircle size={14} /> {editData.name}</span>
               ) : (
-                <span className="text-amber-600 flex items-center gap-1"><AlertCircle size={14} /> 请至少填写企业名称</span>
+                <span className="flex items-center gap-1 text-amber-600"><AlertCircle size={14} /> 请至少填写企业名称</span>
               )}
             </div>
-            <div className="flex gap-2">
-              <button onClick={onClose} className="px-4 py-2 bg-white border border-slate-200 text-slate-600 rounded-lg hover:bg-slate-50 text-sm">取消</button>
+            <div className="grid grid-cols-2 gap-2 sm:flex sm:justify-end">
+              <button onClick={onClose} className="liquid-elevated-field liquid-pressable min-h-11 rounded-full px-4 py-2 text-sm font-bold text-slate-600 hover:bg-blue-50/60">取消</button>
               <button onClick={handleImport} disabled={!editData.name}
-                className="px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 text-sm font-medium flex items-center gap-2 shadow-sm disabled:opacity-50">
+                className="liquid-action-strong liquid-pressable flex min-h-11 items-center justify-center gap-2 rounded-full px-6 py-2 text-sm font-bold shadow-sm disabled:opacity-50">
                 <Check size={16} /> 填入表单并编辑
               </button>
             </div>
           </div>
         )}
-      </div>
+      </section>
     </div>
   );
 };

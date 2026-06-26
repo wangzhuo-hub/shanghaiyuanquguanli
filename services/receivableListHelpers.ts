@@ -1,6 +1,6 @@
 import type { BillingDetail, PaymentRecord, Tenant, ManualReceivableLine, SpecialBusinessReceivable } from '../types';
 import type { BudgetedBill } from './billingService';
-import { normalizeBudgetRowKeyPart } from './budgetTableImport';
+import { normalizeBudgetRowKeyPart } from './budgetRowKey';
 import { roundMoney2 } from './numberFormat';
 
 /** 与 App.tsx / dashboardMetrics 缓缴 JSON 存储键前缀一致 */
@@ -171,10 +171,215 @@ function paymentMatchesRentBillingPeriod(p: PaymentRecord, receivableMonthYYYYMM
     return p.date.startsWith(receivableMonthYYYYMM);
 }
 
+export type ReceivablePaymentKind = 'rent' | 'management_fee';
+
+export interface ReceivablePaymentPeriodSummary {
+    amount: number;
+    count: number;
+    hasPaymentDateInPeriod: boolean;
+}
+
+export interface ReceivablePaymentPeriodIndex {
+    tenantById: Map<string, Tenant>;
+    direct: Map<string, ReceivablePaymentPeriodSummary>;
+    root: Map<string, ReceivablePaymentPeriodSummary>;
+    orphanName: Map<string, ReceivablePaymentPeriodSummary>;
+}
+
+export type BuildReceivablePaymentPeriodIndexOptions = {
+    /** 默认 false：保留财务表语义，多账期流水在每个账期计入整笔金额。 */
+    splitMultiPeriodAmount?: boolean;
+};
+
+const EMPTY_PAYMENT_PERIOD_SUMMARY: ReceivablePaymentPeriodSummary = {
+    amount: 0,
+    count: 0,
+    hasPaymentDateInPeriod: false,
+};
+
+const paymentPeriodIndexKey = (
+    kind: ReceivablePaymentKind,
+    identity: string,
+    periodYYYYMM: string
+): string => `${kind}###${identity}###${periodYYYYMM}`;
+
+const paymentKindForReceivableIndex = (type: PaymentRecord['type']): ReceivablePaymentKind | null => {
+    if (type === 'Rent' || type === 'DepositToRent') return 'rent';
+    if (type === 'ManagementFee') return 'management_fee';
+    return null;
+};
+
+const addPaymentPeriodSummary = (
+    map: Map<string, ReceivablePaymentPeriodSummary>,
+    key: string,
+    amount: number,
+    hasPaymentDateInPeriod: boolean
+): void => {
+    const prev = map.get(key);
+    if (prev) {
+        prev.amount += amount;
+        prev.count += 1;
+        prev.hasPaymentDateInPeriod = prev.hasPaymentDateInPeriod || hasPaymentDateInPeriod;
+        return;
+    }
+    map.set(key, {
+        amount,
+        count: 1,
+        hasPaymentDateInPeriod,
+    });
+};
+
+const mergePaymentPeriodSummary = (
+    target: ReceivablePaymentPeriodSummary,
+    source: ReceivablePaymentPeriodSummary | undefined
+): void => {
+    if (!source) return;
+    target.amount += source.amount;
+    target.count += source.count;
+    target.hasPaymentDateInPeriod = target.hasPaymentDateInPeriod || source.hasPaymentDateInPeriod;
+};
+
+export function buildReceivablePaymentPeriodIndex(
+    payments: PaymentRecord[],
+    tenants: Tenant[],
+    options: BuildReceivablePaymentPeriodIndexOptions = {}
+): ReceivablePaymentPeriodIndex {
+    const tenantById = new Map<string, Tenant>();
+    for (const tenant of tenants) tenantById.set(tenant.id, tenant);
+
+    const index: ReceivablePaymentPeriodIndex = {
+        tenantById,
+        direct: new Map(),
+        root: new Map(),
+        orphanName: new Map(),
+    };
+
+    for (const payment of payments) {
+        const kind = paymentKindForReceivableIndex(payment.type);
+        if (!kind) continue;
+        const directTenantId = String(payment.tenantId || '');
+        if (!directTenantId) continue;
+        const periods = parsePaymentPeriodYYYYMMs(payment.period);
+        const targetPeriods = periods.length > 0 ? periods : payment.date ? [payment.date.slice(0, 7)] : [];
+        if (targetPeriods.length === 0) continue;
+        const amountPerPeriod =
+            options.splitMultiPeriodAmount && periods.length > 0
+                ? payment.amount / periods.length
+                : payment.amount;
+
+        const payTenant = tenantById.get(directTenantId);
+        const rootId = payTenant ? (payTenant.rootId || payTenant.id) : null;
+        const orphanNameKey =
+            !payTenant && payment.tenantName != null && String(payment.tenantName).trim() !== ''
+                ? normalizeBudgetRowKeyPart(payment.tenantName)
+                : '';
+
+        for (const periodYYYYMM of targetPeriods) {
+            if (!/^\d{4}-\d{2}$/.test(periodYYYYMM)) continue;
+            const hasPaymentDateInPeriod = !!payment.date && payment.date.startsWith(periodYYYYMM);
+            addPaymentPeriodSummary(
+                index.direct,
+                paymentPeriodIndexKey(kind, directTenantId, periodYYYYMM),
+                amountPerPeriod,
+                hasPaymentDateInPeriod
+            );
+            if (rootId) {
+                addPaymentPeriodSummary(
+                    index.root,
+                    paymentPeriodIndexKey(kind, rootId, periodYYYYMM),
+                    amountPerPeriod,
+                    hasPaymentDateInPeriod
+                );
+            } else if (orphanNameKey) {
+                addPaymentPeriodSummary(
+                    index.orphanName,
+                    paymentPeriodIndexKey(kind, orphanNameKey, periodYYYYMM),
+                    amountPerPeriod,
+                    hasPaymentDateInPeriod
+                );
+            }
+        }
+    }
+
+    return index;
+}
+
+export function getReceivablePaymentPeriodSummary(
+    index: ReceivablePaymentPeriodIndex,
+    billingTenantId: string,
+    periodYYYYMM: string,
+    kind: ReceivablePaymentKind
+): ReceivablePaymentPeriodSummary {
+    if (!billingTenantId || !periodYYYYMM) return EMPTY_PAYMENT_PERIOD_SUMMARY;
+    const billReal = realTenantIdFromDeferInDisplayTenantId(billingTenantId);
+    const billId = billReal ?? billingTenantId;
+    const billTenant = index.tenantById.get(billId);
+    const summary: ReceivablePaymentPeriodSummary = {
+        amount: 0,
+        count: 0,
+        hasPaymentDateInPeriod: false,
+    };
+
+    if (billTenant) {
+        const billRoot = billTenant.rootId || billTenant.id;
+        mergePaymentPeriodSummary(
+            summary,
+            index.root.get(paymentPeriodIndexKey(kind, billRoot, periodYYYYMM))
+        );
+        mergePaymentPeriodSummary(
+            summary,
+            index.orphanName.get(
+                paymentPeriodIndexKey(kind, normalizeBudgetRowKeyPart(billTenant.name), periodYYYYMM)
+            )
+        );
+        if (billingTenantId !== billId) {
+            mergePaymentPeriodSummary(
+                summary,
+                index.direct.get(paymentPeriodIndexKey(kind, billingTenantId, periodYYYYMM))
+            );
+        }
+    } else {
+        mergePaymentPeriodSummary(
+            summary,
+            index.direct.get(paymentPeriodIndexKey(kind, billingTenantId, periodYYYYMM))
+        );
+        if (billReal && billReal !== billingTenantId) {
+            mergePaymentPeriodSummary(
+                summary,
+                index.direct.get(paymentPeriodIndexKey(kind, billReal, periodYYYYMM))
+            );
+        }
+    }
+
+    return {
+        amount: roundMoney2(summary.amount),
+        count: summary.count,
+        hasPaymentDateInPeriod: summary.hasPaymentDateInPeriod,
+    };
+}
+
+export function sumReceivablePaymentAmountForPeriod(
+    index: ReceivablePaymentPeriodIndex,
+    billingTenantId: string,
+    periodYYYYMM: string,
+    kind: ReceivablePaymentKind = 'rent'
+): number {
+    return getReceivablePaymentPeriodSummary(index, billingTenantId, periodYYYYMM, kind).amount;
+}
+
+type TenantLookupSource = Tenant[] | Map<string, Tenant>;
+
+const tenantByIdFromLookupSource = (source: TenantLookupSource): Map<string, Tenant> => {
+    if (source instanceof Map) return source;
+    const tenantById = new Map<string, Tenant>();
+    for (const tenant of source) tenantById.set(tenant.id, tenant);
+    return tenantById;
+};
+
 export function paymentTenantMatchesBillingTenant(
     paymentTenantId: string,
     billingTenantId: string,
-    tenantList: Tenant[],
+    tenantList: TenantLookupSource,
     paymentTenantName?: string | null
 ): boolean {
     if (paymentTenantId === billingTenantId) return true;
@@ -182,8 +387,9 @@ export function paymentTenantMatchesBillingTenant(
     const billId = billReal ?? billingTenantId;
     if (billReal && paymentTenantId === billReal) return true;
 
-    const billT = tenantList.find((t) => t.id === billId);
-    const payT = tenantList.find((t) => t.id === paymentTenantId);
+    const tenantById = tenantByIdFromLookupSource(tenantList);
+    const billT = tenantById.get(billId);
+    const payT = tenantById.get(paymentTenantId);
 
     // 与预算表「实际」列一致：流水的 tenantId 已不在当前租户列表时，按客户名称回退（续签换 id、历史流水未改 tenantId）
     if (billT && !payT && paymentTenantName != null && String(paymentTenantName).trim() !== '') {
@@ -228,10 +434,11 @@ export function sumManagementFeePaymentsAllocatedToBillingTenant(
     paymentsByTenantId: Map<string, PaymentRecord[]>,
 ): number {
     let sum = 0;
+    const tenantById = tenantByIdFromLookupSource(tenantList);
     for (const list of paymentsByTenantId.values()) {
         for (const p of list) {
             if (p.type !== 'ManagementFee') continue;
-            if (!paymentTenantMatchesBillingTenant(p.tenantId, billingTenantId, tenantList, p.tenantName)) continue;
+            if (!paymentTenantMatchesBillingTenant(p.tenantId, billingTenantId, tenantById, p.tenantName)) continue;
             sum += paymentAllocatedAmountForBillingPeriod(p, periodYYYYMM);
         }
     }
@@ -245,10 +452,11 @@ export function sumRentPaymentsAllocatedToBillingTenant(
     paymentsByTenantId: Map<string, PaymentRecord[]>
 ): number {
     let sum = 0;
+    const tenantById = tenantByIdFromLookupSource(tenantList);
     for (const list of paymentsByTenantId.values()) {
         for (const p of list) {
             if (p.type !== 'Rent' && p.type !== 'DepositToRent') continue;
-            if (!paymentTenantMatchesBillingTenant(p.tenantId, billingTenantId, tenantList, p.tenantName)) continue;
+            if (!paymentTenantMatchesBillingTenant(p.tenantId, billingTenantId, tenantById, p.tenantName)) continue;
             sum += paymentAllocatedAmountForBillingPeriod(p, periodYYYYMM);
         }
     }
@@ -447,11 +655,13 @@ export function applyBillingPeriodDeferNotes(
     const entries = parseDeferBillingNoteEntries(notes);
     if (entries.length === 0) return details;
 
+    const tenantById = new Map<string, Tenant>();
+    for (const tenant of allTenants) tenantById.set(tenant.id, tenant);
     const copy = details.map((d) => ({ ...d }));
     const idx = new Map(copy.map((d, i) => [d.tenantId, i] as const));
 
     for (const e of entries) {
-        const tenantForEntry = allTenants.find((x) => x.id === e.tenantId);
+        const tenantForEntry = tenantById.get(e.tenantId);
         if (tenantForEntry?.isSpecialBusiness) continue;
         const toPeriodLabel = `${e.toYear}-${String(e.toMonth + 1).padStart(2, '0')}`;
         const fromPeriodLabel = `${e.fromYear}-${String(e.fromMonth + 1).padStart(2, '0')}`;
@@ -469,14 +679,14 @@ export function applyBillingPeriodDeferNotes(
     const toEntries = entries
         .filter((e) => {
             if (e.toYear !== year || e.toMonth !== month) return false;
-            const t = allTenants.find((x) => x.id === e.tenantId);
+            const t = tenantById.get(e.tenantId);
             return !t?.isSpecialBusiness;
         })
         .sort((a, b) => a.noteKey.localeCompare(b.noteKey));
 
     const deferSyntheticByReal = new Map<string, BillingDetail[]>();
     for (const e of toEntries) {
-        const t = allTenants.find((x) => x.id === e.tenantId);
+        const t = tenantById.get(e.tenantId);
         const fromLbl = `${e.fromYear}-${String(e.fromMonth + 1).padStart(2, '0')}`;
         const displayId = deferInDisplayTenantId(e.tenantId, e.noteKey);
         const baseIdx = idx.get(e.tenantId);
@@ -509,7 +719,7 @@ export function applyBillingPeriodDeferNotes(
     }
 
     for (const [tid, list] of deferSyntheticByReal) {
-        const t = allTenants.find((x) => x.id === tid);
+        const t = tenantById.get(tid);
         const stub: BillingDetail = {
             tenantId: tid,
             tenantName: t?.name || '',
@@ -725,6 +935,27 @@ export function classifyReceivableRow(
     return 'unsettled';
 }
 
+export function classifyReceivableRowFromPaymentIndex(
+    d: BillingDetail,
+    receivableMonth: string,
+    paymentIndex: ReceivablePaymentPeriodIndex
+): ReceivableListBucket {
+    if ((d.deferredAmount ?? 0) > 0.005 && !!(d.deferredToPeriod && String(d.deferredToPeriod).trim())) {
+        return 'deferred';
+    }
+    const remaining = normalizeReceivableRemaining(d.amountDue - d.amountPaid);
+    if (d.status === 'Unpaid' || d.status === 'Partial' || d.status === 'Overdue' || remaining > 0) {
+        return 'unsettled';
+    }
+    if (d.status === 'Paid' || remaining <= 0) {
+        const kind: ReceivablePaymentKind = d.feeKind === 'management_fee' ? 'management_fee' : 'rent';
+        const matched = getReceivablePaymentPeriodSummary(paymentIndex, d.tenantId, receivableMonth, kind);
+        if (matched.count === 0) return 'settled_this_month';
+        return matched.hasPaymentDateInPeriod ? 'settled_this_month' : 'prepaid';
+    }
+    return 'unsettled';
+}
+
 export interface ReceivableSectionEntry {
     item: BillingDetail;
     i: number;
@@ -765,4 +996,87 @@ export function buildReceivableSections(
     prepaid.sort(byIdx);
     deferred.sort(byIdx);
     return { unsettled, settledThisMonth, prepaid, deferred };
+}
+
+function deferredTargetCollectionFromIndex(
+    detail: BillingDetail,
+    paymentIndex: ReceivablePaymentPeriodIndex
+): number {
+    const deferredAmount = detail.deferredAmount ?? 0;
+    const targetPeriod = detail.deferredToPeriod;
+    if (deferredAmount <= 0.005 || !targetPeriod) return 0;
+    return Math.min(
+        deferredAmount,
+        sumReceivablePaymentAmountForPeriod(paymentIndex, detail.tenantId, targetPeriod, 'rent')
+    );
+}
+
+function effectiveReceivablePaidFromIndex(
+    detail: BillingDetail,
+    paymentIndex: ReceivablePaymentPeriodIndex
+): number {
+    return roundMoney2((detail.amountPaid ?? 0) + deferredTargetCollectionFromIndex(detail, paymentIndex));
+}
+
+/** 与 FinanceManager 应收列表一致：基于已建索引单次分组，避免筛选视图中重复扫描收款流水。 */
+export function buildReceivableSectionsFromPaymentIndex(
+    rows: BillingDetail[],
+    receivableMonth: string,
+    paymentIndex: ReceivablePaymentPeriodIndex
+): ReceivableSections {
+    const unsettled: ReceivableSectionEntry[] = [];
+    const settledThisMonth: ReceivableSectionEntry[] = [];
+    const prepaid: ReceivableSectionEntry[] = [];
+    const deferred: ReceivableSectionEntry[] = [];
+    if (!receivableMonth) {
+        return { unsettled, settledThisMonth, prepaid, deferred };
+    }
+    rows.forEach((item, i) => {
+        const entry: ReceivableSectionEntry = { item, i };
+        if (
+            (item.deferredAmount ?? 0) > 0.005 &&
+            item.deferredToPeriod &&
+            isReceivableTailSettled(receivableBudgetDisplay(item), effectiveReceivablePaidFromIndex(item, paymentIndex))
+        ) {
+            settledThisMonth.push(entry);
+            return;
+        }
+        const bucket = classifyReceivableRowFromPaymentIndex(item, receivableMonth, paymentIndex);
+        if (bucket === 'unsettled') unsettled.push(entry);
+        else if (bucket === 'deferred') deferred.push(entry);
+        else if (bucket === 'prepaid') prepaid.push(entry);
+        else settledThisMonth.push(entry);
+    });
+    return { unsettled, settledThisMonth, prepaid, deferred };
+}
+
+export type ReceivableSectionFilter = 'all' | 'pending' | 'deferred' | 'settled';
+
+export function filterReceivableSectionsByBucket(
+    sections: ReceivableSections,
+    filter: ReceivableSectionFilter
+): ReceivableSections {
+    if (filter === 'all') return sections;
+    if (filter === 'pending') {
+        return {
+            unsettled: sections.unsettled,
+            deferred: [],
+            settledThisMonth: [],
+            prepaid: [],
+        };
+    }
+    if (filter === 'deferred') {
+        return {
+            unsettled: [],
+            deferred: sections.deferred,
+            settledThisMonth: [],
+            prepaid: [],
+        };
+    }
+    return {
+        unsettled: [],
+        deferred: [],
+        settledThisMonth: sections.settledThisMonth,
+        prepaid: sections.prepaid,
+    };
 }

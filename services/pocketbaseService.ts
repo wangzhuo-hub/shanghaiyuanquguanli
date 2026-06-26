@@ -9,6 +9,7 @@ import {
 import type { IntegrationFullSnapshotV1 } from './integrationSnapshot';
 import { INTEGRATION_FULL_SNAPSHOT_KIND } from './integrationSnapshot';
 import type { DirtyPayload } from './dirtyTracker';
+import { clearCurrentCloudAuthToken, setCurrentCloudAuthToken } from './cloudAuthToken';
 
 /**
  * RecordMeta —— 增量保存的「行级乐观锁基准表」
@@ -77,6 +78,56 @@ const errStatus = (e: unknown): number | undefined => {
 const isDuplicateKeyError = (e: unknown): boolean => {
     const msg = errMsg(e).toLowerCase();
     return msg.includes('unique') || msg.includes('not_unique');
+};
+
+const deepEqualComparable = (a: unknown, b: unknown): boolean => {
+    if (a === b) return true;
+    if (a === null || b === null || a === undefined || b === undefined) return a === b;
+    if (typeof a !== typeof b) return false;
+    if (typeof a !== 'object') return false;
+    if (Array.isArray(a) !== Array.isArray(b)) return false;
+    if (Array.isArray(a) && Array.isArray(b)) {
+        if (a.length !== b.length) return false;
+        for (let i = 0; i < a.length; i += 1) {
+            if (!deepEqualComparable(a[i], b[i])) return false;
+        }
+        return true;
+    }
+    const ak = Object.keys(a as Record<string, unknown>).sort();
+    const bk = Object.keys(b as Record<string, unknown>).sort();
+    if (ak.length !== bk.length) return false;
+    for (let i = 0; i < ak.length; i += 1) {
+        if (ak[i] !== bk[i]) return false;
+        if (!deepEqualComparable((a as any)[ak[i]], (b as any)[bk[i]])) return false;
+    }
+    return true;
+};
+
+const createDataMatchesExistingRecord = (
+    existing: Record<string, any>,
+    data: Record<string, any>
+): boolean => {
+    for (const [field, value] of Object.entries(data)) {
+        if (field === 'id' || value === undefined) continue;
+        if (!deepEqualComparable(existing[field], value)) return false;
+    }
+    return true;
+};
+
+const normalizeCreateDataForPocketBase = (
+    collection: string,
+    projectId: string,
+    rawData: Record<string, any>
+): Record<string, any> => {
+    const data: Record<string, any> = { project_id: projectId, ...rawData };
+    if (data.id !== undefined && data.original_id === undefined) {
+        data.original_id = data.id;
+    }
+    delete data.id;
+    if (collection === 'pb_yearly_targets' || collection === 'pb_monthly_init_data') {
+        delete data.original_id;
+    }
+    return data;
 };
 
 const isGenericPbProcessingError = (e: unknown): boolean => {
@@ -365,6 +416,73 @@ export const getCurrentAuthUser = (): AuthUser | null => {
     return mapAuthUser(pb?.authStore?.model as Record<string, unknown> | null);
 };
 
+export const getCurrentAuthToken = (): string => {
+    const token = String(pb?.authStore?.token || '').trim();
+    setCurrentCloudAuthToken(token);
+    return token;
+};
+
+const readCookieValue = (name: string): string => {
+    if (typeof document === 'undefined') return '';
+    const prefix = `${name}=`;
+    const item = document.cookie
+        .split(';')
+        .map((part) => part.trim())
+        .find((part) => part.startsWith(prefix));
+    if (!item) return '';
+    try {
+        return decodeURIComponent(item.slice(prefix.length));
+    } catch {
+        return item.slice(prefix.length);
+    }
+};
+
+const expireCookie = (name: string): void => {
+    if (typeof document === 'undefined') return;
+    const attrs = 'Path=/; Max-Age=0; SameSite=Lax';
+    document.cookie = `${name}=; ${attrs}`;
+    const host = typeof window !== 'undefined' ? window.location.hostname : '';
+    const parts = host.split('.').filter(Boolean);
+    if (parts.length >= 2) {
+        const rootDomain = `.${parts.slice(-2).join('.')}`;
+        document.cookie = `${name}=; Domain=${rootDomain}; ${attrs}`;
+    }
+};
+
+export const restorePocketBaseSessionFromCookie = async (): Promise<{ success: boolean; user?: AuthUser; message: string }> => {
+    if (!pb) return { success: false, message: 'PocketBase 未初始化' };
+    const token = readCookieValue('kd_token');
+    if (!token) return { success: false, message: '未检测到小程序 SSO cookie' };
+
+    const previousToken = String(pb.authStore?.token || '').trim();
+    const previousModel = pb.authStore?.model as Parameters<typeof pb.authStore.save>[1] | null;
+
+    try {
+        pb.authStore.save(token, null);
+        setCurrentCloudAuthToken(token);
+        const refreshed = await pb.collection('users').authRefresh();
+        const user = mapAuthUser(refreshed.record);
+        if (!user?.enabled) throw new Error('账号已停用，请联系管理员');
+        if (!user.projectId && user.allowedProjectIds.length === 0) {
+            throw new Error('账号未绑定园区，请联系管理员');
+        }
+        pb.authStore.save(String(pb.authStore.token || token), refreshed.record as Parameters<typeof pb.authStore.save>[1]);
+        expireCookie('kd_token');
+        setCurrentCloudAuthToken(pb.authStore.token);
+        return { success: true, user, message: '小程序 SSO 登录成功' };
+    } catch (e: unknown) {
+        expireCookie('kd_token');
+        if (previousToken) {
+            pb.authStore.save(previousToken, previousModel ?? undefined);
+            setCurrentCloudAuthToken(previousToken);
+        } else {
+            pb.authStore.clear();
+            clearCurrentCloudAuthToken();
+        }
+        return { success: false, message: errMsg(e) || '小程序 SSO 登录失败' };
+    }
+};
+
 export const isAuthenticated = (): boolean => {
     const user = getCurrentAuthUser();
     return !!pb?.authStore?.isValid && !!user?.enabled && !!user.projectId;
@@ -384,12 +502,15 @@ export const authenticatePocketBaseUser = async (
         const user = mapAuthUser(authData.record);
         if (!user?.enabled) {
             pb.authStore.clear();
+            clearCurrentCloudAuthToken();
             return { success: false, message: '账号已停用，请联系管理员' };
         }
         if (!user.projectId) {
             pb.authStore.clear();
+            clearCurrentCloudAuthToken();
             return { success: false, message: '账号未绑定园区，请联系管理员' };
         }
+        setCurrentCloudAuthToken(pb.authStore.token);
         return { success: true, user, message: '登录成功' };
     } catch (e: unknown) {
         const status = errStatus(e);
@@ -405,6 +526,7 @@ export const authenticatePocketBaseUser = async (
 
 export const logoutPocketBase = () => {
     pb?.authStore?.clear();
+    clearCurrentCloudAuthToken();
 };
 
 /** MCP / 外部 Agent：用已登录用户的 token 恢复 pocketbaseService 单例会话（与前端同一 pb 客户端） */
@@ -416,6 +538,7 @@ export const restorePocketBaseUserSession = (
     initPocketBase(url);
     if (!pb) throw new Error('PocketBase 未初始化');
     pb.authStore.save(token, (model as Parameters<typeof pb.authStore.save>[1]) ?? undefined);
+    setCurrentCloudAuthToken(token);
 };
 
 export const fetchAuthorizedParks = async (): Promise<{ success: boolean; parks: ParkInfo[]; message: string }> => {
@@ -1599,14 +1722,153 @@ export const fetchPocketBaseBackup = async (
     // https://github.com/pocketbase/js-sdk#auto-cancellation
     const noAutoCancel = { requestKey: null };
 
-    const mapList = async (collection: string, extraFilter?: string, _batchSize?: number) => {
+    const metaFields = (...fields: string[]) => ['id', 'updated', ...fields].join(',');
+    const backupFieldsByCollection: Record<string, string> = {
+        pb_buildings: metaFields('original_id', 'name', 'type'),
+        pb_units: metaFields('original_id', 'building_id', 'name', 'area', 'status', 'floor', 'is_self_use'),
+        pb_tenants: metaFields(
+            'original_id',
+            'root_id',
+            'name',
+            'source_agent_name',
+            'contact_info',
+            'industry',
+            'founding_date',
+            'legal_rep_name',
+            'legal_rep_birthday',
+            'contact_name',
+            'contact_birthday',
+            'building_id',
+            'unit_ids',
+            'total_area',
+            'signing_date',
+            'lease_start',
+            'lease_end',
+            'move_in_date',
+            'unit_price',
+            'unit_price_mode',
+            'project_id',
+            'monthly_rent',
+            'rent_free_periods',
+            'rent_reductions',
+            'payment_cycle',
+            'payment_terms',
+            'payment_cycle_months',
+            'first_payment_date',
+            'first_payment_months',
+            'first_receivable_amount',
+            'first_receivable_start_date',
+            'first_receivable_end_date',
+            'free_rent_handling',
+            'deposit_amount',
+            'deposit_status',
+            'status',
+            'termination_date',
+            'termination_type',
+            'termination_reason',
+            'parent_contract_id',
+            'early_termination_fr_clawback_override',
+            'early_termination_deposit_deduction',
+            'early_termination_other_adjustment',
+            'special_requirements',
+            'is_risk',
+            'is_special_business',
+            'contract_parking_spaces',
+            'actual_parking_spaces',
+            'parking_unit_price',
+            'key_moments',
+            'name_history',
+            'payment_cycle_changes',
+            'payment_period_adjustments',
+            'payment_period_shift_months',
+            'management_fee_enabled',
+            'management_fee_exempt',
+            'management_fee_free_periods',
+            'management_fee_unit_price',
+            'management_fee_unit_price_mode',
+            'management_fee_monthly_amount',
+            'management_fee_first_payment_date',
+            'management_fee_start_with_occupancy',
+            'management_fee_start_date',
+        ),
+        pb_payments: metaFields('original_id', 'tenant_id', 'tenant_name', 'amount', 'type', 'date', 'period', 'status', 'invoice_status', 'remarks'),
+        pb_invoices: metaFields('original_id', 'tenant_id', 'bill_date', 'target_invoice_date', 'amount', 'status', 'invoiced_at', 'defer_reason'),
+        pb_yearly_targets: metaFields('year', 'revenue', 'occupancy', 'initial_budget'),
+        pb_monthly_init_data: metaFields('year', 'month', 'revenue_target', 'revenue_collected', 'occupancy_rate', 'accumulated_arrears', 'initial_budget'),
+        pb_budget_assumptions: metaFields(
+            'original_id',
+            'target_type',
+            'target_id',
+            'target_name',
+            'strategy',
+            'projected_termination_date',
+            'vacancy_gap_months',
+            'projected_sign_date',
+            'projected_unit_price',
+            'projected_rent_free_months',
+            'billing_cycle_shift_months',
+            'price_adjustment',
+            'payment_shift',
+        ),
+        pb_budget_adjustments: metaFields(
+            'original_id',
+            'tenant_id',
+            'tenant_name',
+            'original_year',
+            'original_month',
+            'adjusted_year',
+            'adjusted_month',
+            'amount',
+            'reason',
+            'adjustment_kind',
+        ),
+        pb_budget_scenarios: metaFields(
+            'original_id',
+            'name',
+            'budget_year',
+            'description',
+            'scenario_created_at',
+            'is_active',
+            'assumptions',
+            'adjustments',
+            'base_data_snapshot',
+        ),
+    };
+
+    const mapList = async (collection: string, extraFilter?: string, batchSize = 1000) => {
         const parts = [`project_id = "${escFilter(projectId)}"`];
         if (extraFilter) parts.push(extraFilter);
         const filter = parts.join(' && ');
         return client.collection(collection).getFullList({
             filter,
+            fields: backupFieldsByCollection[collection],
+            batch: batchSize,
             ...noAutoCancel,
         });
+    };
+
+    const inTextDateWindow = (row: Record<string, unknown>, field: string, range: { from: string; to?: string }): boolean => {
+        const value = String(row?.[field] || '').slice(0, 10);
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+        if (value < range.from) return false;
+        return range.to ? value <= range.to : true;
+    };
+
+    const mapWindowedList = async (
+        collection: string,
+        dateField: string,
+        extraFilter: string | undefined,
+        range: { from: string; to?: string } | undefined,
+        batchSize = 1000,
+    ) => {
+        const rows = await mapList(collection, extraFilter, batchSize);
+        if (!extraFilter || !range || rows.length > 0) return rows;
+
+        // Production PB has occasionally returned an empty set for text date range filters
+        // while project-only reads still contain matching rows. Fall back to JS filtering so
+        // compute snapshots do not treat a whole year's payments/invoices as missing.
+        const projectRows = await mapList(collection, undefined, batchSize);
+        return projectRows.filter((row: Record<string, unknown>) => inTextDateWindow(row, dateField, range));
     };
 
     // year：精确单年（compute-engine 用）；sinceYear：按年窗口加载（前端用，含该年及以后）；
@@ -1618,10 +1880,20 @@ export const fetchPocketBaseBackup = async (
         : sinceYear
         ? `date >= "${sinceYear}-01-01"`
         : undefined;
+    const paymentDateWindow = options?.year
+        ? { from: `${options.year}-01-01`, to: `${options.year}-12-31` }
+        : sinceYear
+        ? { from: `${sinceYear}-01-01` }
+        : undefined;
     const invoiceYearFilter = options?.year
         ? `bill_date >= "${options.year}-01-01" && bill_date <= "${options.year}-12-31"`
         : sinceYear
         ? `bill_date >= "${sinceYear}-01-01"`
+        : undefined;
+    const invoiceDateWindow = options?.year
+        ? { from: `${options.year}-01-01`, to: `${options.year}-12-31` }
+        : sinceYear
+        ? { from: `${sinceYear}-01-01` }
         : undefined;
 
     try {
@@ -1643,8 +1915,8 @@ export const fetchPocketBaseBackup = async (
             mapList('pb_buildings'),
             mapList('pb_units'),
             mapList('pb_tenants'),
-            mapList('pb_payments', paymentYearFilter),
-            mapList('pb_invoices', invoiceYearFilter),
+            mapWindowedList('pb_payments', 'date', paymentYearFilter, paymentDateWindow),
+            mapWindowedList('pb_invoices', 'bill_date', invoiceYearFilter, invoiceDateWindow),
             mapList('pb_yearly_targets'),
             mapList('pb_monthly_init_data'),
             mapList('pb_budget_assumptions'),
@@ -1652,6 +1924,7 @@ export const fetchPocketBaseBackup = async (
             mapList('pb_budget_scenarios'),
             client.collection('pb_billing_period_notes').getList(1, 1, {
                 filter: `project_id = "${escFilter(projectId)}" && original_id = "billing_period_notes"`,
+                fields: 'notes_json,updated',
                 ...noAutoCancel,
             }),
             client.collection('pb_billing_period_notes').getList(1, 1, {
@@ -1662,7 +1935,7 @@ export const fetchPocketBaseBackup = async (
             // 已封账历史月（pb_sealed_months）。容错：集合不存在/未迁移时回退空数组，不影响整体加载。
             client.collection('pb_sealed_months').getFullList({
                 filter: `project_id = "${escFilter(projectId)}"`,
-                fields: 'sealed_year,sealed_month,arrears_increment,cumulative_arrears',
+                fields: 'sealed_year,sealed_month,arrears_increment,cumulative_arrears,details_json',
                 ...noAutoCancel,
             }).catch(() => [] as any[]),
         ]);
@@ -1886,6 +2159,7 @@ export const fetchPocketBaseBackup = async (
                 month: Number(s.sealed_month),
                 arrearsIncrement: Number(s.arrears_increment) || 0,
                 cumulativeArrears: Number(s.cumulative_arrears) || 0,
+                billingDetails: Array.isArray(s.details_json) ? s.details_json : undefined,
             })),
         };
 
@@ -2201,26 +2475,8 @@ export const saveIncrementalToPocketBase = async (
     for (const [collection, bucket] of Object.entries(payload)) {
         // -------- creates --------
         for (const c of bucket.creates) {
+            const data = normalizeCreateDataForPocketBase(collection, projectId, c.data);
             try {
-                // create 数据中确保挂上 project_id；调用方一般已经填好，这里兜底
-                const data: Record<string, any> = { project_id: projectId, ...c.data };
-                // 业务主键命名差异：data 里可能用 `id`（业务主键），需映射为 `original_id`
-                if (data.id !== undefined && data.original_id === undefined) {
-                    data.original_id = data.id;
-                }
-                // PocketBase 的 `id` 字段是它自己的内部主键，不能由我们指定（除非 schema 允许）。
-                // 删除 data.id 避免冲突；保留 original_id。
-                delete data.id;
-
-                // 对没有 original_id 字段的集合（yearly_targets / monthly_init_data）
-                // 反过来要清掉 original_id，避免 schema 校验报错
-                if (
-                    collection === 'pb_yearly_targets' ||
-                    collection === 'pb_monthly_init_data'
-                ) {
-                    delete data.original_id;
-                }
-
                 const created = await client.collection(collection).create(data);
                 applied.push({
                     collection,
@@ -2233,13 +2489,22 @@ export const saveIncrementalToPocketBase = async (
                 if (isDuplicateKeyError(e)) {
                     try {
                         const existing = await findOne(collection, c.originalId);
-                        if (existing) {
+                        if (existing && createDataMatchesExistingRecord(existing, data)) {
                             applied.push({
                                 collection,
                                 originalId: c.originalId,
                                 op: 'create',
                                 newUpdated:
                                     typeof existing.updated === 'string' ? existing.updated : null,
+                            });
+                            continue;
+                        }
+                        if (existing) {
+                            errors.push({
+                                collection,
+                                originalId: c.originalId,
+                                op: 'create',
+                                message: 'original_id 已存在，但服务端记录内容与本次新增内容不一致，已阻止幂等合并',
                             });
                             continue;
                         }
@@ -2486,14 +2751,7 @@ const saveBatchToPocketBase = async (
     for (const [collection, bucket] of Object.entries(payload)) {
         // creates
         for (const c of bucket.creates) {
-            const data: Record<string, unknown> = { project_id: projectId, ...c.data };
-            if (data.id !== undefined && data.original_id === undefined) {
-                data.original_id = data.id;
-            }
-            delete data.id;
-            if (collection === 'pb_yearly_targets' || collection === 'pb_monthly_init_data') {
-                delete data.original_id;
-            }
+            const data = normalizeCreateDataForPocketBase(collection, projectId, c.data);
             requests.push({ method: 'POST', url: `/api/collections/${collection}/records`, body: data });
             reqMeta.push({ collection, originalId: c.originalId, op: 'create' });
         }
@@ -2718,6 +2976,28 @@ export const forceOverwriteRecord = async (
             message: '已强制覆盖',
             newUpdated: typeof updated?.updated === 'string' ? updated.updated : undefined,
         };
+    } catch (e: unknown) {
+        return { success: false, message: errMsg(e) || String(e) };
+    }
+};
+
+/** 用户在冲突处理中选择「用我的删除」时，按最新服务端记录强制删除。 */
+export const forceDeleteRecord = async (
+    collection: string,
+    originalId: string,
+    projectId: string
+): Promise<{ success: boolean; message: string }> => {
+    if (!pb) return { success: false, message: 'PocketBase 未初始化' };
+    try {
+        const list = await pb.collection(collection).getList(1, 1, {
+            filter: buildOriginalIdFilter(collection, originalId, projectId),
+        });
+        const server = list.items[0];
+        if (!server) {
+            return { success: true, message: '服务端记录已不存在' };
+        }
+        await pb.collection(collection).delete(server.id);
+        return { success: true, message: '已强制删除' };
     } catch (e: unknown) {
         return { success: false, message: errMsg(e) || String(e) };
     }

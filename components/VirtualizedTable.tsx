@@ -71,7 +71,7 @@ export function VirtualizedTable<T>({
 
     if (rows.length === 0) {
         return (
-            <div className={`flex items-center justify-center py-12 text-gray-400 ${className}`}>
+            <div className={`liquid-shared-empty flex items-center justify-center rounded-[18px] border border-white/70 py-12 text-sm font-semibold text-slate-500 ${className}`}>
                 {emptyMessage}
             </div>
         );
@@ -88,7 +88,7 @@ export function VirtualizedTable<T>({
         <div ref={parentRef} className={`overflow-auto ${className}`} style={{ height }}>
             <table className={tableClassName}>
                 {renderColgroup ? renderColgroup() : null}
-                <thead className="sticky top-0 z-10 bg-white">
+                <thead className="liquid-shared-table-head sticky top-0 z-10">
                     {renderHeader()}
                 </thead>
                 <tbody>

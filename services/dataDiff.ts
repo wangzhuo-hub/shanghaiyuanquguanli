@@ -32,6 +32,43 @@ export type PbRecordMap = Record<string, Record<string, Record<string, any>>>;
 
 const ensureArray = <T,>(value: unknown): T[] => (Array.isArray(value) ? (value as T[]) : []);
 
+export const PB_RECORD_COLLECTIONS = [
+    'pb_buildings',
+    'pb_units',
+    'pb_tenants',
+    'pb_payments',
+    'pb_invoices',
+    'pb_yearly_targets',
+    'pb_monthly_init_data',
+    'pb_budget_assumptions',
+    'pb_budget_adjustments',
+    'pb_budget_scenarios',
+    'pb_billing_period_notes',
+] as const;
+
+export type PbRecordCollection = typeof PB_RECORD_COLLECTIONS[number];
+
+export interface PbRecordMapOptions {
+    /** 只构建指定 PB 集合；未传时保持旧行为，构建完整 map。 */
+    collections?: Iterable<string>;
+}
+
+export interface PbDiffScope {
+    /** 只比较指定 PB 集合；未传时保持旧行为，比较完整 map。 */
+    collections?: Iterable<string>;
+    /** 可选：进一步限制到指定 collection 下的 original_id。 */
+    recordIds?: Record<string, Iterable<string>>;
+}
+
+const emptyPbRecordMap = (collections?: Iterable<string>): PbRecordMap => {
+    const selected = collections ? new Set(Array.from(collections).map(String)) : null;
+    const out: PbRecordMap = {};
+    for (const collection of PB_RECORD_COLLECTIONS) {
+        if (!selected || selected.has(collection)) out[collection] = {};
+    }
+    return out;
+};
+
 /** 判等：忽略字段顺序，递归比较对象/数组 */
 const deepEqual = (a: unknown, b: unknown): boolean => {
     if (a === b) return true;
@@ -65,238 +102,251 @@ const NON_DIFF_FIELDS = new Set(['project_id', 'original_id']);
  */
 export function dashboardDataToPbRecords(
     data: DashboardData,
-    projectId: string
+    projectId: string,
+    options?: PbRecordMapOptions,
 ): PbRecordMap {
-    const out: PbRecordMap = {
-        pb_buildings: {},
-        pb_units: {},
-        pb_tenants: {},
-        pb_payments: {},
-        pb_invoices: {},
-        pb_yearly_targets: {},
-        pb_monthly_init_data: {},
-        pb_budget_assumptions: {},
-        pb_budget_adjustments: {},
-        pb_budget_scenarios: {},
-        pb_billing_period_notes: {},
-    };
+    const out = emptyPbRecordMap(options?.collections);
+    const has = (collection: PbRecordCollection): boolean => Object.prototype.hasOwnProperty.call(out, collection);
 
     // ---- buildings + units ----
-    const buildings = ensureArray<any>(data.buildings);
-    for (const b of buildings) {
-        if (!b?.id) continue;
-        out.pb_buildings[b.id] = {
-            original_id: b.id,
-            name: b.name,
-            type: b.type || 'Building',
-            project_id: projectId,
-        };
-        for (const u of ensureArray<any>(b.units)) {
-            if (!u?.id) continue;
-            out.pb_units[u.id] = {
-                original_id: u.id,
-                building_id: b.id,
-                name: u.name,
-                area: u.area || 0,
-                status: u.status || 'Vacant',
-                floor: u.floor || 1,
-                is_self_use: !!u.isSelfUse,
+    if (has('pb_buildings') || has('pb_units')) {
+        const buildings = ensureArray<any>(data.buildings);
+        for (const b of buildings) {
+            if (!b?.id) continue;
+            if (has('pb_buildings')) {
+                out.pb_buildings[b.id] = {
+                    original_id: b.id,
+                    name: b.name,
+                    type: b.type || 'Building',
+                    project_id: projectId,
+                };
+            }
+            if (!has('pb_units')) continue;
+            for (const u of ensureArray<any>(b.units)) {
+                if (!u?.id) continue;
+                out.pb_units[u.id] = {
+                    original_id: u.id,
+                    building_id: b.id,
+                    name: u.name,
+                    area: u.area || 0,
+                    status: u.status || 'Vacant',
+                    floor: u.floor || 1,
+                    is_self_use: !!u.isSelfUse,
+                    project_id: projectId,
+                };
+            }
+        }
+    }
+
+    if (has('pb_tenants')) {
+        // ---- tenants ----
+        for (const t of ensureArray<any>(data.tenants)) {
+            if (!t?.id) continue;
+            out.pb_tenants[t.id] = {
+                original_id: t.id,
+                root_id: t.rootId || '',
+                name: t.name,
+                source_agent_name: t.sourceAgentName || '',
+                contact_info: t.contactInfo || '',
+                industry: t.industry || '',
+                founding_date: t.foundingDate || '',
+                legal_rep_name: t.legalRepName || '',
+                legal_rep_birthday: t.legalRepBirthday || '',
+                contact_name: t.contactName || '',
+                contact_birthday: t.contactBirthday || '',
+                building_id: t.buildingId,
+                unit_ids: t.unitIds || [],
+                total_area: t.totalArea || 0,
+                signing_date: t.signingDate || '',
+                lease_start: t.leaseStart,
+                lease_end: t.leaseEnd,
+                move_in_date: t.moveInDate || '',
+                unit_price: t.unitPrice || 0,
+                unit_price_mode: t.unitPriceMode || 'daily',
+                monthly_rent: t.monthlyRent || 0,
+                rent_free_periods: t.rentFreePeriods || [],
+                rent_reductions: t.rentReductions || [],
+                payment_cycle: t.paymentCycle || 'Monthly',
+                payment_terms: Array.isArray(t.unitTerms) ? t.unitTerms : (Array.isArray(t.paymentTerms) ? t.paymentTerms : []),
+                payment_cycle_months: t.paymentCycleMonths ?? null,
+                first_payment_date: t.firstPaymentDate || '',
+                first_payment_months: t.firstPaymentMonths ?? null,
+                first_receivable_amount: t.firstReceivableAmount ?? null,
+                first_receivable_start_date: t.firstReceivableStartDate || '',
+                first_receivable_end_date: t.firstReceivableEndDate || '',
+                free_rent_handling: t.freeRentHandling || null,
+                deposit_amount: t.depositAmount || 0,
+                deposit_status: t.depositStatus || 'Unpaid',
+                status: t.status || 'Active',
+                termination_date: t.terminationDate || '',
+                termination_type: t.terminationType || null,
+                termination_reason: t.terminationReason || '',
+                early_termination_fr_clawback_override: t.earlyTerminationFreeRentClawbackOverride ?? null,
+                early_termination_deposit_deduction: t.earlyTerminationDepositDeduction ?? null,
+                early_termination_other_adjustment: t.earlyTerminationOtherAdjustment ?? null,
+                special_requirements: t.specialRequirements || '',
+                is_risk: !!t.isRisk,
+                is_special_business: !!t.isSpecialBusiness,
+                contract_parking_spaces: t.contractParkingSpaces ?? t.parkingSpaces ?? 0,
+                actual_parking_spaces: t.actualParkingSpaces ?? t.parkingSpaces ?? 0,
+                parking_unit_price: t.parkingUnitPrice || 0,
+                key_moments: t.keyMoments || [],
+                // 历史/审计：客户改名记录、付款周期变更记录
+                name_history: t.nameHistory || [],
+                payment_cycle_changes: t.paymentCycleChanges || [],
+                // 合同级账期调整 —— 单月微调记录 + 整体平移（合同卡片 ◀▶ 写入的字段）。
+                // 缺失这两项时，diffPbRecords 对账期平移无任何变更可报，导致保存后刷新回退。
+                payment_period_adjustments: t.paymentPeriodAdjustments || [],
+                payment_period_shift_months: t.paymentPeriodShiftMonths ?? 0,
                 project_id: projectId,
             };
         }
     }
 
-    // ---- tenants ----
-    for (const t of ensureArray<any>(data.tenants)) {
-        if (!t?.id) continue;
-        out.pb_tenants[t.id] = {
-            original_id: t.id,
-            root_id: t.rootId || '',
-            name: t.name,
-            source_agent_name: t.sourceAgentName || '',
-            contact_info: t.contactInfo || '',
-            industry: t.industry || '',
-            founding_date: t.foundingDate || '',
-            legal_rep_name: t.legalRepName || '',
-            legal_rep_birthday: t.legalRepBirthday || '',
-            contact_name: t.contactName || '',
-            contact_birthday: t.contactBirthday || '',
-            building_id: t.buildingId,
-            unit_ids: t.unitIds || [],
-            total_area: t.totalArea || 0,
-            signing_date: t.signingDate || '',
-            lease_start: t.leaseStart,
-            lease_end: t.leaseEnd,
-            move_in_date: t.moveInDate || '',
-            unit_price: t.unitPrice || 0,
-            unit_price_mode: t.unitPriceMode || 'daily',
-            monthly_rent: t.monthlyRent || 0,
-            rent_free_periods: t.rentFreePeriods || [],
-            rent_reductions: t.rentReductions || [],
-            payment_cycle: t.paymentCycle || 'Monthly',
-            payment_terms: Array.isArray(t.unitTerms) ? t.unitTerms : (Array.isArray(t.paymentTerms) ? t.paymentTerms : []),
-            payment_cycle_months: t.paymentCycleMonths ?? null,
-            first_payment_date: t.firstPaymentDate || '',
-            first_payment_months: t.firstPaymentMonths ?? null,
-            first_receivable_amount: t.firstReceivableAmount ?? null,
-            first_receivable_start_date: t.firstReceivableStartDate || '',
-            first_receivable_end_date: t.firstReceivableEndDate || '',
-            free_rent_handling: t.freeRentHandling || null,
-            deposit_amount: t.depositAmount || 0,
-            deposit_status: t.depositStatus || 'Unpaid',
-            status: t.status || 'Active',
-            termination_date: t.terminationDate || '',
-            termination_type: t.terminationType || null,
-            termination_reason: t.terminationReason || '',
-            early_termination_fr_clawback_override: t.earlyTerminationFreeRentClawbackOverride ?? null,
-            early_termination_deposit_deduction: t.earlyTerminationDepositDeduction ?? null,
-            early_termination_other_adjustment: t.earlyTerminationOtherAdjustment ?? null,
-            special_requirements: t.specialRequirements || '',
-            is_risk: !!t.isRisk,
-            is_special_business: !!t.isSpecialBusiness,
-            contract_parking_spaces: t.contractParkingSpaces ?? t.parkingSpaces ?? 0,
-            actual_parking_spaces: t.actualParkingSpaces ?? t.parkingSpaces ?? 0,
-            parking_unit_price: t.parkingUnitPrice || 0,
-            key_moments: t.keyMoments || [],
-            // 历史/审计：客户改名记录、付款周期变更记录
-            name_history: t.nameHistory || [],
-            payment_cycle_changes: t.paymentCycleChanges || [],
-            // 合同级账期调整 —— 单月微调记录 + 整体平移（合同卡片 ◀▶ 写入的字段）。
-            // 缺失这两项时，diffPbRecords 对账期平移无任何变更可报，导致保存后刷新回退。
-            payment_period_adjustments: t.paymentPeriodAdjustments || [],
-            payment_period_shift_months: t.paymentPeriodShiftMonths ?? 0,
+    if (has('pb_payments')) {
+        // ---- payments ----
+        for (const p of ensureArray<any>(data.payments)) {
+            if (!p?.id) continue;
+            out.pb_payments[p.id] = {
+                original_id: p.id,
+                tenant_id: p.tenantId,
+                tenant_name: p.tenantName || '',
+                amount: p.amount || 0,
+                type: p.type || 'Rent',
+                date: p.date,
+                status: p.status || 'Pending',
+                invoice_status: p.invoiceStatus || null,
+                period: p.period || '',
+                remarks: p.remarks || '',
+                project_id: projectId,
+            };
+        }
+    }
+
+    if (has('pb_invoices')) {
+        // ---- invoices ----
+        for (const inv of ensureArray<any>(data.invoices)) {
+            if (!inv?.id) continue;
+            out.pb_invoices[inv.id] = {
+                original_id: inv.id,
+                tenant_id: inv.tenantId,
+                bill_date: inv.billDate,
+                target_invoice_date: inv.targetInvoiceDate || '',
+                amount: inv.amount || 0,
+                status: inv.status || 'Pending',
+                invoiced_at: inv.invoicedAt || '',
+                defer_reason: inv.deferReason || '',
+                project_id: projectId,
+            };
+        }
+    }
+
+    if (has('pb_yearly_targets')) {
+        // ---- yearlyTargets（合成 key = year） ----
+        for (const [yearStr, targets] of Object.entries(data.yearlyTargets || {})) {
+            const yearKey = String(yearStr);
+            out.pb_yearly_targets[yearKey] = {
+                year: Number(yearStr),
+                revenue: (targets as any)?.revenue || 0,
+                occupancy: (targets as any)?.occupancy || 0,
+                initial_budget: (targets as any)?.initialBudget ?? 0,
+                project_id: projectId,
+            };
+        }
+    }
+
+    if (has('pb_monthly_init_data')) {
+        // ---- monthlyInitData（合成 key = year_month） ----
+        for (const d of ensureArray<any>(data.initializationData)) {
+            if (d?.year === undefined || d?.month === undefined) continue;
+            const key = `${d.year}_${d.month}`;
+            out.pb_monthly_init_data[key] = {
+                year: d.year,
+                month: d.month,
+                revenue_target: d.revenueTarget || 0,
+                revenue_collected: d.revenueCollected || 0,
+                occupancy_rate: d.occupancyRate || 0,
+                accumulated_arrears: d.accumulatedArrears || 0,
+                initial_budget: d.initialBudget ?? 0,
+                project_id: projectId,
+            };
+        }
+    }
+
+    if (has('pb_budget_assumptions')) {
+        // ---- budgetAssumptions ----
+        for (const a of ensureArray<any>(data.budgetAssumptions)) {
+            if (!a?.id) continue;
+            out.pb_budget_assumptions[a.id] = {
+                original_id: a.id,
+                target_type: a.targetType || null,
+                target_id: a.targetId || '',
+                target_name: a.targetName || '',
+                strategy: a.strategy || null,
+                projected_termination_date: a.projectedTerminationDate || '',
+                vacancy_gap_months: a.vacancyGapMonths ?? null,
+                projected_sign_date: a.projectedSignDate || '',
+                projected_unit_price: a.projectedUnitPrice || 0,
+                projected_rent_free_months: a.projectedRentFreeMonths || 0,
+                billing_cycle_shift_months: a.billingCycleShiftMonths ?? null,
+                price_adjustment: a.priceAdjustment || null,
+                payment_shift: a.paymentShift || null,
+                project_id: projectId,
+            };
+        }
+    }
+
+    if (has('pb_budget_adjustments')) {
+        // ---- budgetAdjustments ----
+        // amount_delta 在业务层用 originalYear/Month = -1 标记；PocketBase 的 original_month 约束为 0–11，-1 会 400，故落库用 null。
+        for (const a of ensureArray<any>(data.budgetAdjustments)) {
+            if (!a?.id) continue;
+            const isAmountDelta =
+                a.adjustmentKind === 'amount_delta' ||
+                (a.originalYear === -1 && a.originalMonth === -1);
+            out.pb_budget_adjustments[a.id] = {
+                original_id: a.id,
+                tenant_id: a.tenantId,
+                tenant_name: a.tenantName || '',
+                original_year: isAmountDelta ? null : a.originalYear,
+                original_month: isAmountDelta ? null : a.originalMonth,
+                adjusted_year: a.adjustedYear,
+                adjusted_month: a.adjustedMonth,
+                amount: a.amount || 0,
+                reason: a.reason || '',
+                adjustment_kind: isAmountDelta ? 'amount_delta' : a.adjustmentKind || 'period_shift',
+                project_id: projectId,
+            };
+        }
+    }
+
+    if (has('pb_budget_scenarios')) {
+        // ---- budgetScenarios ----
+        for (const s of ensureArray<any>(data.budgetScenarios)) {
+            if (!s?.id) continue;
+            out.pb_budget_scenarios[s.id] = {
+                original_id: s.id,
+                name: s.name,
+                budget_year: s.budgetYear ?? new Date().getFullYear(),
+                description: s.description || '',
+                scenario_created_at: s.createdAt || '',
+                is_active: !!s.isActive,
+                assumptions: s.assumptions || [],
+                adjustments: s.adjustments || [],
+                base_data_snapshot: s.baseDataSnapshot || null,
+                project_id: projectId,
+            };
+        }
+    }
+
+    if (has('pb_billing_period_notes')) {
+        // ---- billing_period_notes（单条 JSON）----
+        out.pb_billing_period_notes['billing_period_notes'] = {
+            original_id: 'billing_period_notes',
+            notes_json: data.billingPeriodNotes || {},
             project_id: projectId,
         };
     }
-
-    // ---- payments ----
-    for (const p of ensureArray<any>(data.payments)) {
-        if (!p?.id) continue;
-        out.pb_payments[p.id] = {
-            original_id: p.id,
-            tenant_id: p.tenantId,
-            tenant_name: p.tenantName || '',
-            amount: p.amount || 0,
-            type: p.type || 'Rent',
-            date: p.date,
-            status: p.status || 'Pending',
-            invoice_status: p.invoiceStatus || null,
-            period: p.period || '',
-            remarks: p.remarks || '',
-            project_id: projectId,
-        };
-    }
-
-    // ---- invoices ----
-    for (const inv of ensureArray<any>(data.invoices)) {
-        if (!inv?.id) continue;
-        out.pb_invoices[inv.id] = {
-            original_id: inv.id,
-            tenant_id: inv.tenantId,
-            bill_date: inv.billDate,
-            target_invoice_date: inv.targetInvoiceDate || '',
-            amount: inv.amount || 0,
-            status: inv.status || 'Pending',
-            invoiced_at: inv.invoicedAt || '',
-            defer_reason: inv.deferReason || '',
-            project_id: projectId,
-        };
-    }
-
-    // ---- yearlyTargets（合成 key = year） ----
-    for (const [yearStr, targets] of Object.entries(data.yearlyTargets || {})) {
-        const yearKey = String(yearStr);
-        out.pb_yearly_targets[yearKey] = {
-            year: Number(yearStr),
-            revenue: (targets as any)?.revenue || 0,
-            occupancy: (targets as any)?.occupancy || 0,
-            initial_budget: (targets as any)?.initialBudget ?? 0,
-            project_id: projectId,
-        };
-    }
-
-    // ---- monthlyInitData（合成 key = year_month） ----
-    for (const d of ensureArray<any>(data.initializationData)) {
-        if (d?.year === undefined || d?.month === undefined) continue;
-        const key = `${d.year}_${d.month}`;
-        out.pb_monthly_init_data[key] = {
-            year: d.year,
-            month: d.month,
-            revenue_target: d.revenueTarget || 0,
-            revenue_collected: d.revenueCollected || 0,
-            occupancy_rate: d.occupancyRate || 0,
-            accumulated_arrears: d.accumulatedArrears || 0,
-            initial_budget: d.initialBudget ?? 0,
-            project_id: projectId,
-        };
-    }
-
-    // ---- budgetAssumptions ----
-    for (const a of ensureArray<any>(data.budgetAssumptions)) {
-        if (!a?.id) continue;
-        out.pb_budget_assumptions[a.id] = {
-            original_id: a.id,
-            target_type: a.targetType || null,
-            target_id: a.targetId || '',
-            target_name: a.targetName || '',
-            strategy: a.strategy || null,
-            projected_termination_date: a.projectedTerminationDate || '',
-            vacancy_gap_months: a.vacancyGapMonths ?? null,
-            projected_sign_date: a.projectedSignDate || '',
-            projected_unit_price: a.projectedUnitPrice || 0,
-            projected_rent_free_months: a.projectedRentFreeMonths || 0,
-            billing_cycle_shift_months: a.billingCycleShiftMonths ?? null,
-            price_adjustment: a.priceAdjustment || null,
-            payment_shift: a.paymentShift || null,
-            project_id: projectId,
-        };
-    }
-
-    // ---- budgetAdjustments ----
-    // amount_delta 在业务层用 originalYear/Month = -1 标记；PocketBase 的 original_month 约束为 0–11，-1 会 400，故落库用 null。
-    for (const a of ensureArray<any>(data.budgetAdjustments)) {
-        if (!a?.id) continue;
-        const isAmountDelta =
-            a.adjustmentKind === 'amount_delta' ||
-            (a.originalYear === -1 && a.originalMonth === -1);
-        out.pb_budget_adjustments[a.id] = {
-            original_id: a.id,
-            tenant_id: a.tenantId,
-            tenant_name: a.tenantName || '',
-            original_year: isAmountDelta ? null : a.originalYear,
-            original_month: isAmountDelta ? null : a.originalMonth,
-            adjusted_year: a.adjustedYear,
-            adjusted_month: a.adjustedMonth,
-            amount: a.amount || 0,
-            reason: a.reason || '',
-            adjustment_kind: isAmountDelta ? 'amount_delta' : a.adjustmentKind || 'period_shift',
-            project_id: projectId,
-        };
-    }
-
-    // ---- budgetScenarios ----
-    for (const s of ensureArray<any>(data.budgetScenarios)) {
-        if (!s?.id) continue;
-        out.pb_budget_scenarios[s.id] = {
-            original_id: s.id,
-            name: s.name,
-            budget_year: s.budgetYear ?? new Date().getFullYear(),
-            description: s.description || '',
-            scenario_created_at: s.createdAt || '',
-            is_active: !!s.isActive,
-            assumptions: s.assumptions || [],
-            adjustments: s.adjustments || [],
-            base_data_snapshot: s.baseDataSnapshot || null,
-            project_id: projectId,
-        };
-    }
-
-    // ---- billing_period_notes（单条 JSON）----
-    out.pb_billing_period_notes['billing_period_notes'] = {
-        original_id: 'billing_period_notes',
-        notes_json: data.billingPeriodNotes || {},
-        project_id: projectId,
-    };
 
     return out;
 }
@@ -310,24 +360,36 @@ export function dashboardDataToPbRecords(
  *
  * baseUpdated 从 recordMeta 读取，既可作为乐观锁基准、也可在 PB 端用合成 key 定位。
  */
-export function diffPbRecords(
+function diffPbRecordMaps(
     baseline: PbRecordMap,
     next: PbRecordMap,
-    recordMeta: RecordMeta
+    recordMeta: RecordMeta,
+    scope?: PbDiffScope,
 ): DirtyPayload {
     const payload: DirtyPayload = {};
-    const collections = new Set<string>([
-        ...Object.keys(baseline),
-        ...Object.keys(next),
-    ]);
+    const scopeCollections = scope?.collections
+        ? new Set(Array.from(scope.collections).map(String))
+        : null;
+    const scopedRecordCollections = scope?.recordIds
+        ? new Set(Object.keys(scope.recordIds))
+        : new Set<string>();
+    const collections = scopeCollections
+        ? new Set([...scopeCollections, ...scopedRecordCollections])
+        : new Set<string>([
+            ...Object.keys(baseline),
+            ...Object.keys(next),
+        ]);
 
     for (const collection of collections) {
         const oldRows = baseline[collection] || {};
         const newRows = next[collection] || {};
-        const ids = new Set<string>([
-            ...Object.keys(oldRows),
-            ...Object.keys(newRows),
-        ]);
+        const scopedIds = scope?.recordIds?.[collection];
+        const ids = scopedIds
+            ? new Set(Array.from(scopedIds).map(String))
+            : new Set<string>([
+                ...Object.keys(oldRows),
+                ...Object.keys(newRows),
+            ]);
 
         const creates: DirtyPayload[string]['creates'] = [];
         const updates: DirtyPayload[string]['updates'] = [];
@@ -409,6 +471,23 @@ export function diffPbRecords(
     }
 
     return payload;
+}
+
+export function diffPbRecords(
+    baseline: PbRecordMap,
+    next: PbRecordMap,
+    recordMeta: RecordMeta
+): DirtyPayload {
+    return diffPbRecordMaps(baseline, next, recordMeta);
+}
+
+export function diffPbRecordsScoped(
+    baseline: PbRecordMap,
+    next: PbRecordMap,
+    recordMeta: RecordMeta,
+    scope: PbDiffScope,
+): DirtyPayload {
+    return diffPbRecordMaps(baseline, next, recordMeta, scope);
 }
 
 /** 浅统计：方便日志/调试输出 */

@@ -1,12 +1,15 @@
-import React, { useEffect, useMemo } from 'react';
-import { Calendar, FileText, Info, X } from 'lucide-react';
-import { ContractStatus, type BudgetAdjustment, type BudgetAssumption, type Building, type RentFreePeriod, type Tenant, type Unit } from '../types';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { AlertCircle, Calendar, FileText, Info, X } from 'lucide-react';
+import { ContractStatus, type BudgetAdjustment, type BudgetAssumption, type Building, type CloudConfig, type RentFreePeriod, type Tenant, type Unit } from '../types';
+import type { BudgetedBill } from '../services/billingService';
 import {
     buildVacancyBudgetAlignmentNote,
-    generateBudgetedBills,
     pickVacancyAssumptionsForTenant,
-    type BudgetedBill,
-} from '../services/billingService';
+} from '../services/billingLightweight';
+import { createBudgetedBillCache, type BillGenerationCache } from '../services/billGenerationCache';
+import { fetchCloudBudgetedBillsPreviewBatch } from '../services/cloudComputeClient';
+import { shouldRunLocalBudgetedBillPreviewFallback } from '../services/computeFallbackPolicy';
+import { indexBudgetedBillPreviewBatchResult } from '../services/budgetedBillPreviewBatch';
 import { receivableBudgetMonthForBill } from '../services/receivableListHelpers';
 import { formatArea, formatCurrency } from '../services/numberFormat';
 import {
@@ -16,11 +19,11 @@ import {
     formatYearRentFreeSummary,
     compareUnitNameNumeric,
     tenantUnitsResolved,
-    tenantMergedRoomLabels,
     paymentCycleLabelMap,
     paymentCycleLabel,
     freeRentHandlingLabel,
 } from '../services/sharedUtils';
+import type { ContractSummaryContent } from './contractSummaryHelpers';
 
 const CONTRACT_STATUS_LABEL: Record<ContractStatus, string> = {
     [ContractStatus.Active]: '履约中',
@@ -97,7 +100,7 @@ function buildStockOptimizationOverlayItems(
         if (a.paymentShift?.isActive) {
             items.push({
                 tag: '付款转移',
-                color: 'indigo',
+                color: 'cyan',
                 text: `${a.paymentShift.fromYear}年${a.paymentShift.fromMonth + 1}月 → ${a.paymentShift.toYear}年${a.paymentShift.toMonth + 1}月，金额 ¥${a.paymentShift.amount.toLocaleString()}`,
             });
         }
@@ -108,13 +111,13 @@ function buildStockOptimizationOverlayItems(
         if (isAmt) {
             items.push({
                 tag: '金额调整',
-                color: 'teal',
+                color: 'cyan',
                 text: `${adj.adjustedYear}年${adj.adjustedMonth + 1}月 ${adj.amount >= 0 ? '+' : ''}¥${adj.amount.toLocaleString()}${adj.reason ? `（${adj.reason}）` : ''}`,
             });
         } else {
             items.push({
                 tag: '账期调整',
-                color: 'purple',
+                color: 'cyan',
                 text: `${adj.originalYear}年${adj.originalMonth + 1}月 → ${adj.adjustedYear}年${adj.adjustedMonth + 1}月${adj.reason ? `（${adj.reason}）` : ''}`,
             });
         }
@@ -123,31 +126,10 @@ function buildStockOptimizationOverlayItems(
 }
 
 const OVERLAY_TAG_COLOR_MAP: Record<string, string> = {
-    amber: 'bg-amber-50 text-amber-800 border-amber-200',
-    blue: 'bg-blue-50 text-blue-800 border-blue-200',
-    indigo: 'bg-indigo-50 text-indigo-800 border-indigo-200',
-    teal: 'bg-teal-50 text-teal-800 border-teal-200',
-    purple: 'bg-purple-50 text-purple-800 border-purple-200',
+    amber: 'bg-amber-50/88 text-amber-800 border-amber-200/80',
+    blue: 'bg-blue-50/88 text-blue-800 border-blue-200/80',
+    cyan: 'bg-cyan-50/88 text-cyan-800 border-cyan-200/80',
 };
-
-export type ContractSummaryContent =
-    | {
-          kind: 'vacant';
-          building: string;
-          unitNames: string;
-          leaseStart?: string;
-          area: number;
-          unitPrice?: number | null;
-          rentFreeYearSummary?: string;
-          paymentCycleLabel?: string;
-      }
-    | {
-          kind: 'tenant';
-          tenant: Tenant;
-          buildingLabel: string;
-          unitNamesLabel: string;
-      }
-    | { kind: 'missing'; hint?: string };
 
 export type ContractSummaryModalProps = {
     open: boolean;
@@ -159,6 +141,8 @@ export type ContractSummaryModalProps = {
     billsSectionSuffix?: string;
     budgetAssumptions?: BudgetAssumption[];
     budgetAdjustments?: BudgetAdjustment[];
+    cloudConfig?: CloudConfig;
+    serverComputeEnabled?: boolean;
     content: ContractSummaryContent;
     /**
      * 财务报表核销视图：当前账期 `YYYY-MM`。
@@ -166,16 +150,6 @@ export type ContractSummaryModalProps = {
      */
     highlightReceivableYYYYMM?: string;
 };
-
-/** 由租户 + 楼宇列表解析展示用楼宇名、房号串（财务报表等无预算行数据时使用） */
-export function resolveTenantAssetLabels(tenant: Tenant, buildings: Building[] | undefined): {
-    buildingLabel: string;
-    unitNamesLabel: string;
-} {
-    const b = buildings?.find((x) => x.id === tenant.buildingId);
-    const unitNamesLabel = tenantMergedRoomLabels(tenant, b) || tenant.unitIds.join('、');
-    return { buildingLabel: b?.name || '未知楼宇', unitNamesLabel };
-}
 
 export const ContractSummaryModal: React.FC<ContractSummaryModalProps> = ({
     open,
@@ -185,17 +159,25 @@ export const ContractSummaryModal: React.FC<ContractSummaryModalProps> = ({
     billsSectionSuffix = '与预算列一致',
     budgetAssumptions = [],
     budgetAdjustments = [],
+    cloudConfig,
+    serverComputeEnabled = false,
     content,
     highlightReceivableYYYYMM,
 }) => {
-    const yearBills = useMemo(() => {
-        if (content.kind !== 'tenant') return [];
-        const billingGenStart = new Date(detailYear - 2, 0, 1);
-        const billingGenEnd = new Date(detailYear, 11, 31);
-        return generateBudgetedBills(content.tenant, budgetAssumptions, budgetAdjustments, billingGenStart, billingGenEnd)
-            .filter((b) => b.date.getFullYear() === detailYear)
-            .sort((a, b) => a.date.getTime() - b.date.getTime());
-    }, [content, detailYear, budgetAssumptions, budgetAdjustments]);
+    const billCacheRef = useRef<BillGenerationCache | null>(null);
+    const getLocalBillCache = useCallback(async (): Promise<BillGenerationCache> => {
+        if (billCacheRef.current) return billCacheRef.current;
+        const { generateBudgetedBills } = await import('../services/billingService');
+        const cache = createBudgetedBillCache({ maxEntries: 96, generateBudgetedBills });
+        billCacheRef.current = cache;
+        return cache;
+    }, []);
+    const [billPreviewState, setBillPreviewState] = useState<{
+        yearBills: BudgetedBill[];
+        rawYearBills: BudgetedBill[];
+        loading: boolean;
+        error?: string;
+    }>({ yearBills: [], rawYearBills: [], loading: false });
 
     const vacancyBudgetNote = useMemo(() => {
         if (content.kind !== 'tenant') return undefined;
@@ -217,20 +199,171 @@ export const ContractSummaryModal: React.FC<ContractSummaryModalProps> = ({
         return vac || existing || adj;
     }, [content, budgetAssumptions, budgetAdjustments]);
 
-    const rawYearBillDiffSets = useMemo(() => {
-        if (content.kind !== 'tenant' || !tenantBudgetTouches) return null;
+    useEffect(() => {
+        if (!open || content.kind !== 'tenant') {
+            setBillPreviewState({ yearBills: [], rawYearBills: [], loading: false });
+            return;
+        }
         const billingGenStart = new Date(detailYear - 2, 0, 1);
         const billingGenEnd = new Date(detailYear, 11, 31);
-        const raw = generateBudgetedBills(content.tenant, [], [], billingGenStart, billingGenEnd).filter(
-            (b) => b.date.getFullYear() === detailYear,
-        );
+        const filterYearBills = (bills: BudgetedBill[]) =>
+            bills
+                .filter((b) => b.date.getFullYear() === detailYear)
+                .sort((a, b) => a.date.getTime() - b.date.getTime());
+        const localPreview = async () => {
+            const cache = await getLocalBillCache();
+            return {
+                yearBills: filterYearBills(cache.get({
+                    tenant: content.tenant,
+                    assumptions: budgetAssumptions,
+                    adjustments: budgetAdjustments,
+                    start: billingGenStart,
+                    end: billingGenEnd,
+                    scopeHint: `contract-summary:${content.tenant.id}:budget:${detailYear}`,
+                })),
+                rawYearBills: tenantBudgetTouches
+                    ? filterYearBills(cache.get({
+                          tenant: content.tenant,
+                          assumptions: [],
+                          adjustments: [],
+                          start: billingGenStart,
+                          end: billingGenEnd,
+                          scopeHint: `contract-summary:${content.tenant.id}:raw:${detailYear}`,
+                      }))
+                    : [],
+                loading: false,
+            };
+        };
+        const setLocalPreview = () => {
+            setBillPreviewState((prev) => ({ ...prev, loading: true, error: undefined }));
+            localPreview()
+                .then((state) => {
+                    if (!cancelled) setBillPreviewState(state);
+                })
+                .catch((error: unknown) => {
+                    if (!cancelled) {
+                        setBillPreviewState({
+                            yearBills: [],
+                            rawYearBills: [],
+                            loading: false,
+                            error: error instanceof Error ? error.message : '本地推算应收账单模块加载失败。',
+                        });
+                    }
+                });
+        };
+
+        const canUseServer = serverComputeEnabled && !!cloudConfig?.projectId;
+        let cancelled = false;
+        if (!canUseServer || !cloudConfig) {
+            if (!shouldRunLocalBudgetedBillPreviewFallback({ canUseServer, serverAttempted: false })) {
+                setBillPreviewState({
+                    yearBills: [],
+                    rawYearBills: [],
+                    loading: false,
+                    error: '后台批量推算应收账单计算不可用，未执行前端本地重算。',
+                });
+                return;
+            }
+            setLocalPreview();
+            return () => {
+                cancelled = true;
+            };
+        }
+
+        setBillPreviewState({ yearBills: [], rawYearBills: [], loading: true });
+        const batchItems = [
+            {
+                id: 'budget',
+                tenant: content.tenant,
+                assumptions: budgetAssumptions,
+                adjustments: budgetAdjustments,
+                startDate: billingGenStart,
+                endDate: billingGenEnd,
+            },
+            ...(tenantBudgetTouches
+                ? [{
+                    id: 'raw',
+                    tenant: content.tenant,
+                    assumptions: [],
+                    adjustments: [],
+                    startDate: billingGenStart,
+                    endDate: billingGenEnd,
+                }]
+                : []),
+        ];
+
+        fetchCloudBudgetedBillsPreviewBatch(cloudConfig, { items: batchItems }).then((result) => {
+            if (cancelled) return;
+            const lookup = indexBudgetedBillPreviewBatchResult(
+                result,
+                tenantBudgetTouches ? ['budget', 'raw'] : ['budget'],
+            );
+            if (lookup.ok) {
+                const budgetBills = lookup.billsById.get('budget') || [];
+                const rawBills = lookup.billsById.get('raw') || [];
+                setBillPreviewState({
+                    yearBills: filterYearBills(budgetBills),
+                    rawYearBills: filterYearBills(rawBills),
+                    loading: false,
+                });
+                return;
+            }
+            if (shouldRunLocalBudgetedBillPreviewFallback({ canUseServer, serverAttempted: true })) {
+                setLocalPreview();
+                return;
+            }
+            setBillPreviewState({
+                yearBills: [],
+                rawYearBills: [],
+                loading: false,
+                error:
+                    lookup.message ||
+                    '后台批量推算应收账单计算失败，未执行前端本地重算。',
+            });
+        }).catch((error: unknown) => {
+            if (!cancelled) {
+                if (shouldRunLocalBudgetedBillPreviewFallback({ canUseServer, serverAttempted: true })) {
+                    setLocalPreview();
+                    return;
+                }
+                setBillPreviewState({
+                    yearBills: [],
+                    rawYearBills: [],
+                    loading: false,
+                    error: error instanceof Error
+                        ? error.message
+                        : '后台推算应收账单计算失败，未执行前端本地重算。',
+                });
+            }
+        });
+
+        return () => {
+            cancelled = true;
+        };
+    }, [
+        budgetAdjustments,
+        budgetAssumptions,
+        cloudConfig,
+        content,
+        detailYear,
+        getLocalBillCache,
+        open,
+        serverComputeEnabled,
+        tenantBudgetTouches,
+    ]);
+
+    const yearBills = billPreviewState.yearBills;
+
+    const rawYearBillDiffSets = useMemo(() => {
+        if (content.kind !== 'tenant' || !tenantBudgetTouches) return null;
+        const raw = billPreviewState.rawYearBills;
         return {
             rawDateAmtSet: new Set(
                 raw.map((b) => `${b.date.getFullYear()}-${b.date.getMonth()}-${b.date.getDate()}|${b.amount.toFixed(2)}`),
             ),
             rawDateSet: new Set(raw.map((b) => `${b.date.getFullYear()}-${b.date.getMonth()}-${b.date.getDate()}`)),
         };
-    }, [content, detailYear, tenantBudgetTouches]);
+    }, [billPreviewState.rawYearBills, content.kind, tenantBudgetTouches]);
 
     const highlightPeriod = parseYYYYMM(highlightReceivableYYYYMM);
     const highlightPeriodLabel = highlightPeriod
@@ -255,6 +388,88 @@ export const ContractSummaryModal: React.FC<ContractSummaryModalProps> = ({
             );
         });
 
+    const getBillVisualState = (b: BudgetedBill) => {
+        const accrualMatch =
+            content.kind === 'tenant' &&
+            billAccrualMonthMatchesReceivableMonth(b, content.tenant, highlightReceivableYYYYMM);
+        const dateMatch = billDateMatchesReceivableMonth(b, highlightReceivableYYYYMM);
+        const coverageOnlyMatch =
+            !accrualMatch &&
+            !dateMatch &&
+            billCoverageTouchesReceivableMonth(b, highlightReceivableYYYYMM) &&
+            !hasAccrualMonthMatchInYearBills;
+        const dateKey = `${b.date.getFullYear()}-${b.date.getMonth()}-${b.date.getDate()}`;
+        const dateAmtKey = `${dateKey}|${b.amount.toFixed(2)}`;
+        const isBudgetNew = !!rawYearBillDiffSets && !rawYearBillDiffSets.rawDateSet.has(dateKey);
+        const isBudgetChanged =
+            !!rawYearBillDiffSets &&
+            !isBudgetNew &&
+            !rawYearBillDiffSets.rawDateAmtSet.has(dateAmtKey);
+        return {
+            accrualMatch,
+            dateMatch,
+            coverageOnlyMatch,
+            isBudgetNew,
+            isBudgetChanged,
+            rowHighlight: accrualMatch || dateMatch || coverageOnlyMatch,
+        };
+    };
+
+    const getBillRowClass = (state: ReturnType<typeof getBillVisualState>) => {
+        if (state.rowHighlight) return 'bg-sky-50 ring-1 ring-inset ring-sky-300/90 shadow-[inset_0_0_0_1px_rgba(56,189,248,0.2)]';
+        if (state.isBudgetNew) return 'bg-blue-50/54';
+        if (state.isBudgetChanged) return 'bg-amber-50/40';
+        return 'hover:bg-blue-50/32';
+    };
+
+    const getBillCardClass = (state: ReturnType<typeof getBillVisualState>) => {
+        if (state.rowHighlight) return 'border-sky-200/80 bg-sky-50/78 shadow-[0_14px_32px_rgba(14,165,233,0.10)]';
+        if (state.isBudgetNew) return 'border-blue-200/80 bg-blue-50/64';
+        if (state.isBudgetChanged) return 'border-amber-200/80 bg-amber-50/64';
+        return 'border-white/70 bg-white/62';
+    };
+
+    const renderBillBadges = (b: BudgetedBill, state: ReturnType<typeof getBillVisualState>) => (
+        <>
+            {state.accrualMatch || state.dateMatch ? (
+                <span className="rounded-full bg-sky-200/95 px-2 py-0.5 text-xs font-black text-sky-950 md:text-[10px]">
+                    当前账期
+                </span>
+            ) : state.coverageOnlyMatch ? (
+                <span
+                    className="rounded-full bg-sky-100/95 px-2 py-0.5 text-xs font-black text-sky-900 md:text-[10px]"
+                    title="收款日不在该自然月，但覆盖租期与该核销月有交集"
+                >
+                    覆盖含当月
+                </span>
+            ) : null}
+            {state.isBudgetNew ? (
+                <span
+                    className="rounded-full bg-blue-100/95 px-2 py-0.5 text-xs font-black text-blue-800 md:text-[10px]"
+                    title="此账期由预算假设/调整新增"
+                >
+                    预算新增
+                </span>
+            ) : null}
+            {state.isBudgetChanged ? (
+                <span
+                    className="rounded-full bg-amber-100 px-2 py-0.5 text-xs font-black text-amber-800 md:text-[10px]"
+                    title="此账期金额因预算调整发生变化（含账期调整合并等）"
+                >
+                    金额已调整
+                </span>
+            ) : null}
+            {b.earlyTerminationExtraDetail ? (
+                <span
+                    className="rounded-full border border-amber-200 bg-amber-100 px-2 py-0.5 text-xs font-black text-amber-900 md:text-[10px]"
+                    title="免租扣回、押金扣款、其它调整（不含当期租金）"
+                >
+                    提前退租结算
+                </span>
+            ) : null}
+        </>
+    );
+
     useEffect(() => {
         if (!open) return;
         const onKey = (e: KeyboardEvent) => {
@@ -267,29 +482,31 @@ export const ContractSummaryModal: React.FC<ContractSummaryModalProps> = ({
     if (!open) return null;
 
     return (
-        <div className="fixed inset-0 z-[62] flex items-center justify-center bg-black/50 backdrop-blur-sm p-4" onClick={onClose}>
+        <div className="liquid-elevated-backdrop fixed inset-0 z-[62] flex items-end justify-center p-0 sm:p-4 md:items-center" onClick={onClose}>
             <div
-                className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[90vh] overflow-hidden flex flex-col animate-in zoom-in-50 duration-200"
+                className="liquid-elevated-panel flex max-h-[94vh] w-full max-w-2xl flex-col overflow-hidden rounded-t-[30px] animate-in zoom-in-50 duration-200 md:max-h-[92vh] md:rounded-[28px]"
                 onClick={(e) => e.stopPropagation()}
                 role="dialog"
                 aria-modal="true"
                 aria-labelledby="contract-summary-title"
             >
-                <div className="px-6 py-4 border-b border-slate-100 flex justify-between items-start gap-3 bg-slate-50/80 flex-shrink-0">
+                <div className="liquid-elevated-header px-4 sm:px-6 py-4 border-b border-white/70 flex justify-between items-start gap-3 flex-shrink-0">
                     <div className="min-w-0">
-                        <h3 id="contract-summary-title" className="text-lg font-bold text-slate-800 flex items-center gap-2">
-                            <FileText size={20} className="text-blue-600 shrink-0" />
+                        <h3 id="contract-summary-title" className="text-lg font-black text-slate-950 flex items-center gap-2">
+                            <span className="liquid-icon-well inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-2xl text-blue-700">
+                                <FileText size={20} />
+                            </span>
                             合同概要
                         </h3>
                         <p className="text-xs text-slate-500 mt-1">{subtitle}</p>
                     </div>
-                    <button type="button" onClick={onClose} className="p-1 rounded hover:bg-slate-200 text-slate-500 shrink-0" aria-label="关闭">
+                    <button type="button" onClick={onClose} className="liquid-glass-control liquid-pressable inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-slate-500 hover:text-slate-950" aria-label="关闭">
                         <X size={22} />
                     </button>
                 </div>
-                <div className="p-6 overflow-y-auto flex-1 space-y-5 text-sm text-slate-700">
+                <div className="p-4 sm:p-6 overflow-y-auto flex-1 space-y-5 text-sm text-slate-700">
                     {content.kind === 'vacant' ? (
-                        <>
+                        <div className="liquid-elevated-card rounded-2xl p-4 sm:p-5 space-y-4">
                             <div>
                                 <div className="text-xs font-semibold text-slate-500 uppercase tracking-wide">空置去化（假设）</div>
                                 <div className="text-base font-bold text-slate-900 mt-1">{content.building}</div>
@@ -319,13 +536,13 @@ export const ContractSummaryModal: React.FC<ContractSummaryModalProps> = ({
                                     <dd className="font-medium">{content.paymentCycleLabel || '季付'}</dd>
                                 </div>
                             </dl>
-                            <p className="text-xs text-slate-500 border-t border-slate-100 pt-3">该行来自招商空置假设，正式条款以签约合同为准。</p>
-                        </>
+                            <p className="text-xs text-slate-500 border-t border-white/70 pt-3">该行来自招商空置假设，正式条款以签约合同为准。</p>
+                        </div>
                     ) : content.kind === 'missing' ? (
-                        <p className="text-rose-600">{content.hint || '未找到该客户的合同档案，无法展示明细。'}</p>
+                        <p className="liquid-elevated-card rounded-2xl px-4 py-3 text-rose-600">{content.hint || '未找到该客户的合同档案，无法展示明细。'}</p>
                     ) : (
                         <>
-                            <div>
+                            <div className="liquid-elevated-card rounded-2xl p-4 sm:p-5">
                                 <div className="text-lg font-bold text-slate-900 leading-snug">{content.tenant.name}</div>
                                 <div className="text-xs text-slate-500 mt-1 flex flex-wrap gap-x-2 gap-y-1">
                                     <span>{content.buildingLabel}</span>
@@ -337,7 +554,7 @@ export const ContractSummaryModal: React.FC<ContractSummaryModalProps> = ({
                                     <span>{formatArea(content.tenant.totalArea)}</span>
                                 </div>
                             </div>
-                            <dl className="grid grid-cols-1 sm:grid-cols-2 gap-x-8 gap-y-3">
+                            <dl className="liquid-elevated-card rounded-2xl p-4 sm:p-5 grid grid-cols-1 sm:grid-cols-2 gap-x-8 gap-y-3">
                                 <div>
                                     <dt className="text-xs text-slate-500">合同状态</dt>
                                     <dd className="font-medium">{CONTRACT_STATUS_LABEL[content.tenant.status] ?? String(content.tenant.status)}</dd>
@@ -414,7 +631,7 @@ export const ContractSummaryModal: React.FC<ContractSummaryModalProps> = ({
                                 </div>
                             </dl>
                             <div>
-                                <div className="text-xs font-semibold text-slate-600 mb-2 flex items-center gap-1.5 flex-wrap">
+                                <div className="text-xs font-black text-slate-700 mb-2 flex items-center gap-1.5 flex-wrap">
                                     <Calendar size={14} className="text-slate-400 shrink-0" />
                                     <span>
                                         {detailYear} 年系统推算每期应收（{billsSectionSuffix}）
@@ -422,10 +639,10 @@ export const ContractSummaryModal: React.FC<ContractSummaryModalProps> = ({
                                 </div>
                                 {highlightPeriod && yearBills.length > 0 ? (
                                     <p
-                                        className={`text-[11px] rounded-md px-2 py-1.5 mb-2 leading-snug ${
+                                        className={`liquid-elevated-card mb-2 rounded-2xl px-3 py-2 text-xs font-semibold leading-snug ${
                                             hasHighlightMatch
-                                                ? 'text-sky-900 bg-sky-50 border border-sky-200'
-                                                : 'text-amber-900 bg-amber-50 border border-amber-200'
+                                                ? 'border border-sky-200/80 bg-sky-50/76 text-sky-900'
+                                                : 'border border-amber-200/80 bg-amber-50/76 text-amber-900'
                                         }`}
                                     >
                                         {hasHighlightMatch ? (
@@ -442,10 +659,10 @@ export const ContractSummaryModal: React.FC<ContractSummaryModalProps> = ({
                                     </p>
                                 ) : null}
                                 {stockOverlayItems.length > 0 ? (
-                                    <div className="mb-3 p-3 rounded-lg bg-purple-50/60 border border-purple-200">
+                                    <div className="liquid-elevated-card mb-3 p-3 rounded-2xl border border-cyan-200/80 bg-cyan-50/58">
                                         <div className="flex items-center gap-2 mb-2">
-                                            <Info size={14} className="text-purple-600 shrink-0" />
-                                            <span className="text-xs font-bold text-purple-800">
+                                            <Info size={14} className="text-cyan-700 shrink-0" />
+                                            <span className="text-xs font-bold text-cyan-900">
                                                 已叠加 {stockOverlayItems.length} 项存量调优设置（与「客户合同详情 → 应收款明细预览」勾选预算叠加口径一致）
                                             </span>
                                         </div>
@@ -453,8 +670,8 @@ export const ContractSummaryModal: React.FC<ContractSummaryModalProps> = ({
                                             {stockOverlayItems.map((it, i) => (
                                                 <li key={i} className="text-xs flex items-start gap-2">
                                                     <span
-                                                        className={`inline-flex items-center px-1.5 py-0.5 rounded border text-[10px] font-bold flex-shrink-0 ${
-                                                            OVERLAY_TAG_COLOR_MAP[it.color] ?? 'bg-slate-50 text-slate-800 border-slate-200'
+                                                        className={`inline-flex items-center px-1.5 py-0.5 rounded border text-xs font-bold flex-shrink-0 md:text-[10px] ${
+                                                            OVERLAY_TAG_COLOR_MAP[it.color] ?? 'bg-blue-50/88 text-blue-800 border-blue-200/80'
                                                         }`}
                                                     >
                                                         {it.tag}
@@ -465,56 +682,73 @@ export const ContractSummaryModal: React.FC<ContractSummaryModalProps> = ({
                                         </ul>
                                     </div>
                                 ) : null}
-                                {yearBills.length === 0 ? (
-                                    <p className="text-xs text-slate-500 bg-slate-50 border border-slate-100 rounded-lg px-3 py-2">
+                                {billPreviewState.loading ? (
+                                    <p className="liquid-elevated-card text-xs text-slate-500 rounded-xl px-3 py-2">
+                                        后台正在计算推算应收账单...
+                                    </p>
+                                ) : billPreviewState.error ? (
+                                    <p className="liquid-elevated-card flex items-start gap-2 rounded-2xl border border-amber-200/80 bg-amber-50/78 px-3 py-2 text-xs font-semibold text-amber-900">
+                                        <AlertCircle size={14} className="mt-0.5 shrink-0" />
+                                        <span>{billPreviewState.error}</span>
+                                    </p>
+                                ) : yearBills.length === 0 ? (
+                                    <p className="liquid-elevated-card text-xs text-slate-500 rounded-xl px-3 py-2">
                                         本年度无系统推算应收账单（未起租、已结束履约或金额为零等情况）。
                                     </p>
                                 ) : (
-                                    <div className="overflow-x-auto rounded-lg border border-slate-200">
+                                    <>
+                                    <div className="space-y-2 md:hidden">
+                                        {yearBills.map((b, i) => {
+                                            const state = getBillVisualState(b);
+                                            return (
+                                                <article
+                                                    key={`${b.date.getTime()}-${i}-mobile`}
+                                                    className={`liquid-elevated-card rounded-3xl border px-3.5 py-3 ${getBillCardClass(state)}`}
+                                                >
+                                                    <div className="flex items-start justify-between gap-3">
+                                                        <div className="min-w-0">
+                                                            <div className="text-xs font-black text-slate-500">账单月</div>
+                                                            <div className="mt-0.5 font-mono text-base font-black text-slate-950">
+                                                                {b.date.getFullYear()}-
+                                                                {String(b.date.getMonth() + 1).padStart(2, '0')}
+                                                            </div>
+                                                        </div>
+                                                        <div className="shrink-0 text-right">
+                                                            <div className="text-xs font-black text-slate-500">应收金额</div>
+                                                            <div className="mt-0.5 font-mono text-base font-black text-blue-800">
+                                                                {formatCurrency(b.amount)}
+                                                            </div>
+                                                        </div>
+                                                    </div>
+                                                    <div className="mt-3 flex flex-wrap gap-1.5">
+                                                        {renderBillBadges(b, state)}
+                                                    </div>
+                                                    <div className="mt-3 rounded-2xl border border-white/70 bg-white/58 px-3 py-2">
+                                                        <div className="text-xs font-black text-slate-500">覆盖租期</div>
+                                                        <div className="mt-0.5 text-sm font-bold text-slate-800">
+                                                            {budgetBillCoverageLabel(b)}
+                                                        </div>
+                                                    </div>
+                                                </article>
+                                            );
+                                        })}
+                                    </div>
+                                    <div className="liquid-elevated-table hidden overflow-x-auto rounded-2xl border border-white/75 md:block">
                                         <table className="w-full text-xs">
                                             <thead>
-                                                <tr className="bg-slate-50 text-slate-600 text-left border-b border-slate-200">
+                                                <tr className="liquid-contract-sticky text-slate-600 text-left border-b border-white/70">
                                                     <th className="px-3 py-2 font-semibold whitespace-nowrap">账单月</th>
                                                     <th className="px-3 py-2 font-semibold text-right whitespace-nowrap">应收金额</th>
                                                     <th className="px-3 py-2 font-semibold whitespace-nowrap min-w-[180px]">覆盖租期</th>
                                                 </tr>
                                             </thead>
-                                            <tbody className="divide-y divide-slate-100 bg-white">
+                                            <tbody className="divide-y divide-slate-200/60 bg-transparent">
                                                 {yearBills.map((b, i) => {
-                                                    const accrualMatch =
-                                                        content.kind === 'tenant' &&
-                                                        billAccrualMonthMatchesReceivableMonth(
-                                                            b,
-                                                            content.tenant,
-                                                            highlightReceivableYYYYMM
-                                                        );
-                                                    const dateMatch = billDateMatchesReceivableMonth(b, highlightReceivableYYYYMM);
-                                                    const coverageOnlyMatch =
-                                                        !accrualMatch &&
-                                                        !dateMatch &&
-                                                        billCoverageTouchesReceivableMonth(b, highlightReceivableYYYYMM) &&
-                                                        !hasAccrualMonthMatchInYearBills;
-                                                    const rowHighlight = accrualMatch || dateMatch || coverageOnlyMatch;
-                                                    const dateKey = `${b.date.getFullYear()}-${b.date.getMonth()}-${b.date.getDate()}`;
-                                                    const dateAmtKey = `${dateKey}|${b.amount.toFixed(2)}`;
-                                                    const isBudgetNew =
-                                                        !!rawYearBillDiffSets && !rawYearBillDiffSets.rawDateSet.has(dateKey);
-                                                    const isBudgetChanged =
-                                                        !!rawYearBillDiffSets &&
-                                                        !isBudgetNew &&
-                                                        !rawYearBillDiffSets.rawDateAmtSet.has(dateAmtKey);
+                                                    const state = getBillVisualState(b);
                                                     return (
                                                         <tr
                                                             key={`${b.date.getTime()}-${i}`}
-                                                            className={`${
-                                                                rowHighlight
-                                                                    ? 'bg-sky-50 ring-1 ring-inset ring-sky-300/90 shadow-[inset_0_0_0_1px_rgba(56,189,248,0.2)]'
-                                                                    : isBudgetNew
-                                                                      ? 'bg-purple-50/40'
-                                                                      : isBudgetChanged
-                                                                        ? 'bg-amber-50/40'
-                                                                        : 'hover:bg-slate-50/80'
-                                                            }`}
+                                                            className={getBillRowClass(state)}
                                                         >
                                                             <td className="px-3 py-2 whitespace-nowrap font-mono align-top">
                                                                 <span className="inline-flex items-center gap-1.5 flex-wrap">
@@ -522,42 +756,7 @@ export const ContractSummaryModal: React.FC<ContractSummaryModalProps> = ({
                                                                         {b.date.getFullYear()}-
                                                                         {String(b.date.getMonth() + 1).padStart(2, '0')}
                                                                     </span>
-                                                                    {accrualMatch || dateMatch ? (
-                                                                        <span className="rounded bg-sky-200/95 text-sky-950 px-1 py-px text-[10px] font-bold shrink-0">
-                                                                            当前账期
-                                                                        </span>
-                                                                    ) : coverageOnlyMatch ? (
-                                                                        <span
-                                                                            className="rounded bg-sky-100/95 text-sky-900 px-1 py-px text-[10px] font-bold shrink-0"
-                                                                            title="收款日不在该自然月，但覆盖租期与该核销月有交集"
-                                                                        >
-                                                                            覆盖含当月
-                                                                        </span>
-                                                                    ) : null}
-                                                                    {isBudgetNew ? (
-                                                                        <span
-                                                                            className="rounded bg-purple-100 text-purple-800 px-1 py-px text-[10px] font-bold shrink-0"
-                                                                            title="此账期由预算假设/调整新增"
-                                                                        >
-                                                                            预算新增
-                                                                        </span>
-                                                                    ) : null}
-                                                                    {isBudgetChanged ? (
-                                                                        <span
-                                                                            className="rounded bg-amber-100 text-amber-800 px-1 py-px text-[10px] font-bold shrink-0"
-                                                                            title="此账期金额因预算调整发生变化（含账期调整合并等）"
-                                                                        >
-                                                                            金额已调整
-                                                                        </span>
-                                                                    ) : null}
-                                                                    {b.earlyTerminationExtraDetail ? (
-                                                                        <span
-                                                                            className="rounded bg-amber-100 text-amber-900 px-1 py-px text-[10px] font-bold shrink-0 border border-amber-200"
-                                                                            title="免租扣回、押金扣款、其它调整（不含当期租金）"
-                                                                        >
-                                                                            提前退租结算
-                                                                        </span>
-                                                                    ) : null}
+                                                                    {renderBillBadges(b, state)}
                                                                 </span>
                                                             </td>
                                                             <td className="px-3 py-2 text-right font-semibold text-slate-800 align-top">
@@ -572,9 +771,10 @@ export const ContractSummaryModal: React.FC<ContractSummaryModalProps> = ({
                                             </tbody>
                                         </table>
                                     </div>
+                                    </>
                                 )}
                                 {vacancyBudgetNote ? (
-                                    <p className="text-[11px] text-rose-900 bg-rose-50/80 border border-rose-200 rounded-lg px-3 py-2 mt-2 leading-snug">
+                                    <p className="liquid-elevated-card mt-2 rounded-2xl border border-rose-200/80 bg-rose-50/78 px-3 py-2 text-xs font-semibold leading-snug text-rose-900">
                                         {vacancyBudgetNote}
                                     </p>
                                 ) : null}
@@ -582,8 +782,8 @@ export const ContractSummaryModal: React.FC<ContractSummaryModalProps> = ({
                         </>
                     )}
                 </div>
-                <div className="px-6 py-4 border-t border-slate-100 flex justify-end bg-slate-50/50 flex-shrink-0">
-                    <button type="button" onClick={onClose} className="px-5 py-2 bg-slate-800 text-white rounded-lg hover:bg-slate-900 font-medium">
+                <div className="liquid-elevated-footer flex flex-shrink-0 justify-end border-t border-white/70 px-4 py-4 pb-[calc(env(safe-area-inset-bottom)+1rem)] sm:px-6 sm:pb-4">
+                    <button type="button" onClick={onClose} className="liquid-action-strong liquid-pressable w-full rounded-full px-5 py-2.5 font-bold sm:w-auto sm:py-2">
                         关闭
                     </button>
                 </div>

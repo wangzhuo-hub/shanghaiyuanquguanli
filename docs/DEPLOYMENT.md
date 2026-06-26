@@ -47,6 +47,23 @@ npm -v
 
 在项目根目录执行：
 
+### 1.0 部署前验收
+
+正式部署前先在项目根目录执行一键回归：
+
+```bash
+npm run qa:rollout:record -- --env 阿里云生产
+npm run qa:rollout
+npm run qa:mobile-auth-state -- --url http://127.0.0.1:5173/
+npm run qa:mobile-screenshots -- --url http://127.0.0.1:5173/ --color-scheme both --reduced-motion both --storage-state output/mobile-auth-state/auth-state.json --require-authenticated
+npm run qa:mobile-screenshot-report -- output/mobile-screenshot-qa/截图目录/README.md
+npm run qa:rollout:record:check -- docs/rollout-records/记录文件.md
+```
+
+第一条命令会从验收模板生成 `docs/rollout-records/` 下的本次上线记录草稿；第二条命令会依次运行移动 UI 守卫、关键字段 / 移动端回归测试、验收记录脚本测试、TypeScript 检查和生产构建；第三条命令会打开浏览器让验收人员使用 QA 账号登录，关闭窗口后把 Playwright storage state 保存到 `output/mobile-auth-state/`，该文件可能包含会话 cookie 或 token，不能提交；第四条命令会将 375x812、390x844、430x932、768x1024、1024x768 五个视口的登录后浅色 / 深色、默认动态 / 减少动态截图输出到 `output/mobile-screenshot-qa/`，并用 `--require-authenticated` 等待登录后应用壳，避免 storage state 过期时误截登录页；第五条命令会读取截图目录内的 `report.json`，确认报告包含登录态、`requireAuthenticated=true`、登录后壳 selector、浅色+深色、默认+减少动态和五个视口的成功截图；第六条命令在记录补齐后检查关键占位项是否仍未填写，并会再次校验记录中填写的截图报告内容。若首次运行截图命令提示缺少浏览器，请先执行 `npx playwright install chromium`。涉及移动端内容、关注字段、历史欠费、预算轻编辑或楼宇轻管理的上线，还需要按 [10-移动端与字段口径上线验收清单.md](./10-移动端与字段口径上线验收清单.md) 补充更多入口、筛选 sheet、月度明细、预算编辑和楼宇 action sheet 等状态截图，并在启用历史欠费筛选前执行封账明细 dry-run。
+
+实际发布时按 [11-移动端与字段口径上线验收记录模板.md](./11-移动端与字段口径上线验收记录模板.md) 补齐本次发布记录，记录自动回归输出、截图附件、封账 dry-run 结果、云端接口验收、灰度账号和最终上线结论。
+
 ### 1.1 配置环境变量
 
 ```bash
@@ -174,4 +191,3 @@ cp .env.example .env.local
 
 - 前端：`http://<本机IP>:1001`
 - PocketBase Admin：`http://<本机IP>:1002/_/`
-

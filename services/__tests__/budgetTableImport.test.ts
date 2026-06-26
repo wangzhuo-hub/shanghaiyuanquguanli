@@ -2,7 +2,6 @@ import { describe, expect, it } from 'vitest';
 import { existsSync, readFileSync } from 'node:fs';
 import {
     mergeBudgetTotalsIntoInitData,
-    parseBudgetTableExcel,
     readImportedBudgetTable,
     writeImportedBudgetTable,
     clearImportedBudgetTable,
@@ -11,9 +10,13 @@ import {
     listImportedBudgetYears,
     readBudgetCustomerNameLinks,
     writeBudgetCustomerNameLinks,
+    updateImportedBudgetTableRowMonth,
     normalizeEffectiveBudgetTableFromBackup,
+    buildBudgetRowKeyLookup,
+    tenantImportedBudgetRowKey,
     type BudgetTableSnapshot,
 } from '../budgetTableImport';
+import { parseBudgetTableExcel } from '../budgetTableExcelParser';
 import type { MonthlyInitData } from '../../types';
 
 describe('mergeBudgetTotalsIntoInitData', () => {
@@ -98,11 +101,87 @@ describe('imported budget table snapshot helpers', () => {
         expect(listImportedBudgetYears(notes2)).toEqual([2025, 2027]);
     });
 
+    it('updates one imported row month and recomputes row/month/year totals', () => {
+        const snapshot: BudgetTableSnapshot = {
+            importedAt: '2026-04-29T07:00:00.000Z',
+            sourceSheet: '2026年',
+            rows: [
+                {
+                    customer: 'A',
+                    unit: '101',
+                    building: '1号楼',
+                    area: 100,
+                    category: '存量客户',
+                    unitPrice: 3,
+                    rentFreeText: '',
+                    months: [10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120],
+                    total: 780,
+                },
+                {
+                    customer: 'B',
+                    unit: '201',
+                    building: '2号楼',
+                    area: 80,
+                    category: '续签客户',
+                    unitPrice: 4,
+                    rentFreeText: '',
+                    months: Array(12).fill(5),
+                    total: 60,
+                },
+            ],
+            monthlyTotals: [15, 25, 35, 45, 55, 65, 75, 85, 95, 105, 115, 125],
+            annualTotal: 840,
+        };
+
+        const updated = updateImportedBudgetTableRowMonth(
+            snapshot,
+            importedBudgetRowKey('A', '101', '1号楼'),
+            1,
+            200.4,
+            '2026-06-24T12:00:00.000Z',
+        );
+
+        expect(updated).not.toBe(snapshot);
+        expect(updated.updatedAt).toBe('2026-06-24T12:00:00.000Z');
+        expect(updated.rows[0].months[1]).toBe(200);
+        expect(updated.rows[0].total).toBe(960);
+        expect(updated.monthlyTotals[1]).toBe(205);
+        expect(updated.annualTotal).toBe(1020);
+        expect(snapshot.rows[0].months[1]).toBe(20);
+    });
+
     it('readImportedBudgetTable returns null for missing/invalid entries', () => {
         expect(readImportedBudgetTable(undefined, 2026)).toBeNull();
         expect(readImportedBudgetTable({}, 2026)).toBeNull();
         expect(readImportedBudgetTable({ [importedBudgetTableKey(2026)]: 'not json' }, 2026)).toBeNull();
         expect(readImportedBudgetTable({ [importedBudgetTableKey(2026)]: '{}' }, 2026)).toBeNull(); // no rows
+    });
+
+    it('rejects invalid imported row month updates', () => {
+        expect(() =>
+            updateImportedBudgetTableRowMonth(
+                sampleSnapshot,
+                importedBudgetRowKey('A', '1F', '3号楼'),
+                12,
+                100,
+            )
+        ).toThrow(/monthIndex/);
+        expect(() =>
+            updateImportedBudgetTableRowMonth(
+                sampleSnapshot,
+                importedBudgetRowKey('A', '1F', '3号楼'),
+                0,
+                -1,
+            )
+        ).toThrow(/non-negative/);
+        expect(() =>
+            updateImportedBudgetTableRowMonth(
+                sampleSnapshot,
+                importedBudgetRowKey('missing', '1F', '3号楼'),
+                0,
+                100,
+            )
+        ).toThrow(/not found/);
     });
 
     it('clearImportedBudgetTable returns same notes when key missing', () => {
@@ -142,6 +221,27 @@ describe('imported budget table snapshot helpers', () => {
         expect(restored?.snapshot.rows[0].months).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
         expect(restored?.snapshot.monthlyTotals).toEqual([10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120]);
     });
+
+    it('builds tenant import keys from an indexed building/unit lookup', () => {
+        const buildings = [
+            {
+                id: 'b1',
+                name: 'A座',
+                units: [{ id: 'same-unit-id', name: '101' }],
+            },
+            {
+                id: 'b2',
+                name: 'B座',
+                units: [{ id: 'same-unit-id', name: '201' }],
+            },
+        ] as any;
+        const tenant = { name: '客户 A', buildingId: 'b2', unitIds: ['same-unit-id'] };
+
+        const lookup = buildBudgetRowKeyLookup(buildings);
+
+        expect(tenantImportedBudgetRowKey(tenant, lookup)).toBe(importedBudgetRowKey('客户 A', '201', 'B座'));
+        expect(tenantImportedBudgetRowKey(tenant, lookup.buildingById)).toBe(importedBudgetRowKey('客户 A', '201', 'B座'));
+    });
 });
 
 const SAMPLE_BUDGET_XLSX = '/Users/wangzhuo/Downloads/park_budget_2026-24.xlsx';
@@ -149,6 +249,44 @@ const SAMPLE_BUDGET_XLSX = '/Users/wangzhuo/Downloads/park_budget_2026-24.xlsx';
 const itIfFileExists = existsSync(SAMPLE_BUDGET_XLSX) ? it : it.skip;
 
 describe('parseBudgetTableExcel (real template file)', () => {
+    it('parses a generated budget workbook and ignores section/subtotal rows', async () => {
+        const XLSX = await import('xlsx');
+        const months = Array.from({ length: 12 }, (_, i) => i + 1);
+        const subtotal = ['存量客户 小计', '', '', '', '', '', '', ...months, months.reduce((a, b) => a + b, 0)];
+        const worksheet = XLSX.utils.aoa_to_sheet([
+            ['上海金蝶软件园 2027 年预算表'],
+            [],
+            ['客户/单元', '房号', '所属楼宇', '租赁面积', '类别', '签约单价', '本年度免租期', ...months.map((m) => `${m}月`), '全年合计'],
+            ['【存量客户】'],
+            ['客户A', '101', 'A座', 100, '存量客户', 3.5, '2月', ...months, months.reduce((a, b) => a + b, 0)],
+            subtotal,
+        ]);
+        const workbook = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(workbook, worksheet, '2027预算');
+        const written = XLSX.write(workbook, { bookType: 'xlsx', type: 'array' });
+        const ab = written instanceof ArrayBuffer
+            ? written
+            : written.buffer.slice(written.byteOffset, written.byteOffset + written.byteLength);
+
+        const parsed = await parseBudgetTableExcel(ab);
+
+        expect(parsed.year).toBe(2027);
+        expect(parsed.sheetName).toBe('2027预算');
+        expect(parsed.rows).toHaveLength(1);
+        expect(parsed.rows[0]).toMatchObject({
+            customer: '客户A',
+            unit: '101',
+            building: 'A座',
+            area: 100,
+            category: '存量客户',
+            unitPrice: 3.5,
+            rentFreeText: '2月',
+            total: 78,
+        });
+        expect(parsed.monthlyTotals).toEqual(months);
+        expect(parsed.annualTotal).toBe(78);
+    });
+
     itIfFileExists('parses 上海金蝶软件园 预算表 2026 template', async () => {
         const buf = readFileSync(SAMPLE_BUDGET_XLSX);
         const ab = buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);

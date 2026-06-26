@@ -1,31 +1,23 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Monitor, Wifi, WifiOff, Loader2, Play, Pause } from 'lucide-react';
-import { initCloud, fetchAuthorizedParks, fetchCloudBackup, getCurrentCloudUser, isCloudUserAuthenticated } from '../services/cloudService';
-import { mergeStoredCloudConfig } from '../config/deploymentDefaults';
-import { generateInitialData } from '../services/mockData';
 import {
-  buildBigScreenParkData,
-  computeTotals,
-  type BigScreenParkMetric,
-  type BigScreenData,
-} from '../services/bigScreenMetrics';
-import type { ParkInfo, AuthUser, DashboardData } from '../types';
+  initCloud,
+  fetchAuthorizedParks,
+  getCurrentCloudUser,
+  isCloudUserAuthenticated,
+} from '../services/cloudService';
+import { fetchCloudBigScreenData } from '../services/cloudComputeClient';
+import { mergeStoredCloudConfig } from '../config/deploymentDefaults';
+import { type BigScreenData } from '../services/bigScreenMetrics';
+import { shouldRunLocalBigScreenFallback } from '../services/computeFallbackPolicy';
+import type { ParkInfo, AuthUser } from '../types';
 import { BigScreenSummary } from './big-screen/BigScreenSummary';
 import { BigScreenParkCompare } from './big-screen/BigScreenParkCompare';
 import { BigScreenParkSlide } from './big-screen/BigScreenParkSlide';
 import { BigScreenEventTicker } from './big-screen/BigScreenEventTicker';
 import { BigScreenAlerts } from './big-screen/BigScreenAlerts';
-import { generateAllEvents, sortEventsByTime } from '../services/bigScreenEvents';
-import { generateAllAlerts, generateLowOccupancyAlerts, generateLowCollectionAlerts, sortAlertsByLevel } from '../services/bigScreenAlerts';
-import type { BigScreenEvent } from '../services/bigScreenEvents';
-import type { BigScreenAlert } from '../services/bigScreenAlerts';
 
-const STORAGE_KEY = 'kingdee_park_data_v1';
 const CLOUD_CONFIG_KEY = 'kingdee_park_cloud_config_v2';
-const getParkStorageKey = (projectId: string) => `${STORAGE_KEY}:${projectId || 'unknown'}`;
-
-const hasMeaningfulDashboardPayload = (d: DashboardData): boolean =>
-  !!(d && (d.tenants?.length || d.buildings?.length));
 
 /** 从 URL query 参数读取大屏配置 */
 const parseBigScreenConfig = (): {
@@ -118,92 +110,31 @@ const BigScreenDashboard: React.FC = () => {
       const config = mergeStoredCloudConfig(
         localStorage.getItem(CLOUD_CONFIG_KEY),
       );
-      const metrics: BigScreenParkMetric[] = [];
-      const allEvents: BigScreenEvent[] = [];
-      const allAlerts: BigScreenAlert[] = [];
 
-      for (const park of enabledParks) {
-        try {
-          const parkConfig = { ...config, projectId: park.projectId };
-          const res = await fetchCloudBackup(parkConfig, park.projectId);
-          const cloudData: DashboardData | null =
-            res.success && res.data
-              ? { ...generateInitialData(), ...res.data }
-              : null;
-          if (cloudData && hasMeaningfulDashboardPayload(cloudData)) {
-            const parkData = buildBigScreenParkData(park, cloudData, year, billingMonth);
-            metrics.push(parkData.metrics);
-            allEvents.push(
-              ...generateAllEvents(
-                {
-                  tenants: cloudData.tenants || [],
-                  payments: cloudData.payments || [],
-                  invoices: cloudData.invoices || [],
-                  billingDetails: parkData.billingDetails,
-                },
-                park.projectId,
-                park.name || park.projectId,
-              ),
-            );
-            allAlerts.push(
-              ...generateAllAlerts(
-                cloudData.tenants || [],
-                parkData.billingDetails,
-                park.projectId,
-                park.name || park.projectId,
-              ),
-            );
-            continue;
-          }
-          // fallback to localStorage
-          const cached = localStorage.getItem(getParkStorageKey(park.projectId));
-          const cachedData: DashboardData | null = cached
-            ? { ...generateInitialData(), ...JSON.parse(cached) }
-            : null;
-          if (cachedData && hasMeaningfulDashboardPayload(cachedData)) {
-            const parkData = buildBigScreenParkData(park, cachedData, year, billingMonth);
-            metrics.push(parkData.metrics);
-            allEvents.push(
-              ...generateAllEvents(
-                {
-                  tenants: cachedData.tenants || [],
-                  payments: cachedData.payments || [],
-                  invoices: cachedData.invoices || [],
-                  billingDetails: parkData.billingDetails,
-                },
-                park.projectId,
-                park.name || park.projectId,
-              ),
-            );
-            allAlerts.push(
-              ...generateAllAlerts(
-                cachedData.tenants || [],
-                parkData.billingDetails,
-                park.projectId,
-                park.name || park.projectId,
-              ),
-            );
-          }
-        } catch {
-          // skip individual park errors
-        }
+      const canUseServerBigScreen = authValid && !!currentUser?.enabled;
+      let serverAttempted = false;
+      const serverRes = await fetchCloudBigScreenData(config, {
+        year,
+        billingMonth,
+        parkIds: enabledParks.map((park) => park.projectId),
+      });
+      serverAttempted = true;
+      if (serverRes.success && serverRes.data) {
+        setBigScreenData(serverRes.data);
+        setOnline(true);
+        setError('');
+        return;
       }
 
-      // KPI-level alerts
-      allAlerts.push(...generateLowOccupancyAlerts(metrics));
-      allAlerts.push(...generateLowCollectionAlerts(metrics));
-
-      const totals = computeTotals(metrics);
-      setBigScreenData({
-        year,
-        parks: metrics,
-        totals,
-        events: sortEventsByTime(allEvents),
-        alerts: sortAlertsByLevel(allAlerts),
-        refreshedAt: new Date().toISOString(),
-      });
-      setOnline(true);
-      setError('');
+      if (!shouldRunLocalBigScreenFallback({ canUseServer: canUseServerBigScreen, serverAttempted })) {
+        setBigScreenData(null);
+        setOnline(false);
+        setError(serverRes.message || '后台大屏数据计算失败，未执行前端本地汇总');
+        return;
+      }
+      setBigScreenData(null);
+      setOnline(false);
+      setError(serverRes.message || '大屏数据不可用');
     } catch (e) {
       console.warn('[bigscreen] 加载失败', e);
       setError('数据加载失败');
@@ -273,10 +204,10 @@ const BigScreenDashboard: React.FC = () => {
 
   if (loading) {
     return (
-      <div className="h-screen w-screen bg-slate-950 flex items-center justify-center">
-        <div className="text-center space-y-4">
+      <div className="liquid-bigscreen-shell flex h-screen w-screen items-center justify-center">
+        <div className="liquid-bigscreen-panel rounded-[28px] px-8 py-7 text-center">
           <Loader2 size={48} className="animate-spin text-sky-400 mx-auto" />
-          <p className="text-slate-400 text-lg">正在加载多园区经营数据...</p>
+          <p className="mt-4 text-lg font-semibold text-slate-300">正在加载多园区经营数据...</p>
         </div>
       </div>
     );
@@ -284,13 +215,13 @@ const BigScreenDashboard: React.FC = () => {
 
   if (error) {
     return (
-      <div className="h-screen w-screen bg-slate-950 flex items-center justify-center">
-        <div className="text-center space-y-4 max-w-md px-6">
-          <Monitor size={48} className="text-slate-600 mx-auto" />
-          <p className="text-red-400 text-lg">{error}</p>
+      <div className="liquid-bigscreen-shell flex h-screen w-screen items-center justify-center">
+        <div className="liquid-bigscreen-panel max-w-md rounded-[28px] px-8 py-7 text-center">
+          <Monitor size={48} className="text-slate-500 mx-auto" />
+          <p className="mt-4 text-lg font-semibold text-red-300">{error}</p>
           <button
             onClick={loadAllParkData}
-            className="px-6 py-2 bg-sky-600 text-white rounded-lg hover:bg-sky-500 transition"
+            className="mt-4 rounded-full bg-sky-500 px-6 py-2 font-bold text-white transition hover:bg-sky-400"
           >
             重试
           </button>
@@ -301,10 +232,10 @@ const BigScreenDashboard: React.FC = () => {
 
   if (!bigScreenData || bigScreenData.parks.length === 0) {
     return (
-      <div className="h-screen w-screen bg-slate-950 flex items-center justify-center">
-        <div className="text-center space-y-4">
-          <Monitor size={48} className="text-slate-600 mx-auto" />
-          <p className="text-slate-400 text-lg">暂无园区数据</p>
+      <div className="liquid-bigscreen-shell flex h-screen w-screen items-center justify-center">
+        <div className="liquid-bigscreen-panel rounded-[28px] px-8 py-7 text-center">
+          <Monitor size={48} className="text-slate-500 mx-auto" />
+          <p className="mt-4 text-lg font-semibold text-slate-300">暂无园区数据</p>
         </div>
       </div>
     );
@@ -314,24 +245,24 @@ const BigScreenDashboard: React.FC = () => {
   const slide = currentSlide % totalSlides;
 
   return (
-    <div className="h-screen w-screen bg-slate-950 text-white overflow-hidden grid grid-rows-[44px_minmax(0,1fr)_auto_36px]" style={{ zoom: screenConfig.zoom }}>
+    <div className="liquid-bigscreen-shell grid h-screen w-screen grid-rows-[48px_minmax(0,1fr)_auto_40px] overflow-hidden text-white" style={{ zoom: screenConfig.zoom }}>
       {/* Top bar */}
-      <div className="flex items-center justify-between px-3 md:px-6 border-b border-white/10 bg-white/5">
+      <div className="liquid-bigscreen-chrome flex items-center justify-between border-x-0 border-t-0 px-3 md:px-6">
         <div className="flex items-center gap-3">
           <Monitor size={18} className="text-sky-400" />
-          <span className="text-base font-semibold text-slate-200">
+          <span className="text-base font-black text-slate-100">
             多园区经营大屏
           </span>
-          <span className="text-xs text-slate-500">
+          <span className="text-xs font-semibold text-slate-400">
             · {bigScreenData.year}年度
           </span>
         </div>
-        <div className="flex items-center gap-4 text-xs text-slate-400">
+        <div className="flex items-center gap-4 text-xs font-semibold text-slate-400">
           <span>
             园区 {bigScreenData.parks.length} 个
           </span>
           <span
-            className="cursor-pointer hover:text-white transition"
+            className="liquid-pressable cursor-pointer rounded-full p-1 transition hover:bg-white/10 hover:text-white"
             onClick={() => setPaused((p) => !p)}
             title={paused ? '继续轮播' : '暂停轮播 (空格键)'}
           >
@@ -339,7 +270,7 @@ const BigScreenDashboard: React.FC = () => {
           </span>
           <span className="flex items-center gap-1">
             {online ? (
-              <Wifi size={12} className="text-emerald-400" />
+              <Wifi size={12} className="text-cyan-300" />
             ) : (
               <WifiOff size={12} className="text-red-400" />
             )}
@@ -388,14 +319,14 @@ const BigScreenDashboard: React.FC = () => {
       <BigScreenEventTicker events={bigScreenData.events} />
 
       {/* Bottom slide indicator */}
-      <div className="flex items-center justify-center gap-2 border-t border-white/10 bg-white/5">
+      <div className="liquid-bigscreen-chrome flex items-center justify-center gap-2 border-x-0 border-b-0">
         {Array.from({ length: totalSlides }).map((_, i) => (
           <button
             key={i}
             onClick={() => setCurrentSlide(i)}
-            className={`w-2 h-2 rounded-full transition-all ${
+            className={`liquid-pressable h-2 rounded-full transition-all ${
               i === slide
-                ? 'bg-sky-400 w-6'
+                ? 'w-7 bg-sky-400 shadow-[0_0_18px_rgba(56,189,248,0.55)]'
                 : 'bg-white/20 hover:bg-white/40'
             }`}
             title={

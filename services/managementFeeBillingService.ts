@@ -1,14 +1,14 @@
 import type { PaymentCycle, RentFreePeriod, Tenant } from '../types';
+import type { BudgetedBill } from './billingService';
 import {
     BILLING_LOOP_LIMIT,
-    BudgetedBill,
     addCalendarMonths,
     addContractMonths,
     calculateRentForDuration,
     farFutureDate,
     getReceivableMonthOffsetForTenant,
     parseDateLocal,
-} from './billingService';
+} from './billingLightweight';
 import { roundMoney2 } from './numberFormat';
 import { isManagementFeeBillingEnabled } from './parkBillingConfig';
 

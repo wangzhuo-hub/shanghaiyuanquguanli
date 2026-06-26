@@ -1,5 +1,5 @@
 import type { DashboardData, MonthlyTrend } from '../types';
-import { resolveAnnualInitialBudget } from './dashboardMetrics';
+import { resolveAnnualInitialBudget } from './dashboardMetricHelpers';
 
 /**
  * 与看板「预算执行 / 年度指标」同源口径的快照，供 OpenClaw 等每日只读拉取。

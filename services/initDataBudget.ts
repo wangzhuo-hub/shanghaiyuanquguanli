@@ -1,4 +1,5 @@
 import type { MonthlyInitData } from '../types';
+import { shouldAllowLocalHeavyComputeFallback, type LocalHeavyComputeFallbackOption } from './computeFallbackPolicy';
 
 export const SHANGHAI_PARK_ID = 'shanghai_park';
 
@@ -45,4 +46,25 @@ export function resolveInitMonthInitialBudget(
     }
     const ib = Number(entry.initialBudget);
     return Number.isFinite(ib) && ib > 0.005 ? Number(ib) : 0;
+}
+
+export function shouldRunLocalInitialBudgetImportFallback(options: {
+    canUseServer: boolean;
+    tenantCount: number;
+    serverAttempted: boolean;
+} & LocalHeavyComputeFallbackOption): boolean {
+    if (!shouldAllowLocalHeavyComputeFallback(options)) return false;
+    if (options.tenantCount <= 0) return true;
+    if (!options.canUseServer) return true;
+    return !options.serverAttempted;
+}
+
+export function validateInitialBudgetImportServerItems(
+    expectedIds: string[],
+    receivedIds: string[]
+): string | null {
+    const received = new Set(receivedIds);
+    const missingCount = expectedIds.filter((id) => !received.has(id)).length;
+    if (missingCount > 0) return `后台年初预算导入缺少 ${missingCount} 个账单结果`;
+    return null;
 }

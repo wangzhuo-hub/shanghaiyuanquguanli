@@ -1,4 +1,3 @@
-import type { KpiSnapshotSummary } from './pocketbaseService';
 import {
     BillingDetail,
     BudgetAdjustment,
@@ -11,33 +10,112 @@ import {
     MonthlyTrend,
     ParkingStatDetail,
     PaymentRecord,
+    RentFreePeriod,
     Tenant,
+    LeaseUnitTerm,
     UnitStatus,
 } from '../types';
 import { BudgetedBill, buildVacancyBudgetAlignmentNote, FAR_FUTURE_DATE, generateBudgetedBills, getVirtualTenants, parseDateLocal } from './billingService';
 import {
+    buildBudgetRowKeyLookup,
     importedBudgetRowKey,
     readBudgetCustomerNameLinks,
     readImportedBudgetTable,
     tenantImportedBudgetRowKey,
 } from './budgetTableImport';
-import { resolveInitMonthInitialBudget, resolveInitMonthRevenueTarget } from './initDataBudget';
+import type { BudgetRowKeyLookup } from './budgetRowKey';
+import { resolveInitMonthRevenueTarget } from './initDataBudget';
 import { isNewSigningInYear, listNewSigningsInYear } from './newSigningMetrics';
 import { toFixedNumber, roundMoney2 } from './numberFormat';
 import {
     applyBillingPeriodDeferNotes,
+    buildReceivablePaymentPeriodIndex,
     billingStatusFromAmounts,
     parseSpecialBusinessReceivablesFromNotes,
     receivableBudgetMonthForBill,
     specialBusinessArDisplayTenantId,
-    sumManagementFeePaymentsAllocatedToBillingTenant,
-    sumRentPaymentsAllocatedToBillingTenant,
+    sumReceivablePaymentAmountForPeriod,
 } from './receivableListHelpers';
+import type { ReceivablePaymentPeriodIndex } from './receivableListHelpers';
 import { generateManagementFeeBills, shouldGenerateManagementFeeBills } from './managementFeeBillingService';
 import { isManagementFeeBillingEnabled } from './parkBillingConfig';
 import { computeParkAreaMetrics } from './parkAreaMetrics';
+import { summarizeLeaseStats } from './leaseStats';
+import {
+    buildReceivableContextForScenario,
+    getActiveScenarioForBudgetYear,
+    getReceivableScenarioForYear,
+    normalizeScenarioForReceivable,
+    resolveAnnualInitialBudget,
+} from './dashboardMetricHelpers';
 
-export type DashboardQuarter = 'All' | 'Q1' | 'Q2' | 'Q3' | 'Q4';
+const sameOptionalNumber = (a: number | undefined, b: number | undefined): boolean =>
+    a === b || (Number.isNaN(a) && Number.isNaN(b));
+
+const areRentFreePeriodsEqual = (
+    left: RentFreePeriod[] | undefined,
+    right: RentFreePeriod[] | undefined,
+): boolean => {
+    const a = left || [];
+    const b = right || [];
+    if (a.length !== b.length) return false;
+    for (let i = 0; i < a.length; i++) {
+        const x = a[i];
+        const y = b[i];
+        if (
+            x.start !== y.start ||
+            x.end !== y.end ||
+            x.description !== y.description ||
+            x.deductionMode !== y.deductionMode ||
+            !sameOptionalNumber(x.deductionAmount, y.deductionAmount)
+        ) {
+            return false;
+        }
+    }
+    return true;
+};
+
+const areLeaseUnitTermsEqual = (
+    left: LeaseUnitTerm[] | undefined,
+    right: LeaseUnitTerm[] | undefined,
+): boolean => {
+    const a = left || [];
+    const b = right || [];
+    if (a.length !== b.length) return false;
+    for (let i = 0; i < a.length; i++) {
+        const x = a[i];
+        const y = b[i];
+        if (
+            x.unitId !== y.unitId ||
+            x.unitName !== y.unitName ||
+            x.area !== y.area ||
+            !sameOptionalNumber(x.unitPrice, y.unitPrice) ||
+            !sameOptionalNumber(x.monthlyRent, y.monthlyRent) ||
+            !areRentFreePeriodsEqual(x.rentFreePeriods, y.rentFreePeriods)
+        ) {
+            return false;
+        }
+    }
+    return true;
+};
+import type { DashboardQuarter } from './dashboardMetricHelpers';
+export {
+    RECEIVABLE_DEDICATED_SCENARIO_ID_PREFIX,
+    buildKpiSummaryFromProcessedData,
+    buildReceivableContextForScenario,
+    getActiveScenarioForBudgetYear,
+    getReceivableScenarioForYear,
+    isReceivableDedicatedScenario,
+    isReceivableDedicatedScenarioId,
+    mergeAdjustmentsForReceivable,
+    mergeAssumptionsForReceivable,
+    normalizeKpiSummaryWithMonthlyTrends,
+    normalizeScenarioForReceivable,
+    normalizeYearlyTargetsFromInitialization,
+    resolveAnnualInitialBudget,
+    syncInvoiceDedicatedSnapshotsFromLive,
+} from './dashboardMetricHelpers';
+export type { DashboardQuarter } from './dashboardMetricHelpers';
 
 export type DashboardMetricResult = {
     processedData: DashboardData;
@@ -52,14 +130,15 @@ export type DashboardMetricOptions = {
     quickMode?: boolean;
     /** 工作台首屏可跳过账单明细，等表格展开后再按需计算 */
     includeCurrentMonthBilling?: boolean;
+    /** 首屏可跳过去年同比趋势，后台补算后再回填 */
+    includePrevYearTrends?: boolean;
 };
-
-export const RECEIVABLE_DEDICATED_SCENARIO_ID_PREFIX = 'invoice_dedicated_';
 
 type ContractReceivableResult = { totalAmountDue: number; byTenantId: Map<string, number> };
 
-type BillingCache = {
+export type BillingCache = {
     buildingById: Map<string, Building>;
+    budgetRowKeyLookup: BudgetRowKeyLookup;
     paymentsByTenantId: Map<string, PaymentRecord[]>;
     rentParkingByMonth: Map<string, number>;
     initByYearMonth: Map<string, MonthlyInitData>;
@@ -70,14 +149,16 @@ type BillingCache = {
     nextContextId: number;
     /** buildContractOnlyReceivableForPeriod 结果缓存，按 BillingCache 实例隔离 */
     contractReceivableByKey: Map<string, ContractReceivableResult>;
+    splitPaymentPeriodIndexByTenantContext: Map<string, ReceivablePaymentPeriodIndex>;
 };
 
-const createBillingCache = (
+export const createBillingCache = (
     buildings: Building[],
     payments: PaymentRecord[],
     initializationData: MonthlyInitData[]
 ): BillingCache => {
     const buildingById = new Map(buildings.map((b) => [b.id, b]));
+    const budgetRowKeyLookup = buildBudgetRowKeyLookup(buildingById);
     const paymentsByTenantId = new Map<string, PaymentRecord[]>();
     const rentParkingByMonth = new Map<string, number>();
     const initByYearMonth = new Map<string, MonthlyInitData>();
@@ -99,6 +180,7 @@ const createBillingCache = (
 
     return {
         buildingById,
+        budgetRowKeyLookup,
         paymentsByTenantId,
         rentParkingByMonth,
         initByYearMonth,
@@ -108,6 +190,7 @@ const createBillingCache = (
         contextSeq: new WeakMap(),
         nextContextId: 1,
         contractReceivableByKey: new Map(),
+        splitPaymentPeriodIndexByTenantContext: new Map(),
     };
 };
 
@@ -135,290 +218,24 @@ const getContextId = (cache: BillingCache, value: object | undefined): number =>
     return next;
 };
 
-export const getActiveScenarioForBudgetYear = (
-    scenarios: BudgetScenario[] | undefined,
-    year: number
-): BudgetScenario | undefined => {
-    // fallbackYear 必须等于查询年份。早先用 new Date().getFullYear() 会让「未设
-    // budgetYear 的方案」永远只匹配当年——查看 2025 数据时永远命中不到这些方案。
-    const fallbackYear = year;
-    return (scenarios || []).find((s) => s.isActive && (s.budgetYear || fallbackYear) === year);
+const listPaymentsFromCache = (cache: BillingCache): PaymentRecord[] => {
+    const payments: PaymentRecord[] = [];
+    for (const list of cache.paymentsByTenantId.values()) payments.push(...list);
+    return payments;
 };
 
-export const isReceivableDedicatedScenarioId = (id: string | undefined): boolean =>
-    String(id || '').startsWith(RECEIVABLE_DEDICATED_SCENARIO_ID_PREFIX);
-
-export const isReceivableDedicatedScenario = (scenario: BudgetScenario): boolean => {
-    const s = scenario as BudgetScenario & { isReceivableActive?: boolean };
-    if (s.isReceivableActive) return true;
-    const id = String(scenario.id || '').toLowerCase();
-    const name = String(scenario.name || '');
-    return isReceivableDedicatedScenarioId(String(scenario.id)) || id.includes('invoice_dedicated') || /应收.*专用|发票专用/.test(name);
-};
-
-export const getReceivableScenarioForYear = (
-    scenarios: BudgetScenario[] | undefined,
-    year: number
-): BudgetScenario | undefined => {
-    // 同上：fallbackYear 用查询年，避免历史方案在查看历年数据时永远匹配不到。
-    const fallbackYear = year;
-    const list = scenarios || [];
-    const byYear = (s: BudgetScenario) => (s.budgetYear || fallbackYear) === year;
-    return list.find((s) => byYear(s) && isReceivableDedicatedScenario(s)) || list.find((s) => byYear(s) && s.isActive);
-};
-
-/**
- * 应收专用方案内的 assumptions 为创建/同步时的拷贝；用户在「预算管理」里改的账期偏移、单价假设等
- * 只更新根级 `budgetAssumptions`。合并时同 target 以根级为准，避免核销月与合同概要/预算表不一致。
- *
- * 导出供「预算管理 → 预算表」在浏览非 Live 方案时复用，确保
- * 工作台/财务报表/预算表三处展示同一口径的「实际合同应收」。
- */
-export const mergeAssumptionsForReceivable = (
-    scenarioAssumptions: BudgetAssumption[] | undefined,
-    liveAssumptions: BudgetAssumption[] | undefined
-): BudgetAssumption[] => {
-    const key = (a: BudgetAssumption) => `${a.targetType}:${a.targetId}`;
-    const map = new Map<string, BudgetAssumption>();
-    for (const a of scenarioAssumptions || []) {
-        if (a.targetType === 'Existing' || a.targetType === 'Vacancy') map.set(key(a), a);
-    }
-    for (const a of liveAssumptions || []) {
-        if (a.targetType === 'Existing' || a.targetType === 'Vacancy') map.set(key(a), a);
-    }
-    return [...map.values()];
-};
-
-/** 同上：预算调整以根级 `budgetAdjustments` 覆盖同 id，避免专用方案内旧数组挡住新调账。 */
-export const mergeAdjustmentsForReceivable = (
-    scenarioAdjustments: BudgetAdjustment[] | undefined,
-    liveAdjustments: BudgetAdjustment[] | undefined
-): BudgetAdjustment[] => {
-    const map = new Map<string, BudgetAdjustment>();
-    for (const a of scenarioAdjustments || []) map.set(a.id, a);
-    for (const a of liveAdjustments || []) map.set(a.id, a);
-    return [...map.values()];
-};
-
-/**
- * 数据迁移后，旧 snapshot 内的合同 ID（如 `t1764124057542`）与当前 PocketBase
- * 原生 ID（如 `77yn75aw4qucg6h`）对不上，导致预算计算/调整按 ID 匹配 0 命中。
- * 此函数尝试把 snapshot 合同的 id 重映射到 live 合同的 id：先按 id 找；找不到
- * 再按 name + leaseStart 找；都没命中则保留原 snapshot（视为已删除的历史合同）。
- *
- * **不会**修改 snapshot 内合同的金额/起租等业务字段，只重写 id。
- */
-const remapSnapshotTenantIdsToLive = (
-    snapshotTenants: Tenant[] | undefined,
-    liveTenants: Tenant[],
-): Tenant[] => {
-    if (!snapshotTenants || snapshotTenants.length === 0) return snapshotTenants || [];
-    const liveById = new Set(liveTenants.map((t) => t.id));
-    const liveByNameStart = new Map<string, string>();
-    for (const t of liveTenants) {
-        if (!t?.name || !t?.leaseStart) continue;
-        const key = `${t.name}|${t.leaseStart}`;
-        if (!liveByNameStart.has(key)) liveByNameStart.set(key, t.id);
-    }
-    return snapshotTenants.map((s) => {
-        if (!s?.id) return s;
-        if (liveById.has(s.id)) return s;
-        const key = `${s.name}|${s.leaseStart}`;
-        const liveId = liveByNameStart.get(key);
-        if (!liveId) return s;
-        return { ...s, id: liveId };
+const getSplitPaymentPeriodIndex = (
+    cache: BillingCache,
+    paymentMatchTenants: Tenant[]
+): ReceivablePaymentPeriodIndex => {
+    const cacheKey = `split|${getContextId(cache, paymentMatchTenants)}`;
+    const cached = cache.splitPaymentPeriodIndexByTenantContext.get(cacheKey);
+    if (cached) return cached;
+    const index = buildReceivablePaymentPeriodIndex(listPaymentsFromCache(cache), paymentMatchTenants, {
+        splitMultiPeriodAmount: true,
     });
-};
-
-/**
- * 给定应收专用方案 + **持久化根级** `budgetAssumptions` / `budgetAdjustments`，返回「实际合同口径」上下文。
- *
- * 合并规则（与 `mergeAssumptionsForReceivable` 一致）：以方案内 Existing/Vacancy 为底，
- * 同 target / 同 id 以根级为准——用户在预算页改的账期偏移等应体现在核销/应收明细。
- *
- * ⚠️ 调用方必须传入 **DashboardData 根级** 假设与调整，勿传入当年「生效方案」的
- * `workingAssumptions`，否则会把年初预算方案等的付款转移叠进应收上下文（历史上曾造成
- * 工作台/财务与「实际合同口径」预算表约 88 万级偏差）。
- */
-export const buildReceivableContextForScenario = (
-    scenario: BudgetScenario | undefined,
-    liveTenants: Tenant[],
-    liveBuildings: Building[],
-    rootBudgetAssumptions: BudgetAssumption[] | undefined,
-    rootBudgetAdjustments: BudgetAdjustment[] | undefined,
-): {
-    tenants: Tenant[];
-    buildings: Building[];
-    assumptions: BudgetAssumption[];
-    adjustments: BudgetAdjustment[];
-} => {
-    if (!scenario) {
-        return {
-            tenants: liveTenants,
-            buildings: liveBuildings,
-            assumptions: rootBudgetAssumptions || [],
-            adjustments: rootBudgetAdjustments || [],
-        };
-    }
-    const remappedSnapshotTenants = remapSnapshotTenantIdsToLive(
-        scenario.baseDataSnapshot?.tenants,
-        liveTenants,
-    );
-    return {
-        tenants: remappedSnapshotTenants.length > 0 ? remappedSnapshotTenants : liveTenants,
-        buildings: scenario.baseDataSnapshot?.buildings || liveBuildings,
-        assumptions: mergeAssumptionsForReceivable(scenario.assumptions, rootBudgetAssumptions),
-        adjustments: mergeAdjustmentsForReceivable(scenario.adjustments, rootBudgetAdjustments),
-    };
-};
-
-const normalizeReceivableScenarioByYear = (scenarios: BudgetScenario[] | undefined): BudgetScenario[] => {
-    const list = [...(scenarios || [])];
-    if (list.length === 0) return list;
-    const fallbackYear = new Date().getFullYear();
-    const years = Array.from(new Set(list.map((s) => s.budgetYear || fallbackYear)));
-    years.forEach((year) => {
-        const sameYear = list.filter((s) => (s.budgetYear || fallbackYear) === year);
-        const dedicated = sameYear.filter((s) => !!s.isReceivableActive);
-        if (dedicated.length === 0) {
-            const active = sameYear.find((s) => s.isActive);
-            if (active) {
-                const idx = list.findIndex((s) => (s.budgetYear || fallbackYear) === year && s.id === active.id);
-                if (idx >= 0) list[idx] = { ...list[idx], isReceivableActive: true };
-            }
-            return;
-        }
-        const keepId = dedicated[0].id;
-        for (let i = 0; i < list.length; i++) {
-            const s = list[i];
-            if ((s.budgetYear || fallbackYear) === year && s.id !== keepId && s.isReceivableActive) {
-                list[i] = { ...s, isReceivableActive: false };
-            }
-        }
-    });
-    return list;
-};
-
-const ensureDedicatedReceivableScenarios = (
-    scenarios: BudgetScenario[] | undefined,
-    fallbackTenants: Tenant[],
-    fallbackBuildings: Building[]
-): BudgetScenario[] => {
-    const list = [...(scenarios || [])];
-    if (list.length === 0) return list;
-    const fallbackYear = new Date().getFullYear();
-    const years = Array.from(new Set(list.map((s) => s.budgetYear || fallbackYear)));
-
-    years.forEach((year) => {
-        const active = list.find((s) => s.isActive && (s.budgetYear || fallbackYear) === year);
-        if (!active) return;
-
-        // 用户手动指定了某个方案为「应收专用」时，**优先尊重用户选择**：不再自动创建合成
-        // 「invoice_dedicated_*」方案、也不再把用户的方案 isReceivableActive 强制设为 false。
-        // 这是用户截图反映「实际合同口径」与工作台不一致的根因之一：合成方案会复制 active 的
-        // 数据并劫持「应收口径」，让用户精心维护的「发票/实收专用方案」失去权威。
-        const userPickedReceivable = list.find(
-            (s) =>
-                (s.budgetYear || fallbackYear) === year &&
-                s.isReceivableActive &&
-                !isReceivableDedicatedScenarioId(s.id),
-        );
-        if (userPickedReceivable) {
-            // 清理可能残留的同年合成方案（避免双重 isReceivableActive 导致 getReceivableScenarioForYear 选错）
-            const dedicatedId = `${RECEIVABLE_DEDICATED_SCENARIO_ID_PREFIX}${year}`;
-            const dedicatedIdx = list.findIndex((s) => s.id === dedicatedId);
-            if (dedicatedIdx >= 0) {
-                list[dedicatedIdx] = { ...list[dedicatedIdx], isReceivableActive: false } as BudgetScenario;
-            }
-            return;
-        }
-
-        const dedicatedId = `${RECEIVABLE_DEDICATED_SCENARIO_ID_PREFIX}${year}`;
-        const activeTenants = active.baseDataSnapshot?.tenants || fallbackTenants;
-        const activeBuildings = active.baseDataSnapshot?.buildings || fallbackBuildings;
-        const dedicatedPayload: Partial<BudgetScenario> = {
-            name: `${year}应收款专用方案`,
-            budgetYear: year,
-            description: `系统常驻：自动同步 ${active.name}（${year}生效方案）`,
-            assumptions: [...(active.assumptions || [])],
-            adjustments: [...(active.adjustments || [])],
-            isReceivableActive: true,
-            baseDataSnapshot: {
-                tenants: structuredClone(activeTenants),
-                buildings: structuredClone(activeBuildings),
-            },
-        };
-
-        const idx = list.findIndex((s) => s.id === dedicatedId);
-        if (idx >= 0) {
-            list[idx] = {
-                ...list[idx],
-                ...dedicatedPayload,
-                id: dedicatedId,
-                createdAt: list[idx].createdAt || new Date().toISOString(),
-                isActive: false,
-            } as BudgetScenario;
-        } else {
-            list.push({
-                id: dedicatedId,
-                createdAt: new Date().toISOString(),
-                isActive: false,
-                ...dedicatedPayload,
-            } as BudgetScenario);
-        }
-
-        for (let i = 0; i < list.length; i++) {
-            const s = list[i];
-            if ((s.budgetYear || fallbackYear) !== year) continue;
-            if (s.id !== dedicatedId && s.isReceivableActive) {
-                list[i] = { ...s, isReceivableActive: false };
-            }
-        }
-    });
-
-    return list;
-};
-
-/**
- * 将系统合成的 `invoice_dedicated_<year>` 应收专用方案快照与当前实时合同/楼宇对齐。
- * 合同中心保存后会触发 `recalculateMetrics` → `normalizeScenarioForReceivable`，从而避免
- * 核销仍按旧免租/账期快照计费（如顺江：快照 3 月免租、档案已 6–7 月）。
- * 不改动用户手动指定的非合成应收专用方案，也不动 assumptions / adjustments。
- */
-export const syncInvoiceDedicatedSnapshotsFromLive = (
-    scenarios: BudgetScenario[] | undefined,
-    liveTenants: Tenant[],
-    liveBuildings: Building[],
-): BudgetScenario[] => {
-    if (!scenarios?.length || !liveTenants.length) return scenarios || [];
-    return scenarios.map((s) => {
-        if (!isReceivableDedicatedScenarioId(s.id)) return s;
-        const tenantsForSnapshot = liveTenants.map((t) => {
-            const { keyMoments, nameHistory, paymentCycleChanges, ...core } = t;
-            return core;
-        });
-        return {
-            ...s,
-            baseDataSnapshot: {
-                tenants: tenantsForSnapshot,
-                buildings: structuredClone(liveBuildings),
-            },
-        };
-    });
-};
-
-export const normalizeScenarioForReceivable = (
-    scenarios: BudgetScenario[] | undefined,
-    fallbackTenants: Tenant[],
-    fallbackBuildings: Building[]
-): BudgetScenario[] => {
-    const withDedicated = ensureDedicatedReceivableScenarios(scenarios, fallbackTenants, fallbackBuildings);
-    const syncedDedicated = syncInvoiceDedicatedSnapshotsFromLive(
-        withDedicated,
-        fallbackTenants,
-        fallbackBuildings,
-    );
-    return normalizeReceivableScenarioByYear(syncedDedicated);
+    cache.splitPaymentPeriodIndexByTenantContext.set(cacheKey, index);
+    return index;
 };
 
 const applyImportedBudgetRowsToBillingDetails = (
@@ -438,16 +255,18 @@ const applyImportedBudgetRowsToBillingDetails = (
     if (importedByKey.size === 0) return details;
 
     const buildingById = cache.buildingById.size > 0 ? cache.buildingById : new Map(buildings.map((b) => [b.id, b]));
+    const budgetRowKeyLookup = cache.budgetRowKeyLookup || buildBudgetRowKeyLookup(buildingById);
     const nameLinks = readBudgetCustomerNameLinks(billingPeriodNotes, year);
     const importKeyByTenantId = new Map(nameLinks.map((l) => [l.tenantId, l.importKey] as const));
     const result = details.map((detail) => ({ ...detail }));
     const detailIndexByTenantId = new Map(result.map((detail, index) => [detail.tenantId, index] as const));
     const periodPrefix = `${year}-${String(month + 1).padStart(2, '0')}`;
+    const splitPaymentPeriodIndex = getSplitPaymentPeriodIndex(cache, paymentMatchTenants);
 
     for (const tenant of tenants) {
         // 特殊业态：合同 / 导入预算表都不再生成应收，金额由「财务报表 → 特殊业态收入录入」按月手工录入
         if (tenant.isSpecialBusiness) continue;
-        let importedRow = importedByKey.get(tenantImportedBudgetRowKey(tenant, buildingById));
+        let importedRow = importedByKey.get(tenantImportedBudgetRowKey(tenant, budgetRowKeyLookup));
         if (!importedRow) {
             const linkedKey = importKeyByTenantId.get(tenant.id);
             if (linkedKey) importedRow = importedByKey.get(linkedKey);
@@ -459,12 +278,7 @@ const applyImportedBudgetRowsToBillingDetails = (
         const amountPaid =
             existingIndex !== undefined
                 ? result[existingIndex].amountPaid
-                : sumRentPaymentsAllocatedToBillingTenant(
-                      tenant.id,
-                      periodPrefix,
-                      paymentMatchTenants,
-                      cache.paymentsByTenantId
-                  );
+                : sumReceivablePaymentAmountForPeriod(splitPaymentPeriodIndex, tenant.id, periodPrefix, 'rent');
 
         if (existingIndex !== undefined) {
             // 导入单元格为 0 / 空：视为「未填写该月覆盖」，保留应收专用方案+合同滚动推算金额。
@@ -599,6 +413,7 @@ const getBillingDetailsForPeriodInternal = (
     const periodPrefix = `${year}-${String(month + 1).padStart(2, '0')}`;
     const details: BillingDetail[] = [];
     const combinedTenants = [...allTenants, ...virtualTenants];
+    const splitPaymentPeriodIndex = getSplitPaymentPeriodIndex(cache, paymentMatchTenants);
 
     const earlyTerminationBreakdownInPeriod = (
         tenant: Tenant,
@@ -640,12 +455,7 @@ const getBillingDetailsForPeriodInternal = (
             contextKey
         );
 
-        const amountPaid = sumRentPaymentsAllocatedToBillingTenant(
-            tenant.id,
-            periodPrefix,
-            paymentMatchTenants,
-            cache.paymentsByTenantId
-        );
+        const amountPaid = sumReceivablePaymentAmountForPeriod(splitPaymentPeriodIndex, tenant.id, periodPrefix, 'rent');
 
         if (tenant.status === 'Terminated' && !tenant.id.startsWith('virt_')) {
             if (amountDue <= 0.005 && amountPaid <= 0.005) continue;
@@ -669,11 +479,11 @@ const getBillingDetailsForPeriodInternal = (
 
         if (isManagementFeeBillingEnabled(tenant.projectId) && shouldGenerateManagementFeeBills(tenant)) {
             const mgmtDue = calculateManagementFeeReceivableForTenant(tenant, periodStart, cache, contextKey);
-            const mgmtPaid = sumManagementFeePaymentsAllocatedToBillingTenant(
+            const mgmtPaid = sumReceivablePaymentAmountForPeriod(
+                splitPaymentPeriodIndex,
                 tenant.id,
                 periodPrefix,
-                paymentMatchTenants,
-                cache.paymentsByTenantId,
+                'management_fee',
             );
             if (tenant.status === 'Terminated' && !tenant.id.startsWith('virt_')) {
                 if (mgmtDue <= 0.005 && mgmtPaid <= 0.005) {
@@ -734,8 +544,8 @@ export const mergeTenantsForReceivablePeriod = (
         snapshot.monthlyRent !== live.monthlyRent ||
         snapshot.unitPrice !== live.unitPrice ||
         snapshot.freeRentHandling !== live.freeRentHandling ||
-        JSON.stringify(snapshot.rentFreePeriods || []) !== JSON.stringify(live.rentFreePeriods || []) ||
-        JSON.stringify(snapshot.unitTerms || snapshot.paymentTerms || []) !== JSON.stringify(live.unitTerms || live.paymentTerms || []) ||
+        !areRentFreePeriodsEqual(snapshot.rentFreePeriods, live.rentFreePeriods) ||
+        !areLeaseUnitTermsEqual(snapshot.unitTerms || snapshot.paymentTerms, live.unitTerms || live.paymentTerms) ||
         snapshot.earlyTerminationFreeRentClawbackOverride !== live.earlyTerminationFreeRentClawbackOverride ||
         snapshot.earlyTerminationDepositDeduction !== live.earlyTerminationDepositDeduction ||
         snapshot.earlyTerminationOtherAdjustment !== live.earlyTerminationOtherAdjustment;
@@ -745,7 +555,7 @@ export const mergeTenantsForReceivablePeriod = (
         if (snapshot.firstPaymentDate !== live.firstPaymentDate && live.firstPaymentDate) candidates.push(live.firstPaymentDate);
         if (snapshot.signingDate !== live.signingDate && live.signingDate) candidates.push(live.signingDate);
         if (snapshot.leaseStart !== live.leaseStart && live.leaseStart) candidates.push(live.leaseStart);
-        if (JSON.stringify(snapshot.rentFreePeriods || []) !== JSON.stringify(live.rentFreePeriods || [])) {
+        if (!areRentFreePeriodsEqual(snapshot.rentFreePeriods, live.rentFreePeriods)) {
             for (const r of live.rentFreePeriods || []) {
                 if (r?.start) candidates.push(r.start);
             }
@@ -920,7 +730,7 @@ export const buildContractOnlyReceivableForPeriod = (
     );
     // 检查结果缓存（BillingCache 实例级隔离，不同调用方不串号）
     const contextKey = `cr|${getContextId(localCache, receivableCtx.assumptions)}|${getContextId(localCache, receivableCtx.adjustments)}`;
-    const cacheKey = `${year}|${month}`;
+    const cacheKey = `${contextKey}|${year}|${month}`;
     const cached = localCache.contractReceivableByKey.get(cacheKey);
     if (cached) return cached;
 
@@ -1272,6 +1082,7 @@ export const calculateDashboardMetrics = (
         billingSelectedMonth,
         quickMode = false,
         includeCurrentMonthBilling = true,
+        includePrevYearTrends = true,
     } = options;
     const tenants = currentData.tenants || [];
     const projectId = tenants[0]?.projectId || '';
@@ -1402,24 +1213,26 @@ export const calculateDashboardMetrics = (
         : quarter === 'All'
           ? fullYearMonthlyTrends
           : sliceQuarterFromFullYear(fullYearMonthlyTrends, year, quarter);
-    const prevYearMonthlyTrends = quickMode ? [] : calculateTrends(
-        tenants,
-        virtualTenants,
-        payments,
-        totalLeasableArea,
-        selfUseUnitIds,
-        year - 1,
-        'All',
-        workingAssumptions,
-        workingAdjustments,
-        initData,
-        buildings,
-        budgetContextForPrevYear,
-        cache,
-        currentData.billingPeriodNotes,
-        contractReceivableCtxForPrevYear,
-        projectId,
-    );
+    const prevYearMonthlyTrends = quickMode || !includePrevYearTrends
+        ? []
+        : calculateTrends(
+            tenants,
+            virtualTenants,
+            payments,
+            totalLeasableArea,
+            selfUseUnitIds,
+            year - 1,
+            'All',
+            workingAssumptions,
+            workingAdjustments,
+            initData,
+            buildings,
+            budgetContextForPrevYear,
+            cache,
+            currentData.billingPeriodNotes,
+            contractReceivableCtxForPrevYear,
+            projectId,
+        );
 
     const annualRevenueCollected = monthlyTrends.reduce((sum, t) => sum + (t.revenueCollected || 0), 0);
     const annualRevenueTarget = monthlyTrends.reduce((sum, t) => sum + t.revenueTarget, 0);
@@ -1509,6 +1322,9 @@ export const calculateDashboardMetrics = (
         return end >= periodStart && end <= periodEnd;
     });
 
+    const leaseStats = quickMode
+        ? currentData.leaseStats
+        : summarizeLeaseStats(tenants, year, now);
     const newSigningsInMonth = tenants.filter(
         (tenant) =>
             tenant.signingDate &&
@@ -1581,7 +1397,10 @@ export const calculateDashboardMetrics = (
 
     // quickMode 跳过重算时保留已有衍生指标，避免非 Dashboard 页编辑后 KPI 被清空
     const resolvedMonthlyTrends = quickMode ? (currentData.monthlyTrends ?? []) : monthlyTrends;
-    const resolvedPrevYearMonthlyTrends = quickMode ? (currentData.prevYearMonthlyTrends ?? []) : prevYearMonthlyTrends;
+    const resolvedPrevYearMonthlyTrends =
+        quickMode || !includePrevYearTrends
+            ? (currentData.prevYearMonthlyTrends ?? [])
+            : prevYearMonthlyTrends;
     const resolvedAccumulatedArrears = quickMode ? (currentData.accumulatedArrears ?? 0) : accumulatedArrears;
     const resolvedCurrentMonthBilling = quickMode ? (currentData.currentMonthBilling ?? []) : currentMonthBilling;
 
@@ -1624,6 +1443,7 @@ export const calculateDashboardMetrics = (
         terminatedContractsCount,
         terminatedContractsArea,
         netIncreaseArea,
+        leaseStats,
         recentSignings,
         expiringSoon,
         monthlyTrends: resolvedMonthlyTrends,
@@ -1645,152 +1465,4 @@ export const calculateDashboardMetrics = (
     };
 
     return { processedData, fullYearMonthlyTrends };
-};
-
-/**
- * 年初预算年度值（元）：与首页「预算执行」表底部「年初预算」合计、`StatsCards` 同源。
- * 当年初始化数据中任一月份存在 `initialBudget` 时，年度值 = 1–12 月之和（未维护月份按 0）；
- * 否则使用 `yearlyTargets[year].initialBudget`。
- */
-export const resolveAnnualInitialBudget = (
-    yearlyTargets: DashboardData['yearlyTargets'],
-    initializationData: MonthlyInitData[] | undefined,
-    year: number,
-    projectId?: string
-): number => {
-    const yearTarget = (yearlyTargets || {})[year] || {};
-    const annualFromYearly = Number((yearTarget as { initialBudget?: number }).initialBudget) || 0;
-
-    const byMonth = new Map<number, number>();
-    for (const d of initializationData || []) {
-        if (d.year !== year) continue;
-        const monthBudget = resolveInitMonthInitialBudget(d, projectId);
-        if (monthBudget <= 0.005) continue;
-        byMonth.set(d.month, monthBudget);
-    }
-    if (byMonth.size === 0) return annualFromYearly;
-
-    let sum = 0;
-    for (let m = 1; m <= 12; m++) sum += byMonth.get(m) ?? 0;
-    return sum;
-};
-
-/**
- * 将 yearlyTargets 与初始化数据对齐：年初目标取自 initializationData，`revenue` 清零（历史手工/预算方案导入脏值）。
- */
-export const normalizeYearlyTargetsFromInitialization = (
-    yearlyTargets: DashboardData['yearlyTargets'],
-    initializationData: MonthlyInitData[] | undefined,
-    projectId?: string
-): DashboardData['yearlyTargets'] => {
-    const out: NonNullable<DashboardData['yearlyTargets']> = { ...(yearlyTargets || {}) };
-    const years = new Set<number>([
-        ...Object.keys(out).map((y) => Number(y)),
-        ...(initializationData || []).map((d) => d.year),
-    ]);
-    for (const year of years) {
-        if (!Number.isFinite(year)) continue;
-        const existing = out[year] || { revenue: 0, occupancy: 0, initialBudget: 0 };
-        const initial = resolveAnnualInitialBudget(out, initializationData, year, projectId);
-        out[year] = {
-            ...existing,
-            revenue: 0,
-            initialBudget: initial > 0 ? initial : existing.initialBudget || 0,
-        };
-    }
-    return out;
-};
-
-/**
- * KPI 汇总：`annualRevenueTarget` 在仪表盘主流程里来自 yearlyTargets（手工年度指标），
- * `monthlyTrends` 汇总则是预算引擎滚动的应收目标。若未维护年度指标但月度预算存在，
- * 管理员「所有园区经营汇总」会出现财务列为 0、预算分母却含该园区的不一致。
- * 口径：年度指标优先；未填时回退为月度汇总（与 annualBudgetTarget 一致）。
- * `annualGoalCompletion` 与管理员汇总顶栏一致：优先 **实收 / 实际合同应收**；无合同应收分母时回退为 **实收 / 年度应收目标**。
- */
-export const buildKpiSummaryFromProcessedData = (processedData: DashboardData, statsYear?: number): KpiSnapshotSummary => {
-    const trends = processedData.monthlyTrends || [];
-    // 预算目标（来自导入 Excel 或初始化数据，含空置去化预测）
-    const annualBudgetTarget = trends.reduce((sum, trend) => sum + (trend.revenueTarget || 0), 0);
-    // 实际合同应收 = 仅真实履约合同滚动汇总（与预算表「全年合同应收」、工作台「合同应收」列同口径）
-    const annualContractReceivable = trends.reduce((sum, trend) => sum + (trend.contractReceivable || 0), 0);
-    const annualRevenueCollected = processedData.annualRevenueCollected || 0;
-    const year = statsYear || new Date().getFullYear();
-    const annualInitialBudget = resolveAnnualInitialBudget(
-        processedData.yearlyTargets,
-        processedData.initializationData,
-        year,
-        processedData.tenants?.[0]?.projectId
-    );
-    const annualRevenueTarget =
-        annualInitialBudget > 0
-            ? annualInitialBudget
-            : annualBudgetTarget > 0
-              ? annualBudgetTarget
-              : processedData.annualRevenueTarget || processedData.monthlyRevenueTarget || 0;
-    /** 与管理员汇总顶栏「完成率（实收/合同应收）」一致；无合同应收分母时回退为实收/年度应收目标 */
-    const annualGoalCompletion =
-        annualContractReceivable > 0.005
-            ? Math.min(100, (annualRevenueCollected / annualContractReceivable) * 100)
-            : annualRevenueTarget > 0
-                ? Math.min(100, (annualRevenueCollected / annualRevenueTarget) * 100)
-                : 0;
-
-    return {
-        annualRevenueTarget,
-        annualRevenueCollected,
-        annualInitialBudget,
-        annualBudgetTarget,
-        annualContractReceivable,
-        annualGoalCompletion,
-        annualBudgetCompletion:
-            annualBudgetTarget > 0
-                ? Math.min(100, (annualRevenueCollected / annualBudgetTarget) * 100)
-                : 0,
-        occupancyRate: processedData.occupancyRate || 0,
-        annualOccupancyTarget: processedData.annualOccupancyTarget || 0,
-        tenantCount: processedData.tenants?.length || 0,
-        totalArea: processedData.totalArea || 0,
-        leasedArea: processedData.leasedArea || 0,
-        vacantArea: processedData.vacantArea || 0,
-        accumulatedArrears: processedData.accumulatedArrears || 0,
-    };
-};
-
-/** 从 PocketBase 读取的 KPI 快照：用 monthly_trends 重算预算分母，并对齐年度目标回退逻辑（兼容旧快照）。 */
-export const normalizeKpiSummaryWithMonthlyTrends = (
-    summary: KpiSnapshotSummary,
-    monthlyTrends: MonthlyTrend[]
-): KpiSnapshotSummary => {
-    const sumFromTrends = (monthlyTrends || []).reduce((sum, t) => sum + (t.revenueTarget || 0), 0);
-    const annualBudgetTarget = sumFromTrends > 0 ? sumFromTrends : summary.annualBudgetTarget || 0;
-    const contractSumFromTrends = (monthlyTrends || []).reduce((sum, t) => sum + (t.contractReceivable || 0), 0);
-    const annualContractReceivableResolved =
-        contractSumFromTrends > 0 ? contractSumFromTrends : summary.annualContractReceivable || 0;
-    const annualInitialFromSummary = summary.annualInitialBudget || 0;
-    const annualRevenueTarget =
-        annualInitialFromSummary > 0
-            ? annualInitialFromSummary
-            : annualBudgetTarget > 0
-              ? annualBudgetTarget
-              : summary.annualRevenueTarget || 0;
-    const collected = summary.annualRevenueCollected || 0;
-    const revenueTargetDenom = annualRevenueTarget;
-
-    const annualGoalCompletion =
-        annualContractReceivableResolved > 0.005
-            ? Math.min(100, (collected / annualContractReceivableResolved) * 100)
-            : revenueTargetDenom > 0
-                ? Math.min(100, (collected / revenueTargetDenom) * 100)
-                : summary.annualGoalCompletion || 0;
-
-    return {
-        ...summary,
-        annualBudgetTarget,
-        annualRevenueTarget,
-        annualContractReceivable: annualContractReceivableResolved,
-        annualGoalCompletion,
-        annualBudgetCompletion:
-            annualBudgetTarget > 0 ? Math.min(100, (collected / annualBudgetTarget) * 100) : 0,
-    };
 };

@@ -13,14 +13,18 @@
  *   PB_ADMIN_EMAIL / PB_ADMIN_PASSWORD  管理员凭证
  */
 
-import { initPocketBase, authenticatePocketBase, fetchPocketBaseBackup } from '../services/pocketbaseService';
+import { initPocketBase, authenticatePocketBase, fetchPocketBaseBackup, readCloudSaveVersion } from '../services/pocketbaseService';
 import type { RecordMeta } from '../services/pocketbaseService';
 import {
+    buildContractOnlyReceivableForPeriod,
     calculateDashboardMetrics,
     buildKpiSummaryFromProcessedData,
+    createBillingCache,
     normalizeKpiSummaryWithMonthlyTrends,
+    normalizeYearlyTargetsFromInitialization,
     type DashboardMetricOptions,
 } from '../services/dashboardMetrics';
+import { generateInitialData } from '../services/mockData';
 import {
     normalizeReceivableRemaining,
     parsePaymentPeriodYYYYMMs,
@@ -28,7 +32,39 @@ import {
     receivableBudgetDisplay,
 } from '../services/receivableListHelpers';
 import { roundMoney2 } from '../services/numberFormat';
-import type { DashboardData, MonthlyTrend, BillingDetail, PaymentRecord, Tenant } from '../types';
+import { transitionContractStatuses } from '../services/sharedUtils';
+import {
+    generateBudgetedBills,
+    type BudgetedBill,
+    type GenerateBudgetedBillsOptions,
+} from '../services/billingService';
+import {
+    computeSourceAgentMetrics,
+    type SourceAnalysisPeriod,
+    type SourceAnalysisSummary,
+} from '../services/sourceAgentMetrics';
+import {
+    buildContractAnalysisMetrics,
+    type ContractAnalysisMetrics,
+    type ContractAnalysisPeriod,
+} from '../services/contractAnalysisMetrics';
+import {
+    buildTenantHistoricalArrears,
+    type TenantHistoricalArrearsSummary,
+} from '../services/tenantHistoricalArrears';
+import type { ReceivablePermission } from '../services/receivablePermissions';
+import type {
+    BudgetAdjustment,
+    BudgetAssumption,
+    BudgetScenario,
+    Building,
+    DashboardData,
+    MonthlyInitData,
+    MonthlyTrend,
+    BillingDetail,
+    PaymentRecord,
+    Tenant,
+} from '../types';
 import type { KpiSnapshotSummary } from '../services/pocketbaseService';
 
 // ── 配置 ──
@@ -38,6 +74,188 @@ const ADMIN_EMAIL = process.env.PB_ADMIN_EMAIL || '';
 const ADMIN_PASSWORD = process.env.PB_ADMIN_PASSWORD || '';
 
 let initialized = false;
+
+const DEFAULT_COMPUTE_CACHE_TTL_MS = 30 * 60_000;
+const BILLING_CACHE_TTL_MS = Math.max(0, Number(process.env.COMPUTE_BILLING_CACHE_TTL_MS || DEFAULT_COMPUTE_CACHE_TTL_MS));
+const BILLING_CACHE_MAX_ENTRIES = Math.max(12, Number(process.env.COMPUTE_BILLING_CACHE_MAX_ENTRIES || 120));
+const DASHBOARD_CACHE_TTL_MS = Math.max(0, Number(process.env.COMPUTE_DASHBOARD_CACHE_TTL_MS || DEFAULT_COMPUTE_CACHE_TTL_MS));
+const DASHBOARD_CACHE_MAX_ENTRIES = Math.max(12, Number(process.env.COMPUTE_DASHBOARD_CACHE_MAX_ENTRIES || 60));
+const COMPUTE_VERSION_CACHE_TTL_MS = Math.max(0, Number(process.env.COMPUTE_VERSION_CACHE_TTL_MS || 2_000));
+const COMPUTE_VERSION_CACHE_MAX_ENTRIES = Math.max(6, Number(process.env.COMPUTE_VERSION_CACHE_MAX_ENTRIES || 24));
+
+type BillingCacheEntry = {
+    expiresAt: number;
+    result: ComputeBillingResult;
+};
+
+type DashboardCacheEntry = {
+    expiresAt: number;
+    result: ComputeDashboardDataResult;
+};
+
+type ComputeVersionCacheEntry = {
+    expiresAt: number;
+    promise?: Promise<number>;
+    version?: number;
+};
+
+const billingComputeCache = new Map<string, BillingCacheEntry>();
+const dashboardComputeCache = new Map<string, DashboardCacheEntry>();
+const computeVersionCache = new Map<string, ComputeVersionCacheEntry>();
+let computeVersionCacheEpoch = 0;
+const COMPUTE_CACHE_LOG_ENABLED = process.env.COMPUTE_CACHE_LOG_ENABLED !== '0';
+
+const billingCacheKey = (
+    projectId: string,
+    year: number,
+    month: number,
+    version: number,
+): string => `${projectId}|${year}|${month}|v${version}`;
+
+const dashboardCacheKey = (
+    projectId: string,
+    year: number,
+    quarter: DashboardMetricOptions['quarter'],
+    billingSelectedMonth: string,
+    quickMode: boolean | undefined,
+    includeCurrentMonthBilling: boolean | undefined,
+    includePrevYearTrends: boolean | undefined,
+    loadScope: ComputeDashboardLoadScope,
+    version: number,
+): string => [
+    projectId,
+    year,
+    quarter,
+    billingSelectedMonth,
+    quickMode ? 'quick' : 'full',
+    includeCurrentMonthBilling ? 'with-billing' : 'without-billing',
+    includePrevYearTrends === false ? 'without-prev-year' : 'with-prev-year',
+    loadScope.kind === 'full' ? 'scope:full' : `scope:year:${loadScope.year}`,
+    `v${version}`,
+].join('|');
+
+function logComputeCache(
+    kind: 'dashboard' | 'billing',
+    status: 'hit' | 'miss' | 'expired' | 'store' | 'skip',
+    key: string,
+): void {
+    if (!COMPUTE_CACHE_LOG_ENABLED) return;
+    console.info(`[compute-cache] ${kind} ${status}`, { key });
+}
+
+const cloneComputeBillingResult = (result: ComputeBillingResult): ComputeBillingResult => ({
+    ...result,
+    billingDetails: result.billingDetails.map((row) => ({ ...row })),
+    financeSummary: result.financeSummary ? { ...result.financeSummary } : undefined,
+});
+
+const cloneJson = <T,>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
+
+const cloneComputeDashboardDataResult = (result: ComputeDashboardDataResult): ComputeDashboardDataResult => ({
+    ...result,
+    loadScope: { ...result.loadScope },
+    processedData: cloneJson(result.processedData),
+    baselineData: cloneJson(result.baselineData),
+    recordMeta: result.recordMeta ? cloneJson(result.recordMeta) : undefined,
+    fullYearMonthlyTrends: result.fullYearMonthlyTrends.map((row) => ({ ...row })),
+});
+
+export function clearComputeCaches(projectId?: string): void {
+    if (!projectId) {
+        billingComputeCache.clear();
+        dashboardComputeCache.clear();
+        computeVersionCache.clear();
+        computeVersionCacheEpoch++;
+        return;
+    }
+    const prefix = `${projectId}|`;
+    for (const key of [...billingComputeCache.keys()]) {
+        if (key.startsWith(prefix)) billingComputeCache.delete(key);
+    }
+    for (const key of [...dashboardComputeCache.keys()]) {
+        if (key.startsWith(prefix)) dashboardComputeCache.delete(key);
+    }
+    computeVersionCache.delete(projectId);
+    computeVersionCacheEpoch++;
+}
+
+function putBillingCache(key: string, result: ComputeBillingResult, version: number): void {
+    if (BILLING_CACHE_TTL_MS <= 0 || version <= 0) return;
+    billingComputeCache.set(key, {
+        expiresAt: Date.now() + BILLING_CACHE_TTL_MS,
+        result: cloneComputeBillingResult(result),
+    });
+    while (billingComputeCache.size > BILLING_CACHE_MAX_ENTRIES) {
+        const first = billingComputeCache.keys().next().value;
+        if (!first) break;
+        billingComputeCache.delete(first);
+    }
+}
+
+function putDashboardCache(key: string, result: ComputeDashboardDataResult, version: number): void {
+    if (DASHBOARD_CACHE_TTL_MS <= 0 || version <= 0) return;
+    dashboardComputeCache.set(key, {
+        expiresAt: Date.now() + DASHBOARD_CACHE_TTL_MS,
+        result: cloneComputeDashboardDataResult(result),
+    });
+    while (dashboardComputeCache.size > DASHBOARD_CACHE_MAX_ENTRIES) {
+        const first = dashboardComputeCache.keys().next().value;
+        if (!first) break;
+        dashboardComputeCache.delete(first);
+    }
+}
+
+function trimComputeVersionCache(): void {
+    while (computeVersionCache.size > COMPUTE_VERSION_CACHE_MAX_ENTRIES) {
+        const first = computeVersionCache.keys().next().value;
+        if (!first) break;
+        computeVersionCache.delete(first);
+    }
+}
+
+export async function readComputeDataVersion(projectId: string): Promise<number> {
+    if (!initialized) {
+        await ensureInit();
+    }
+    if (COMPUTE_VERSION_CACHE_TTL_MS > 0) {
+        const cached = computeVersionCache.get(projectId);
+        if (cached && cached.expiresAt > Date.now()) {
+            if (cached.promise) return cached.promise;
+            if (typeof cached.version === 'number') return cached.version;
+        }
+        if (cached) computeVersionCache.delete(projectId);
+    }
+
+    try {
+        const cacheEpoch = computeVersionCacheEpoch;
+        const readPromise = readCloudSaveVersion(projectId)
+            .then((version) => {
+                const safeVersion = Number.isFinite(version) ? Math.max(0, Math.floor(version)) : 0;
+                if (COMPUTE_VERSION_CACHE_TTL_MS > 0 && cacheEpoch === computeVersionCacheEpoch) {
+                    computeVersionCache.set(projectId, {
+                        version: safeVersion,
+                        expiresAt: Date.now() + COMPUTE_VERSION_CACHE_TTL_MS,
+                    });
+                    trimComputeVersionCache();
+                }
+                return safeVersion;
+            })
+            .catch((e) => {
+                if (cacheEpoch === computeVersionCacheEpoch) computeVersionCache.delete(projectId);
+                throw e;
+            });
+        if (COMPUTE_VERSION_CACHE_TTL_MS > 0) {
+            computeVersionCache.set(projectId, {
+                promise: readPromise,
+                expiresAt: Date.now() + COMPUTE_VERSION_CACHE_TTL_MS,
+            });
+            trimComputeVersionCache();
+        }
+        return await readPromise;
+    } catch {
+        return -1;
+    }
+}
 
 /** 初始化 PocketBase 连接（幂等） */
 export async function ensureInit(): Promise<void> {
@@ -94,6 +312,7 @@ export async function computeKpi(
         year,
         quarter: 'All',
         billingSelectedMonth: new Date().toISOString().slice(0, 7),
+        includePrevYearTrends: false,
     };
 
     const { processedData, fullYearMonthlyTrends } = calculateDashboardMetrics(rawData, options);
@@ -112,6 +331,370 @@ export async function computeKpi(
         fullYearTrends: fullYearMonthlyTrends,
         computedAt: new Date().toISOString(),
         dataVersion: rawData.cloudSaveVersion ?? 0,
+    };
+}
+
+export interface ComputeDashboardDataResult {
+    ok: boolean;
+    projectId: string;
+    year: number;
+    quarter: DashboardMetricOptions['quarter'];
+    loadScope: ComputeDashboardLoadScope;
+    processedData: DashboardData;
+    baselineData: DashboardData;
+    recordMeta?: RecordMeta;
+    fullYearMonthlyTrends: MonthlyTrend[];
+    computedAt: string;
+    dataVersion: number;
+    message?: string;
+}
+
+export type ComputeDashboardLoadScope = { kind: 'full' } | { kind: 'year'; year: number };
+
+export interface ComputeDashboardDraftResult {
+    ok: boolean;
+    projectId: string;
+    year: number;
+    quarter: DashboardMetricOptions['quarter'];
+    processedData: DashboardData;
+    fullYearMonthlyTrends: MonthlyTrend[];
+    computedAt: string;
+    dataVersion: number;
+    message?: string;
+}
+
+export function buildComputeKpiResultFromDashboardData(
+    dashboard: ComputeDashboardDataResult,
+): ComputeKpiResult {
+    if (!dashboard.ok) {
+        return {
+            ok: false,
+            projectId: dashboard.projectId,
+            year: dashboard.year,
+            summary: {} as KpiSnapshotSummary,
+            monthlyTrends: [],
+            fullYearTrends: [],
+            computedAt: dashboard.computedAt,
+            dataVersion: dashboard.dataVersion,
+            message: dashboard.message || '无法计算 KPI',
+        };
+    }
+    const summary = buildKpiSummaryFromProcessedData(dashboard.processedData, dashboard.year);
+    const normalized = normalizeKpiSummaryWithMonthlyTrends(summary, dashboard.fullYearMonthlyTrends);
+    return {
+        ok: true,
+        projectId: dashboard.projectId,
+        year: dashboard.year,
+        summary: normalized,
+        monthlyTrends: dashboard.fullYearMonthlyTrends.slice(0, 12),
+        fullYearTrends: dashboard.fullYearMonthlyTrends,
+        computedAt: dashboard.computedAt,
+        dataVersion: dashboard.dataVersion,
+    };
+}
+
+export async function computeDashboardDraft(
+    projectId: string,
+    draftData: DashboardData,
+    options: {
+        year: number;
+        quarter?: DashboardMetricOptions['quarter'];
+        billingSelectedMonth?: string;
+        quickMode?: boolean;
+        includeCurrentMonthBilling?: boolean;
+        includePrevYearTrends?: boolean;
+    },
+): Promise<ComputeDashboardDraftResult> {
+    const year = options.year;
+    const quarter = options.quarter || 'All';
+    const billingSelectedMonth = options.billingSelectedMonth || new Date().toISOString().slice(0, 7);
+    let metricsInput: DashboardData = { ...generateInitialData(), ...draftData };
+    const autoTenants = transitionContractStatuses(metricsInput.tenants || []);
+    if (autoTenants !== metricsInput.tenants) {
+        metricsInput = { ...metricsInput, tenants: autoTenants };
+    }
+    metricsInput = {
+        ...metricsInput,
+        yearlyTargets: normalizeYearlyTargetsFromInitialization(
+            metricsInput.yearlyTargets,
+            metricsInput.initializationData,
+            projectId,
+        ),
+    };
+
+    const metricOptions: DashboardMetricOptions = {
+        year,
+        quarter,
+        billingSelectedMonth,
+        quickMode: options.quickMode,
+        includeCurrentMonthBilling: options.includeCurrentMonthBilling,
+        includePrevYearTrends: options.includePrevYearTrends,
+    };
+    const { processedData, fullYearMonthlyTrends } = calculateDashboardMetrics(metricsInput, metricOptions);
+    const dataVersion =
+        typeof metricsInput.cloudSaveVersion === 'number' && Number.isFinite(metricsInput.cloudSaveVersion)
+            ? Math.max(0, Math.floor(metricsInput.cloudSaveVersion))
+            : 0;
+
+    return {
+        ok: true,
+        projectId,
+        year,
+        quarter,
+        processedData,
+        fullYearMonthlyTrends,
+        computedAt: new Date().toISOString(),
+        dataVersion,
+    };
+}
+
+export async function computeDashboardData(
+    projectId: string,
+    options: {
+        year: number;
+        quarter?: DashboardMetricOptions['quarter'];
+        billingSelectedMonth?: string;
+        quickMode?: boolean;
+        includeCurrentMonthBilling?: boolean;
+        includePrevYearTrends?: boolean;
+        loadScope?: ComputeDashboardLoadScope;
+    },
+): Promise<ComputeDashboardDataResult> {
+    await ensureInit();
+
+    const year = options.year;
+    const quarter = options.quarter || 'All';
+    const scopedYear =
+        options.loadScope?.kind === 'year' && Number.isFinite(options.loadScope.year)
+            ? Math.floor(options.loadScope.year)
+            : year;
+    const shouldLoadFullForPrevYearTrends = options.includePrevYearTrends !== false && options.quickMode !== true;
+    const loadScope: ComputeDashboardLoadScope =
+        options.loadScope?.kind === 'full'
+            ? { kind: 'full' }
+            : { kind: 'year', year: scopedYear };
+    const resolvedLoadScope: ComputeDashboardLoadScope =
+        options.loadScope
+            ? loadScope
+            : shouldLoadFullForPrevYearTrends
+              ? { kind: 'full' }
+              : loadScope;
+    const billingSelectedMonth = options.billingSelectedMonth || new Date().toISOString().slice(0, 7);
+    const cacheVersion = await readComputeDataVersion(projectId);
+    const cacheKey = dashboardCacheKey(
+        projectId,
+        year,
+        quarter,
+        billingSelectedMonth,
+        options.quickMode,
+        options.includeCurrentMonthBilling,
+        options.includePrevYearTrends,
+        resolvedLoadScope,
+        cacheVersion,
+    );
+    if (DASHBOARD_CACHE_TTL_MS > 0 && cacheVersion > 0) {
+        const cached = dashboardComputeCache.get(cacheKey);
+        if (cached && cached.expiresAt > Date.now()) {
+            logComputeCache('dashboard', 'hit', cacheKey);
+            return cloneComputeDashboardDataResult(cached.result);
+        }
+        if (cached) {
+            logComputeCache('dashboard', 'expired', cacheKey);
+            dashboardComputeCache.delete(cacheKey);
+        } else {
+            logComputeCache('dashboard', 'miss', cacheKey);
+        }
+    } else {
+        logComputeCache('dashboard', 'skip', cacheKey);
+    }
+
+    const fetchRes = await fetchPocketBaseBackup(
+        projectId,
+        resolvedLoadScope.kind === 'year' ? { year: resolvedLoadScope.year } : undefined,
+    );
+    if (!fetchRes.success || !fetchRes.data) {
+        return {
+            ok: false,
+            projectId,
+            year,
+            quarter,
+            loadScope: resolvedLoadScope,
+            processedData: generateInitialData(),
+            baselineData: generateInitialData(),
+            fullYearMonthlyTrends: [],
+            computedAt: new Date().toISOString(),
+            dataVersion: 0,
+            message: fetchRes.message || '无法拉取园区数据',
+        };
+    }
+
+    const baselineData: DashboardData = { ...generateInitialData(), ...fetchRes.data };
+    let metricsInput: DashboardData = baselineData;
+    const autoTenants = transitionContractStatuses(metricsInput.tenants || []);
+    if (autoTenants !== metricsInput.tenants) {
+        metricsInput = { ...metricsInput, tenants: autoTenants };
+    }
+    metricsInput = {
+        ...metricsInput,
+        yearlyTargets: normalizeYearlyTargetsFromInitialization(
+            metricsInput.yearlyTargets,
+            metricsInput.initializationData,
+            projectId,
+        ),
+    };
+
+    const metricOptions: DashboardMetricOptions = {
+        year,
+        quarter,
+        billingSelectedMonth,
+        quickMode: options.quickMode,
+        includeCurrentMonthBilling: options.includeCurrentMonthBilling,
+        includePrevYearTrends: options.includePrevYearTrends,
+    };
+    const { processedData, fullYearMonthlyTrends } = calculateDashboardMetrics(metricsInput, metricOptions);
+
+    const rawDataVersion =
+        typeof baselineData.cloudSaveVersion === 'number' && Number.isFinite(baselineData.cloudSaveVersion)
+            ? Math.max(0, Math.floor(baselineData.cloudSaveVersion))
+            : null;
+    const dataVersion = rawDataVersion ?? (cacheVersion >= 0 ? cacheVersion : 0);
+    const result: ComputeDashboardDataResult = {
+        ok: true,
+        projectId,
+        year,
+        quarter,
+        loadScope: resolvedLoadScope,
+        processedData,
+        baselineData,
+        recordMeta: fetchRes.recordMeta,
+        fullYearMonthlyTrends,
+        computedAt: new Date().toISOString(),
+        dataVersion,
+    };
+    if (DASHBOARD_CACHE_TTL_MS > 0 && dataVersion > 0) {
+        putDashboardCache(
+            dashboardCacheKey(
+                projectId,
+                year,
+                quarter,
+                billingSelectedMonth,
+                options.quickMode,
+                options.includeCurrentMonthBilling,
+                options.includePrevYearTrends,
+                resolvedLoadScope,
+                dataVersion,
+            ),
+            result,
+            dataVersion,
+        );
+        logComputeCache(
+            'dashboard',
+            'store',
+            dashboardCacheKey(
+                projectId,
+                year,
+                quarter,
+                billingSelectedMonth,
+                options.quickMode,
+                options.includeCurrentMonthBilling,
+                options.includePrevYearTrends,
+                resolvedLoadScope,
+                dataVersion,
+            ),
+        );
+    }
+    return result;
+}
+
+export interface ComputeTenantHistoricalArrearsResult {
+    ok: boolean;
+    projectId: string;
+    available: boolean;
+    items: Array<TenantHistoricalArrearsSummary & { tenantId: string }>;
+    startPeriod?: string;
+    endPeriod?: string;
+    unavailableReason?: string;
+    computedAt: string;
+    dataVersion: number;
+    message?: string;
+}
+
+const parseComputeReferenceDate = (value: string | Date | undefined): Date | undefined => {
+    if (!value) return undefined;
+    const date = value instanceof Date ? new Date(value) : new Date(String(value));
+    return Number.isFinite(date.getTime()) ? date : undefined;
+};
+
+const formatComputeMonthKey = (date: Date): string =>
+    `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
+
+function receivableScopeAllowsBillingDetail(
+    detail: BillingDetail,
+    receivablePermissions: Array<ReceivablePermission | string> | undefined,
+): boolean {
+    const permissions = receivablePermissions?.length
+        ? receivablePermissions
+        : ['rent_receivable', 'mgmt_fee_receivable'];
+    const feeKind = String(detail.feeKind || 'rent');
+    if (feeKind === 'management_fee') return permissions.includes('mgmt_fee_receivable');
+    return permissions.includes('rent_receivable');
+}
+
+export async function computeTenantHistoricalArrears(
+    projectId: string,
+    options: {
+        referenceDate?: string | Date;
+        receivablePermissions?: Array<ReceivablePermission | string>;
+    } = {},
+): Promise<ComputeTenantHistoricalArrearsResult> {
+    const referenceDate = parseComputeReferenceDate(options.referenceDate) || new Date();
+    const year = referenceDate.getFullYear();
+    const dashboard = await computeDashboardData(projectId, {
+        year,
+        quarter: 'All',
+        billingSelectedMonth: formatComputeMonthKey(referenceDate),
+        quickMode: true,
+        includeCurrentMonthBilling: false,
+        includePrevYearTrends: false,
+        loadScope: { kind: 'full' },
+    });
+
+    if (!dashboard.ok) {
+        return {
+            ok: false,
+            projectId,
+            available: false,
+            items: [],
+            computedAt: dashboard.computedAt,
+            dataVersion: dashboard.dataVersion,
+            message: dashboard.message || '无法拉取园区数据',
+        };
+    }
+
+    const result = buildTenantHistoricalArrears({
+        data: dashboard.processedData,
+        referenceDate,
+        includeBillingDetail: (detail) =>
+            receivableScopeAllowsBillingDetail(detail, options.receivablePermissions),
+    });
+    const items = Array.from(result.byTenantId.entries()).map(([tenantId, summary]) => ({
+        tenantId,
+        ...summary,
+    }));
+
+    return {
+        ok: true,
+        projectId,
+        available: result.available,
+        items,
+        startPeriod: result.startPeriod,
+        endPeriod: result.endPeriod,
+        unavailableReason: result.unavailableReason,
+        computedAt: new Date().toISOString(),
+        dataVersion: dashboard.dataVersion,
+        message: result.available
+            ? '计算成功'
+            : result.unavailableReason || '客户历史欠费暂不可用',
     };
 }
 
@@ -138,6 +721,7 @@ export interface ComputeBillingResult {
         contractReceivableTotal: number;
     };
     computedAt: string;
+    dataVersion: number;
 }
 
 function paymentAmountForPeriod(
@@ -189,6 +773,24 @@ export async function computeBilling(
 ): Promise<ComputeBillingResult> {
     await ensureInit();
 
+    const cacheVersion = await readComputeDataVersion(projectId);
+    const cacheKey = billingCacheKey(projectId, year, month, cacheVersion);
+    if (BILLING_CACHE_TTL_MS > 0 && cacheVersion > 0) {
+        const cached = billingComputeCache.get(cacheKey);
+        if (cached && cached.expiresAt > Date.now()) {
+            logComputeCache('billing', 'hit', cacheKey);
+            return cloneComputeBillingResult(cached.result);
+        }
+        if (cached) {
+            logComputeCache('billing', 'expired', cacheKey);
+            billingComputeCache.delete(cacheKey);
+        } else {
+            logComputeCache('billing', 'miss', cacheKey);
+        }
+    } else {
+        logComputeCache('billing', 'skip', cacheKey);
+    }
+
     const fetchRes = await fetchPocketBaseBackup(projectId, { year });
     if (!fetchRes.success || !fetchRes.data) {
         return {
@@ -202,10 +804,15 @@ export async function computeBilling(
             totalPaid: 0,
             unpaidCount: 0,
             computedAt: new Date().toISOString(),
+            dataVersion: 0,
         };
     }
 
     const rawData = fetchRes.data;
+    const dataVersion =
+        typeof rawData.cloudSaveVersion === 'number' && Number.isFinite(rawData.cloudSaveVersion)
+            ? Math.max(0, Math.floor(rawData.cloudSaveVersion))
+            : cacheVersion;
     const options: DashboardMetricOptions = {
         year,
         quarter: 'All',
@@ -215,6 +822,53 @@ export async function computeBilling(
     const { processedData } = calculateDashboardMetrics(rawData, options);
     const details = processedData.currentMonthBilling || [];
 
+    const totalDue = details.reduce((s, d) => s + d.amountDue, 0);
+    const totalPaid = details.reduce((s, d) => s + d.amountPaid, 0);
+    const unpaidCount = details.filter((d) => d.status === 'Unpaid' || d.status === 'Partial' || d.status === 'Overdue').length;
+    const financeSummary = buildFinanceSummary(details, rawData);
+
+    const result: ComputeBillingResult = {
+        ok: true,
+        projectId,
+        year,
+        month: month + 1,
+        monthIndex: month,
+        billingDetails: details,
+        totalDue: Math.round(totalDue * 100) / 100,
+        totalPaid: Math.round(totalPaid * 100) / 100,
+        unpaidCount,
+        financeSummary,
+        computedAt: new Date().toISOString(),
+        dataVersion,
+    };
+    if (BILLING_CACHE_TTL_MS > 0 && dataVersion > 0) {
+        const writeKey = billingCacheKey(projectId, year, month, dataVersion);
+        putBillingCache(writeKey, result, dataVersion);
+        logComputeCache('billing', 'store', writeKey);
+    }
+    return result;
+}
+
+export async function computeBillingDraft(
+    projectId: string,
+    draftData: DashboardData,
+    year: number,
+    month: number, // 0-11
+): Promise<ComputeBillingResult> {
+    const rawData: DashboardData = { ...generateInitialData(), ...draftData };
+    const dataVersion =
+        typeof rawData.cloudSaveVersion === 'number' && Number.isFinite(rawData.cloudSaveVersion)
+            ? Math.max(0, Math.floor(rawData.cloudSaveVersion))
+            : 0;
+    const options: DashboardMetricOptions = {
+        year,
+        quarter: 'All',
+        billingSelectedMonth: `${year}-${String(month + 1).padStart(2, '0')}`,
+        includeCurrentMonthBilling: true,
+    };
+
+    const { processedData } = calculateDashboardMetrics(rawData, options);
+    const details = processedData.currentMonthBilling || [];
     const totalDue = details.reduce((s, d) => s + d.amountDue, 0);
     const totalPaid = details.reduce((s, d) => s + d.amountPaid, 0);
     const unpaidCount = details.filter((d) => d.status === 'Unpaid' || d.status === 'Partial' || d.status === 'Overdue').length;
@@ -231,6 +885,245 @@ export async function computeBilling(
         totalPaid: Math.round(totalPaid * 100) / 100,
         unpaidCount,
         financeSummary,
+        computedAt: new Date().toISOString(),
+        dataVersion,
+    };
+}
+
+export interface ComputeBudgetedBillsPreviewInput {
+    tenant: Tenant;
+    assumptions?: BudgetAssumption[];
+    adjustments?: BudgetAdjustment[];
+    startDate: string | Date;
+    endDate: string | Date;
+    options?: GenerateBudgetedBillsOptions;
+}
+
+export interface ComputeBudgetedBillsPreviewResult {
+    ok: boolean;
+    projectId: string;
+    bills: BudgetedBill[];
+    count: number;
+    computedAt: string;
+}
+
+export interface ComputeBudgetedBillsPreviewBatchItem extends ComputeBudgetedBillsPreviewInput {
+    id?: string;
+}
+
+export interface ComputeBudgetedBillsPreviewBatchResult {
+    ok: boolean;
+    projectId: string;
+    items: Array<{
+        id: string;
+        bills: BudgetedBill[];
+        count: number;
+    }>;
+    count: number;
+    computedAt: string;
+}
+
+function parsePreviewDate(value: string | Date, fieldName: string): Date {
+    const date = value instanceof Date ? new Date(value) : new Date(String(value || ''));
+    if (!Number.isFinite(date.getTime())) {
+        throw new Error(`无效的 ${fieldName}`);
+    }
+    return date;
+}
+
+export async function computeBudgetedBillsPreview(
+    projectId: string,
+    input: ComputeBudgetedBillsPreviewInput,
+): Promise<ComputeBudgetedBillsPreviewResult> {
+    if (!input?.tenant || typeof input.tenant !== 'object') {
+        throw new Error('缺少 tenant');
+    }
+    const start = parsePreviewDate(input.startDate, 'startDate');
+    const end = parsePreviewDate(input.endDate, 'endDate');
+    if (end < start) {
+        throw new Error('endDate 不能早于 startDate');
+    }
+
+    const bills = generateBudgetedBills(
+        input.tenant,
+        Array.isArray(input.assumptions) ? input.assumptions : [],
+        Array.isArray(input.adjustments) ? input.adjustments : [],
+        start,
+        end,
+        input.options,
+    );
+
+    return {
+        ok: true,
+        projectId,
+        bills,
+        count: bills.length,
+        computedAt: new Date().toISOString(),
+    };
+}
+
+export async function computeBudgetedBillsPreviewBatch(
+    projectId: string,
+    items: ComputeBudgetedBillsPreviewBatchItem[],
+): Promise<ComputeBudgetedBillsPreviewBatchResult> {
+    if (!Array.isArray(items) || items.length === 0) {
+        throw new Error('缺少 items');
+    }
+
+    const computedAt = new Date().toISOString();
+    const results = await Promise.all(items.map(async (item, index) => {
+        const result = await computeBudgetedBillsPreview(projectId, item);
+        return {
+            id: String(item.id || item.tenant?.id || index),
+            bills: result.bills,
+            count: result.count,
+        };
+    }));
+
+    return {
+        ok: true,
+        projectId,
+        items: results,
+        count: results.length,
+        computedAt,
+    };
+}
+
+export interface ComputeContractReceivableMonthlyInput {
+    year: number;
+    tenants?: Tenant[];
+    buildings?: Building[];
+    payments?: PaymentRecord[];
+    initializationData?: MonthlyInitData[];
+    budgetAssumptions?: BudgetAssumption[];
+    budgetAdjustments?: BudgetAdjustment[];
+    budgetScenarios?: BudgetScenario[];
+}
+
+export interface ComputeContractReceivableMonthlyResult {
+    ok: boolean;
+    projectId: string;
+    year: number;
+    months: Array<{
+        month: number;
+        totalAmountDue: number;
+        byTenantId: Array<{ tenantId: string; amount: number }>;
+    }>;
+    computedAt: string;
+}
+
+export interface ComputeSourceAgentMetricsInput {
+    tenants?: Tenant[];
+    period?: SourceAnalysisPeriod;
+    referenceDate?: string | Date;
+}
+
+export interface ComputeSourceAgentMetricsResult {
+    ok: boolean;
+    projectId: string;
+    summary: SourceAnalysisSummary;
+    computedAt: string;
+}
+
+export interface ComputeContractAnalysisMetricsInput {
+    tenants?: Tenant[];
+    period?: ContractAnalysisPeriod;
+    referenceDate?: string | Date;
+}
+
+export interface ComputeContractAnalysisMetricsResult {
+    ok: boolean;
+    projectId: string;
+    metrics: ContractAnalysisMetrics;
+    computedAt: string;
+}
+
+const normalizeSourceAnalysisPeriod = (period: unknown): SourceAnalysisPeriod => {
+    const value = String(period || 'All');
+    return value === 'Year' || value === 'Quarter' || value === 'Month' ? value : 'All';
+};
+
+const normalizeContractAnalysisPeriod = (period: unknown): ContractAnalysisPeriod => {
+    const value = String(period || 'Year');
+    return value === 'Year' || value === 'Quarter' || value === 'Month' ? value : 'Year';
+};
+
+const parseOptionalReferenceDate = (value: unknown): Date => {
+    if (!value) return new Date();
+    const date = value instanceof Date ? new Date(value) : new Date(String(value));
+    return Number.isFinite(date.getTime()) ? date : new Date();
+};
+
+export async function computeSourceAgentMetricsPreview(
+    projectId: string,
+    input: ComputeSourceAgentMetricsInput,
+): Promise<ComputeSourceAgentMetricsResult> {
+    const tenants = Array.isArray(input?.tenants) ? input.tenants : [];
+    const period = normalizeSourceAnalysisPeriod(input?.period);
+    const referenceDate = parseOptionalReferenceDate(input?.referenceDate);
+    return {
+        ok: true,
+        projectId,
+        summary: computeSourceAgentMetrics(tenants, period, referenceDate),
+        computedAt: new Date().toISOString(),
+    };
+}
+
+export async function computeContractAnalysisMetricsPreview(
+    projectId: string,
+    input: ComputeContractAnalysisMetricsInput,
+): Promise<ComputeContractAnalysisMetricsResult> {
+    const tenants = Array.isArray(input?.tenants) ? input.tenants : [];
+    const period = normalizeContractAnalysisPeriod(input?.period);
+    const referenceDate = parseOptionalReferenceDate(input?.referenceDate);
+    return {
+        ok: true,
+        projectId,
+        metrics: buildContractAnalysisMetrics(tenants, period, referenceDate),
+        computedAt: new Date().toISOString(),
+    };
+}
+
+export async function computeContractReceivableMonthly(
+    projectId: string,
+    input: ComputeContractReceivableMonthlyInput,
+): Promise<ComputeContractReceivableMonthlyResult> {
+    const year = Math.floor(Number(input?.year) || new Date().getFullYear());
+    const tenants = Array.isArray(input?.tenants) ? input.tenants : [];
+    const buildings = Array.isArray(input?.buildings) ? input.buildings : [];
+    const payments = Array.isArray(input?.payments) ? input.payments : [];
+    const initializationData = Array.isArray(input?.initializationData) ? input.initializationData : [];
+    const budgetAssumptions = Array.isArray(input?.budgetAssumptions) ? input.budgetAssumptions : [];
+    const budgetAdjustments = Array.isArray(input?.budgetAdjustments) ? input.budgetAdjustments : [];
+    const budgetScenarios = Array.isArray(input?.budgetScenarios) ? input.budgetScenarios : [];
+    const cache = createBillingCache(buildings, payments, initializationData);
+    const ctx = {
+        tenants,
+        buildings,
+        payments,
+        initializationData,
+        budgetAssumptions,
+        budgetAdjustments,
+        budgetScenarios,
+    };
+
+    const months = Array.from({ length: 12 }, (_, monthIndex) => {
+        const result = buildContractOnlyReceivableForPeriod(year, monthIndex, ctx, cache);
+        return {
+            month: monthIndex + 1,
+            totalAmountDue: result.totalAmountDue,
+            byTenantId: Array.from(result.byTenantId.entries()).map(([tenantId, amount]) => ({
+                tenantId,
+                amount,
+            })),
+        };
+    });
+
+    return {
+        ok: true,
+        projectId,
+        year,
+        months,
         computedAt: new Date().toISOString(),
     };
 }
@@ -289,7 +1182,7 @@ export async function sealMonth(
         unpaidSum: arrearsIncrement,
         arrearsIncrement,
         billingDetails: details,
-        dataVersion: 0,
+        dataVersion: billing.dataVersion,
         computedAt: new Date().toISOString(),
     };
 }

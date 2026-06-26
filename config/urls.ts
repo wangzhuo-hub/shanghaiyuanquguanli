@@ -38,26 +38,89 @@ export function getAiProxyChatUrl(): string {
     return '/api/chat';
 }
 
-/**
- * 集成网关 compute/refresh 地址。
- * 生产：同源 `/api/integration/compute/refresh`（Caddy → :8787）
- * 开发：Vite 代理 `/api/integration` → integration-gateway
- */
-export function getIntegrationComputeRefreshUrl(): string {
+function integrationUrl(path: string): string {
     if (typeof window !== 'undefined') {
-        return new URL('/api/integration/compute/refresh', window.location.origin).pathname;
+        return new URL(path, window.location.origin).pathname;
     }
     const base = (import.meta.env.VITE_INTEGRATION_GATEWAY_URL as string | undefined)?.trim();
     if (base) {
         const b = base.replace(/\/+$/, '');
-        return `${b}/api/integration/compute/refresh`;
+        return `${b}${path}`;
     }
-    return 'http://127.0.0.1:8787/api/integration/compute/refresh';
+    return `http://127.0.0.1:8787${path}`;
 }
 
-/** 前端保存后通知网关重算 KPI 的内部 Token（与服务器 INTEGRATION_INTERNAL_TOKEN 一致） */
-export function getIntegrationInternalToken(): string {
-    return String(import.meta.env.VITE_INTEGRATION_INTERNAL_TOKEN || '').trim();
+/**
+ * 用户态 App API KPI 刷新地址。
+ * 前端通过已登录用户 token 调用；内部 Token 只保留在服务端环境。
+ */
+export function getIntegrationAppComputeRefreshUrl(): string {
+    return integrationUrl('/api/integration/app/compute/refresh');
+}
+
+/** 用户态 App API 后台计算指定月份应收明细地址。 */
+export function getIntegrationAppBillingComputeUrl(): string {
+    return integrationUrl('/api/integration/app/compute/billing');
+}
+
+/** 用户态 App API 后台计算当前前端草稿指定月份应收明细地址（不落库）。 */
+export function getIntegrationAppBillingDraftComputeUrl(): string {
+    return integrationUrl('/api/integration/app/compute/billing-draft');
+}
+
+/** 用户态 App API 后台推算单合同账单预览地址（不落库）。 */
+export function getIntegrationAppBudgetedBillsPreviewUrl(): string {
+    return integrationUrl('/api/integration/app/compute/budgeted-bills-preview');
+}
+
+/** 用户态 App API 后台批量推算合同账单预览地址（不落库）。 */
+export function getIntegrationAppBudgetedBillsPreviewBatchUrl(): string {
+    return integrationUrl('/api/integration/app/compute/budgeted-bills-preview-batch');
+}
+
+/** 用户态 App API 后台计算预算表合同应收 12 个月汇总地址（不落库）。 */
+export function getIntegrationAppContractReceivableMonthlyUrl(): string {
+    return integrationUrl('/api/integration/app/compute/contract-receivable-monthly');
+}
+
+/** 用户态 App API 后台计算客户来源分析汇总地址（不落库）。 */
+export function getIntegrationAppSourceAgentMetricsUrl(): string {
+    return integrationUrl('/api/integration/app/compute/source-agent-metrics');
+}
+
+/** 用户态 App API 后台计算合同经营分析汇总地址（不落库）。 */
+export function getIntegrationAppContractAnalysisMetricsUrl(): string {
+    return integrationUrl('/api/integration/app/compute/contract-analysis-metrics');
+}
+
+/** 用户态 App API 后台计算客户级历史欠费筛选数据地址（不落库）。 */
+export function getIntegrationAppTenantHistoricalArrearsUrl(): string {
+    return integrationUrl('/api/integration/app/compute/tenant-historical-arrears');
+}
+
+/** 用户态 App API 后台计算完整看板数据地址。 */
+export function getIntegrationAppDashboardComputeUrl(): string {
+    return integrationUrl('/api/integration/app/dashboard/compute');
+}
+
+/** 用户态 App API 启动快照地址：优先读取 pb_integration_snapshots，不阻塞实时计算。 */
+export function getIntegrationAppDashboardBootstrapUrl(): string {
+    return integrationUrl('/api/integration/app/dashboard/bootstrap');
+}
+
+/** 用户态 App API 后台计算当前前端草稿看板数据地址（不落库）。 */
+export function getIntegrationAppDashboardDraftComputeUrl(): string {
+    return integrationUrl('/api/integration/app/dashboard/compute-draft');
+}
+
+/** 用户态 App API 多园区大屏聚合数据地址。 */
+export function getIntegrationAppBigScreenUrl(): string {
+    return integrationUrl('/api/integration/app/big-screen');
+}
+
+/** 用户态 App API 当前用户关注字段偏好地址。 */
+export function getIntegrationAppDashboardCustomFieldsPreferenceUrl(): string {
+    return integrationUrl('/api/integration/app/preferences/dashboard-custom-fields');
 }
 
 /** 用于错误提示中的代理根地址（不含路径） */

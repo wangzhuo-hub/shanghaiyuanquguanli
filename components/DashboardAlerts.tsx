@@ -36,6 +36,7 @@ export const DashboardAlerts: React.FC<DashboardAlertsProps> = ({ tenants, invoi
              (targetDate.getMonth() + 1) === currentMonth && 
              inv.status === 'Pending';
   }) : [];
+  const pendingInvoiceTotal = pendingInvoices.reduce((sum, inv) => sum + (inv.amount || 0), 0);
 
   // Helper to check month match from date string "MM-DD" or "YYYY-MM-DD"
   const checkMonth = (targetMonth: number, dateStr?: string) => {
@@ -83,24 +84,30 @@ export const DashboardAlerts: React.FC<DashboardAlertsProps> = ({ tenants, invoi
     <div className="space-y-3 md:mb-6 md:space-y-4">
         {/* Risk Alerts */}
         {hasRisks && (
-            <div className="bg-red-50 border border-red-100 rounded-xl p-3 md:p-4 shadow-sm relative">
-                <div className="flex items-start gap-3">
-                    <div className="bg-red-100 p-2 rounded-lg text-red-600 mt-1">
+            <div className="liquid-glass-readable relative overflow-hidden rounded-[24px] p-3 md:p-4">
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-start">
+                    <div className="liquid-icon-well inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl p-2 text-rose-600 ring-1 ring-rose-200/70">
                         <AlertTriangle size={20} />
                     </div>
-                    <div>
-                        <h3 className="font-bold text-red-800 text-sm mb-1">
-                            发票开具风险预警 (本月逾期)
-                        </h3>
-                        <p className="text-xs text-red-600 mb-2">
+                    <div className="min-w-0 flex-1">
+                        <div className="mb-1 flex flex-wrap items-start justify-between gap-2">
+                            <h3 className="min-w-0 text-sm font-black text-rose-700">
+                                发票开具风险预警 (本月逾期)
+                            </h3>
+                            <span className="liquid-glass-control shrink-0 rounded-full px-2.5 py-1 text-xs font-black text-rose-700">
+                                {pendingInvoices.length} 笔 · {formatCurrency(pendingInvoiceTotal)}
+                            </span>
+                        </div>
+                        <p className="mb-3 text-xs font-semibold leading-5 text-rose-600">
                             今天是{currentDay}号，以下客户尚未完成本月开票，请尽快处理：
                         </p>
-                        <div className="flex flex-wrap gap-2">
+                        <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
                             {pendingInvoices.map(inv => {
                                 const tenantName = tenants.find(t => t.id === inv.tenantId)?.name || '未知客户';
                                 return (
-                                    <span key={inv.id} className="bg-white border border-red-200 text-red-700 px-2 py-1 rounded text-xs font-medium">
-                                        {tenantName} ({formatCurrency(inv.amount)})
+                                    <span key={inv.id} className="liquid-glass-control flex min-w-0 items-center justify-between gap-2 rounded-2xl px-3 py-2 text-xs font-bold text-rose-700">
+                                        <span className="min-w-0 truncate">{tenantName}</span>
+                                        <span className="shrink-0 tabular-nums">{formatCurrency(inv.amount)}</span>
                                     </span>
                                 );
                             })}
@@ -112,41 +119,42 @@ export const DashboardAlerts: React.FC<DashboardAlertsProps> = ({ tenants, invoi
 
         {/* Regular Alerts */}
         {(hasCurrent || hasNext) && (
-            <div className="bg-white border border-slate-200 rounded-xl shadow-sm relative animate-in slide-in-from-top-4 fade-in overflow-hidden">
+            <div className="liquid-glass-readable relative overflow-hidden rounded-[24px] animate-in slide-in-from-top-4 fade-in">
                 <button 
                     onClick={() => setIsVisible(false)} 
-                    className="absolute top-3 right-3 text-slate-400 hover:text-slate-600 z-10 p-1 hover:bg-slate-100 rounded-full"
+                    className="liquid-glass-control liquid-pressable absolute right-2 top-2 z-10 rounded-full p-1.5 text-slate-500 hover:text-slate-800 md:right-3 md:top-3"
+                    aria-label="关闭关键时刻提醒"
                 >
                     <X size={16} />
                 </button>
                 
                 {/* Current Month Section */}
                 {hasCurrent && (
-                    <div className="p-3 md:p-4 bg-gradient-to-r from-violet-50 to-indigo-50">
+                    <div className="px-3 py-4 md:px-4">
                         <div className="flex items-start gap-3">
-                            <div className="bg-violet-100 p-2 rounded-lg text-violet-600 mt-1 shadow-sm">
+                            <div className="liquid-icon-well mt-1 shrink-0 rounded-2xl p-2 text-blue-700 ring-1 ring-blue-200/70">
                                 <PartyPopper size={20} />
                             </div>
-                            <div className="flex-1">
-                                <h3 className="font-bold text-violet-900 text-sm mb-3 flex flex-wrap items-center gap-2">
+                            <div className="min-w-0 flex-1 pr-9 sm:pr-0">
+                                <h3 className="mb-3 flex flex-wrap items-center gap-2 text-sm font-black text-slate-950">
                                     本月 ({currentMonth}月) 关键时刻
-                                    <span className="text-[10px] font-normal text-violet-600 bg-white/50 px-2 py-0.5 rounded-full">及时送上祝福</span>
+                                    <span className="liquid-glass-control rounded-full px-2.5 py-1 text-xs font-bold text-blue-700">及时送上祝福</span>
                                 </h3>
                                 
-                                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                                <div className="grid grid-cols-1 gap-2.5 md:grid-cols-2 md:gap-3 lg:grid-cols-3">
                                     {/* Park Anniversaries */}
                                     {currentAlerts.park.length > 0 && (
                                         <AlertCard 
                                             title="入园整周年" 
                                             icon={<Flag size={14}/>} 
-                                            iconColor="text-emerald-600"
+                                            iconColor="text-blue-700"
                                             items={currentAlerts.park}
                                             renderItem={(t) => {
                                                 const years = currentYear - parseInt(parkEntryDate(t)!.split('-')[0]);
                                                 return (
                                                     <>
-                                                        <span className="truncate flex-1 pr-2">{t.name}</span>
-                                                        <span className="font-medium bg-emerald-100 text-emerald-700 px-1.5 rounded flex-shrink-0">入园 {years} 周年</span>
+                                                        <span className="min-w-0 flex-1 truncate pr-2">{t.name}</span>
+                                                        <span className="shrink-0 rounded-full bg-blue-100/80 px-2 py-0.5 font-bold text-blue-700">入园 {years} 周年</span>
                                                     </>
                                                 );
                                             }}
@@ -158,14 +166,14 @@ export const DashboardAlerts: React.FC<DashboardAlertsProps> = ({ tenants, invoi
                                         <AlertCard 
                                             title="企业成立纪念" 
                                             icon={<Calendar size={14}/>} 
-                                            iconColor="text-violet-700"
+                                            iconColor="text-cyan-700"
                                             items={currentAlerts.company}
                                             renderItem={(t) => {
                                                 const age = t.foundingDate ? (currentYear - parseInt(t.foundingDate.split('-')[0])) : 0;
                                                 return (
                                                     <>
-                                                        <span className="truncate flex-1 pr-2">{t.name}</span>
-                                                        <span className="font-medium bg-violet-100 text-violet-700 px-1.5 rounded flex-shrink-0">{t.foundingDate?.slice(5)} ({age}周年)</span>
+                                                        <span className="min-w-0 flex-1 truncate pr-2">{t.name}</span>
+                                                        <span className="shrink-0 rounded-full bg-cyan-100/80 px-2 py-0.5 font-bold text-cyan-700">{t.foundingDate?.slice(5)} ({age}周年)</span>
                                                     </>
                                                 );
                                             }}
@@ -184,10 +192,10 @@ export const DashboardAlerts: React.FC<DashboardAlertsProps> = ({ tenants, invoi
                                                 const isContact = checkMonth(currentMonth, t.contactBirthday);
                                                 return (
                                                     <>
-                                                        <span className="truncate flex-1 pr-2">{t.name}</span>
-                                                        <div className="flex gap-1 flex-shrink-0">
-                                                            {isLegal && <span className="bg-pink-100 text-pink-700 px-1.5 rounded text-[10px]" title="高管">{t.legalRepName || '高管'} ({t.legalRepBirthday?.slice(-5)})</span>}
-                                                            {isContact && <span className="bg-orange-100 text-orange-700 px-1.5 rounded text-[10px]" title="对接人">{t.contactName || '对接人'} ({t.contactBirthday?.slice(-5)})</span>}
+                                                        <span className="min-w-0 flex-1 truncate pr-2">{t.name}</span>
+                                                        <div className="flex min-w-0 flex-wrap gap-1 sm:flex-shrink-0">
+                                                            {isLegal && <span className="rounded-full bg-rose-100/80 px-2 py-0.5 text-xs font-bold text-rose-700" title="高管">{t.legalRepName || '高管'} ({t.legalRepBirthday?.slice(-5)})</span>}
+                                                            {isContact && <span className="rounded-full bg-amber-100/80 px-2 py-0.5 text-xs font-bold text-amber-700" title="对接人">{t.contactName || '对接人'} ({t.contactBirthday?.slice(-5)})</span>}
                                                         </div>
                                                     </>
                                                 );
@@ -201,37 +209,36 @@ export const DashboardAlerts: React.FC<DashboardAlertsProps> = ({ tenants, invoi
                 )}
 
                 {/* Separator if both exist */}
-                {hasCurrent && hasNext && <div className="h-px bg-slate-200 w-full"></div>}
+                {hasCurrent && hasNext && <div className="h-px w-full bg-white/60"></div>}
 
                 {/* Next Month Section */}
                 {hasNext && (
-                    <div className="p-3 md:p-4 bg-slate-50">
+                    <div className="px-3 py-4 md:px-4">
                         <div className="flex items-start gap-3">
-                            <div className="bg-slate-200 p-2 rounded-lg text-slate-500 mt-1">
+                            <div className="liquid-icon-well mt-1 shrink-0 rounded-2xl p-2 text-slate-600">
                                 <Clock size={20} />
                             </div>
-                            <div className="flex-1">
-                                <h3 className="font-bold text-slate-700 text-sm mb-3 flex flex-wrap items-center gap-2">
+                            <div className="min-w-0 flex-1 pr-9 sm:pr-0">
+                                <h3 className="mb-3 flex flex-wrap items-center gap-2 text-sm font-black text-slate-800">
                                     下月 ({nextMonth}月) 预告 
-                                    <span className="text-[10px] font-normal text-slate-500 bg-white border border-slate-200 px-2 py-0.5 rounded-full flex items-center gap-1">
-                                        <ArrowRight size={10} /> 提前准备关怀
+                                    <span className="liquid-glass-control flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-bold text-slate-600">
+                                        <ArrowRight size={12} /> 提前准备关怀
                                     </span>
                                 </h3>
-                                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 opacity-90">
+                                <div className="grid grid-cols-1 gap-2.5 opacity-95 md:grid-cols-2 md:gap-3 lg:grid-cols-3">
                                     {/* Next Park */}
                                     {nextAlerts.park.length > 0 && (
                                         <AlertCard 
                                             title="入园整周年" 
                                             icon={<Flag size={14}/>} 
                                             iconColor="text-slate-600"
-                                            bgColor="bg-white"
                                             items={nextAlerts.park}
                                             renderItem={(t) => {
                                                 const years = nextMonthYear - parseInt(parkEntryDate(t)!.split('-')[0]);
                                                 return (
                                                     <>
-                                                        <span className="truncate flex-1 pr-2">{t.name}</span>
-                                                        <span className="font-medium bg-slate-100 text-slate-600 px-1.5 rounded flex-shrink-0">{years} 周年</span>
+                                                        <span className="min-w-0 flex-1 truncate pr-2">{t.name}</span>
+                                                        <span className="shrink-0 rounded-full bg-slate-100/90 px-2 py-0.5 font-bold text-slate-600">{years} 周年</span>
                                                     </>
                                                 );
                                             }}
@@ -243,14 +250,13 @@ export const DashboardAlerts: React.FC<DashboardAlertsProps> = ({ tenants, invoi
                                             title="企业成立纪念" 
                                             icon={<Calendar size={14}/>} 
                                             iconColor="text-slate-600"
-                                            bgColor="bg-white"
                                             items={nextAlerts.company}
                                             renderItem={(t) => {
                                                 const age = t.foundingDate ? (nextMonthYear - parseInt(t.foundingDate.split('-')[0])) : 0;
                                                 return (
                                                     <>
-                                                        <span className="truncate flex-1 pr-2">{t.name}</span>
-                                                        <span className="font-medium bg-slate-100 text-slate-600 px-1.5 rounded flex-shrink-0">{t.foundingDate?.slice(5)} ({age}周年)</span>
+                                                        <span className="min-w-0 flex-1 truncate pr-2">{t.name}</span>
+                                                        <span className="shrink-0 rounded-full bg-slate-100/90 px-2 py-0.5 font-bold text-slate-600">{t.foundingDate?.slice(5)} ({age}周年)</span>
                                                     </>
                                                 );
                                             }}
@@ -262,17 +268,16 @@ export const DashboardAlerts: React.FC<DashboardAlertsProps> = ({ tenants, invoi
                                             title="核心人员生日" 
                                             icon={<Cake size={14}/>} 
                                             iconColor="text-slate-600"
-                                            bgColor="bg-white"
                                             items={nextAlerts.birthday}
                                             renderItem={(t) => {
                                                 const isLegal = checkMonth(nextMonth, t.legalRepBirthday);
                                                 const isContact = checkMonth(nextMonth, t.contactBirthday);
                                                 return (
                                                     <>
-                                                        <span className="truncate flex-1 pr-2">{t.name}</span>
-                                                        <div className="flex gap-1 flex-shrink-0">
-                                                            {isLegal && <span className="bg-slate-100 text-slate-600 px-1.5 rounded text-[10px]">{t.legalRepName || '高管'} ({t.legalRepBirthday?.slice(-5)})</span>}
-                                                            {isContact && <span className="bg-slate-100 text-slate-600 px-1.5 rounded text-[10px]">{t.contactName || '对接人'} ({t.contactBirthday?.slice(-5)})</span>}
+                                                        <span className="min-w-0 flex-1 truncate pr-2">{t.name}</span>
+                                                        <div className="flex min-w-0 flex-wrap gap-1 sm:flex-shrink-0">
+                                                            {isLegal && <span className="rounded-full bg-slate-100/90 px-2 py-0.5 text-xs font-bold text-slate-600">{t.legalRepName || '高管'} ({t.legalRepBirthday?.slice(-5)})</span>}
+                                                            {isContact && <span className="rounded-full bg-slate-100/90 px-2 py-0.5 text-xs font-bold text-slate-600">{t.contactName || '对接人'} ({t.contactBirthday?.slice(-5)})</span>}
                                                         </div>
                                                     </>
                                                 );
@@ -297,17 +302,21 @@ interface AlertCardProps {
     iconColor: string;
     items: Tenant[];
     renderItem: (t: Tenant) => React.ReactNode;
-    bgColor?: string;
 }
 
-const AlertCard: React.FC<AlertCardProps> = ({ title, icon, iconColor, items, renderItem, bgColor = "bg-white/60" }) => (
-    <div className={`${bgColor} p-3 rounded-lg border border-slate-200/60 shadow-sm`}>
-        <h4 className={`flex items-center gap-1.5 text-xs font-bold ${iconColor} mb-2`}>
-            {icon} {title}
+const AlertCard: React.FC<AlertCardProps> = ({ title, icon, iconColor, items, renderItem }) => (
+    <div className="liquid-glass-readable rounded-[20px] p-3 md:p-3.5">
+        <h4 className={`mb-2 flex items-center justify-between gap-2 text-xs font-bold ${iconColor}`}>
+            <span className="min-w-0 flex items-center gap-1.5">
+                {icon} <span className="truncate">{title}</span>
+            </span>
+            <span className="liquid-glass-control shrink-0 rounded-full px-2 py-0.5 text-xs font-black text-slate-600">
+                {items.length}
+            </span>
         </h4>
-        <div className="space-y-1.5 max-h-32 overflow-y-auto pr-1 custom-scrollbar">
+        <div className="max-h-40 space-y-1.5 overflow-y-auto pr-1 custom-scrollbar md:max-h-32">
             {items.map(t => (
-                <div key={t.id} className="flex items-center justify-between gap-2 text-xs text-slate-700">
+                <div key={t.id} className="liquid-glass-control flex min-w-0 flex-wrap items-center justify-between gap-2 rounded-2xl px-2.5 py-2 text-xs font-semibold text-slate-700">
                     {renderItem(t)}
                 </div>
             ))}

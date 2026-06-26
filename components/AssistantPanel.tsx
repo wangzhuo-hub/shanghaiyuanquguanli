@@ -11,6 +11,11 @@ interface AssistantPanelProps {
 }
 
 export const AssistantPanel: React.FC<AssistantPanelProps> = ({ isOpen, onClose, data }) => {
+  const quickPrompts = [
+    '分析本月的回款风险',
+    '生成下季度招商策略建议',
+    '找出需要优先跟进的客户',
+  ];
   const [messages, setMessages] = useState<ChatMessage[]>([
     {
       id: 'welcome',
@@ -30,6 +35,19 @@ export const AssistantPanel: React.FC<AssistantPanelProps> = ({ isOpen, onClose,
   useEffect(() => {
     scrollToBottom();
   }, [messages, isOpen]);
+
+  useEffect(() => {
+    if (!isOpen) return;
+
+    const handleEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        onClose();
+      }
+    };
+
+    document.addEventListener('keydown', handleEscape);
+    return () => document.removeEventListener('keydown', handleEscape);
+  }, [isOpen, onClose]);
 
   const handleSend = async () => {
     if (!input.trim() || isLoading) return;
@@ -68,83 +86,113 @@ export const AssistantPanel: React.FC<AssistantPanelProps> = ({ isOpen, onClose,
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-y-0 right-0 w-full md:w-96 bg-white shadow-2xl transform transition-transform duration-300 z-50 flex flex-col border-l border-slate-200">
-      {/* Header */}
-      <div className="p-4 border-b border-slate-100 flex justify-between items-center bg-gradient-to-r from-blue-600 to-blue-700 text-white flex-shrink-0">
-        <div className="flex items-center gap-2">
-          <Bot className="w-5 h-5" />
-          <span className="font-medium">智能招商助手</span>
-        </div>
-        <button onClick={onClose} className="hover:bg-white/20 p-1 rounded-full transition-colors">
-          <X className="w-5 h-5" />
-        </button>
-      </div>
-
-      {/* Chat Area */}
-      <div className="flex-1 overflow-y-auto p-4 space-y-4 bg-slate-50">
-        {messages.map((msg) => (
-          <div
-            key={msg.id}
-            className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
-          >
-            <div
-              className={`max-w-[85%] rounded-2xl px-4 py-3 text-sm leading-relaxed shadow-sm ${
-                msg.role === 'user'
-                  ? 'bg-blue-600 text-white rounded-br-none'
-                  : 'bg-white text-slate-700 border border-slate-100 rounded-bl-none'
-              }`}
-            >
-              {msg.text.split('\n').map((line, i) => (
-                <p key={i} className={i > 0 ? 'mt-2' : ''}>{line}</p>
-              ))}
+    <div className="liquid-drawer-backdrop fixed inset-0 z-50 flex items-end justify-center p-2 sm:p-3 md:items-stretch md:justify-end md:p-0">
+      <aside
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="assistant-panel-title"
+        className="liquid-drawer-panel flex h-[min(88vh,760px)] max-h-[calc(100vh-1rem)] w-full max-w-[520px] flex-col overflow-hidden rounded-t-[30px] border-t border-white/75 md:h-full md:max-h-none md:w-[440px] md:rounded-none md:border-t-0"
+      >
+        {/* Header */}
+        <div className="liquid-elevated-header flex shrink-0 items-start justify-between gap-3 border-b border-white/60 px-4 py-4 sm:px-5">
+          <div className="flex min-w-0 items-center gap-3">
+            <span className="liquid-icon-well flex h-12 w-12 shrink-0 items-center justify-center rounded-[20px] text-blue-700 shadow-sm">
+              <Bot className="h-6 w-6" />
+            </span>
+            <div className="min-w-0">
+              <div className="flex min-w-0 flex-wrap items-center gap-2">
+                <div id="assistant-panel-title" className="truncate text-base font-black text-slate-950">智能招商助手</div>
+                <span className="rounded-full border border-sky-200/80 bg-sky-50/80 px-2.5 py-1 text-xs font-black text-blue-700">
+                  实时
+                </span>
+              </div>
+              <div className="mt-1 max-w-[260px] text-xs font-semibold leading-5 text-slate-500">
+                已读取当前园区运营数据，可分析出租率、回款风险与招商策略。
+              </div>
             </div>
           </div>
-        ))}
-        {isLoading && (
-          <div className="flex justify-start">
-            <div className="bg-white p-3 rounded-2xl rounded-bl-none border border-slate-100 shadow-sm flex items-center gap-2 text-slate-500 text-sm">
-              <Loader2 className="w-4 h-4 animate-spin" />
-              正在分析数据...
-            </div>
-          </div>
-        )}
-        <div ref={messagesEndRef} />
-      </div>
-
-      {/* Input Area */}
-      <div className="p-4 bg-white border-t border-slate-100 flex-shrink-0">
-        <div className="relative">
-          <textarea
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={handleKeyPress}
-            placeholder="询问关于出租率、回款或租户的问题..."
-            className="w-full pl-4 pr-12 py-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-blue-100 focus:border-blue-400 focus:outline-none resize-none text-sm min-h-[50px] max-h-[120px]"
-            rows={1}
-          />
           <button
-            onClick={handleSend}
-            disabled={!input.trim() || isLoading}
-            className="absolute right-2 bottom-2 p-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+            type="button"
+            onClick={onClose}
+            aria-label="关闭智能招商助手"
+            className="liquid-glass-control liquid-pressable flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-slate-500 transition hover:bg-white/75 hover:text-slate-950 focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-blue-200/80"
           >
-            {isLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
+            <X className="h-5 w-5" />
           </button>
         </div>
-        <div className="mt-2 flex gap-2 overflow-x-auto pb-2 scrollbar-hide">
-          <button 
-            onClick={() => setInput('分析本月的回款风险')}
-            className="whitespace-nowrap px-3 py-1 bg-blue-50 text-blue-600 text-xs rounded-full hover:bg-blue-100 transition-colors flex items-center gap-1"
-          >
-            <Sparkles className="w-3 h-3" /> 回款风险分析
-          </button>
-          <button 
-             onClick={() => setInput('生成下季度招商策略建议')}
-            className="whitespace-nowrap px-3 py-1 bg-blue-50 text-blue-600 text-xs rounded-full hover:bg-blue-100 transition-colors flex items-center gap-1"
-          >
-             <Sparkles className="w-3 h-3" /> 招商策略建议
-          </button>
+
+        {/* Chat Area */}
+        <div className="flex-1 space-y-4 overflow-y-auto bg-[radial-gradient(circle_at_20%_0%,rgba(219,234,254,0.34),transparent_34%),radial-gradient(circle_at_80%_18%,rgba(186,230,253,0.22),transparent_30%)] px-4 py-4 sm:px-5">
+          {messages.map((msg) => (
+            <div
+              key={msg.id}
+              className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
+            >
+              <div
+                className={`max-w-[88%] rounded-[24px] px-4 py-3 text-sm font-semibold leading-relaxed shadow-sm ${
+                  msg.role === 'user'
+                    ? 'rounded-br-md bg-blue-600 text-white shadow-blue-900/10'
+                    : 'liquid-glass-readable rounded-bl-md text-slate-700'
+                }`}
+              >
+                {msg.text.split('\n').map((line, i) => (
+                  <p key={i} className={i > 0 ? 'mt-2' : ''}>{line}</p>
+                ))}
+                <div className={`mt-2 text-xs font-bold ${
+                  msg.role === 'user' ? 'text-blue-50/95' : 'text-slate-500'
+                }`}>
+                  {msg.timestamp.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}
+                </div>
+              </div>
+            </div>
+          ))}
+          {isLoading && (
+            <div className="flex justify-start">
+              <div role="status" className="liquid-glass-readable flex items-center gap-2 rounded-[22px] rounded-bl-md px-4 py-3 text-sm font-semibold text-slate-500">
+                <Loader2 className="h-4 w-4 animate-spin text-blue-700" />
+                正在分析数据...
+              </div>
+            </div>
+          )}
+          <div ref={messagesEndRef} />
         </div>
-      </div>
+
+        {/* Input Area */}
+        <div className="liquid-elevated-footer shrink-0 border-t border-white/60 px-4 py-4 pb-[calc(env(safe-area-inset-bottom)+1rem)] sm:px-5">
+          <div className="relative">
+            <textarea
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              onKeyDown={handleKeyPress}
+              placeholder="询问关于出租率、回款或租户的问题..."
+              className="liquid-elevated-field min-h-[58px] max-h-[132px] w-full resize-none rounded-[22px] py-3.5 pl-4 pr-14 text-base font-semibold text-slate-900 outline-none placeholder:text-slate-500 focus-visible:ring-4 focus-visible:ring-blue-500/10 md:text-sm"
+              rows={1}
+            />
+            <button
+              type="button"
+              onClick={handleSend}
+              disabled={!input.trim() || isLoading}
+              aria-label="发送问题"
+              className="liquid-action-strong liquid-pressable absolute bottom-2 right-2 flex h-11 w-11 items-center justify-center rounded-[18px] text-white disabled:cursor-not-allowed disabled:opacity-45"
+            >
+              {isLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
+            </button>
+          </div>
+          <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:flex-wrap">
+            {quickPrompts.map((prompt) => (
+              <button
+                key={prompt}
+                type="button"
+                onClick={() => setInput(prompt)}
+                className="liquid-glass-control liquid-pressable flex min-h-10 items-center justify-center gap-1.5 rounded-full px-3.5 py-2 text-xs font-black text-blue-700 transition hover:bg-white/75 focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-blue-200/80 sm:justify-start"
+              >
+                <Sparkles className="h-3.5 w-3.5" />
+                <span className="truncate">{prompt.replace(/^分析|生成|找出/, '')}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+      </aside>
     </div>
   );
 };

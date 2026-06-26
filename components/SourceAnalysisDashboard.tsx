@@ -1,39 +1,41 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
-    BarChart3,
+    AlertCircle,
     Briefcase,
     ChevronDown,
     ChevronUp,
     ShieldCheck,
-    TrendingUp,
-    Users,
 } from 'lucide-react';
-import {
-    Bar,
-    BarChart,
-    CartesianGrid,
-    Cell,
-    ComposedChart,
-    Legend,
-    Line,
-    Pie,
-    PieChart,
-    ResponsiveContainer,
-    Tooltip,
-    XAxis,
-    YAxis,
-} from 'recharts';
-import { Tenant } from '../types';
+import { CloudConfig, Tenant } from '../types';
 import { formatArea, formatPercent } from '../services/numberFormat';
-import {
-    computeSourceAgentMetrics,
+import type {
     SourceAgentRow,
     SourceAnalysisPeriod,
-    UNLABELED_SOURCE,
+    SourceAnalysisSummary,
 } from '../services/sourceAgentMetrics';
+import { fetchCloudSourceAgentMetrics } from '../services/cloudComputeClient';
+import { shouldRunLocalSourceAgentMetricsFallback } from '../services/computeFallbackPolicy';
+import { shouldBuildSourceTenantLookup } from '../services/sourceAnalysisViewGuards';
+
+const SourceAnalysisCharts = React.lazy(() =>
+    import('./SourceAnalysisCharts').then((m) => ({ default: m.SourceAnalysisCharts }))
+);
+
+const UNLABELED_SOURCE = '未标注来源';
+const EMPTY_TENANT_BY_ID = new Map<string, Tenant>();
+
+const loadLocalSourceSummary = async (
+    tenants: Tenant[],
+    period: SourceAnalysisPeriod,
+): Promise<SourceAnalysisSummary> => {
+    const { computeSourceAgentMetrics } = await import('../services/sourceAgentMetrics');
+    return computeSourceAgentMetrics(tenants, period);
+};
 
 interface SourceAnalysisDashboardProps {
     tenants: Tenant[];
+    cloudConfig?: CloudConfig;
+    serverComputeEnabled?: boolean;
     onEditTenant?: (tenant: Tenant) => void;
 }
 
@@ -44,27 +46,156 @@ const PERIOD_LABELS: Record<SourceAnalysisPeriod, string> = {
     Month: '本月',
 };
 
-const CHART_COLORS = ['#2563eb', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#06b6d4', '#64748b', '#ec4899'];
+const emptySourceSummary = (period: SourceAnalysisPeriod): SourceAnalysisSummary => ({
+    period,
+    totalContracts: 0,
+    labeledContracts: 0,
+    labeledRate: 0,
+    unlabeledCount: 0,
+    sourceCount: 0,
+    rows: [],
+    topBySignedArea: null,
+    mostStable: null,
+    signingTrend: [],
+});
 
 function stabilityBadge(score: number): { label: string; className: string } {
-    if (score >= 80) return { label: '稳定', className: 'bg-emerald-50 text-emerald-700 border-emerald-200' };
-    if (score >= 60) return { label: '一般', className: 'bg-amber-50 text-amber-700 border-amber-200' };
-    return { label: '需关注', className: 'bg-rose-50 text-rose-700 border-rose-200' };
+    if (score >= 80) return { label: '稳定', className: 'liquid-analysis-stability--stable' };
+    if (score >= 60) return { label: '一般', className: 'liquid-analysis-stability--normal' };
+    return { label: '需关注', className: 'liquid-analysis-stability--risk' };
 }
 
 export const SourceAnalysisDashboard: React.FC<SourceAnalysisDashboardProps> = ({
     tenants,
+    cloudConfig,
+    serverComputeEnabled = false,
     onEditTenant,
 }) => {
     const [period, setPeriod] = useState<SourceAnalysisPeriod>('All');
     const [sortKey, setSortKey] = useState<keyof SourceAgentRow>('stabilityScore');
     const [sortAsc, setSortAsc] = useState(false);
     const [expandedSource, setExpandedSource] = useState<string | null>(null);
+    const [serverSummaryState, setServerSummaryState] = useState<{
+        loading: boolean;
+        summary?: SourceAnalysisSummary;
+        error?: string;
+    }>({ loading: false });
+    const [localSummaryState, setLocalSummaryState] = useState<{
+        loading: boolean;
+        summary?: SourceAnalysisSummary;
+        error?: string;
+    }>({ loading: false });
+    const canUseServer = serverComputeEnabled && !!cloudConfig?.projectId;
 
-    const summary = useMemo(
-        () => computeSourceAgentMetrics(tenants, period),
-        [tenants, period],
-    );
+    useEffect(() => {
+        if (canUseServer) {
+            setLocalSummaryState({ loading: false });
+            return;
+        }
+        if (!shouldRunLocalSourceAgentMetricsFallback({ canUseServer, serverAttempted: false })) {
+            setLocalSummaryState({
+                loading: false,
+                error: '后台来源分析计算不可用，未执行前端本地重算。',
+            });
+            return;
+        }
+
+        let cancelled = false;
+        setLocalSummaryState((prev) => ({
+            loading: true,
+            summary: prev.summary,
+            error: undefined,
+        }));
+        loadLocalSourceSummary(tenants, period)
+            .then((summary) => {
+                if (!cancelled) setLocalSummaryState({ loading: false, summary });
+            })
+            .catch((error: unknown) => {
+                if (!cancelled) {
+                    setLocalSummaryState({
+                        loading: false,
+                        error: error instanceof Error ? error.message : '本地来源分析模块加载失败。',
+                    });
+                }
+            });
+
+        return () => {
+            cancelled = true;
+        };
+    }, [canUseServer, tenants, period]);
+
+    useEffect(() => {
+        if (!canUseServer || !cloudConfig) {
+            setServerSummaryState({ loading: false });
+            return;
+        }
+
+        let cancelled = false;
+        setServerSummaryState({ loading: true });
+        fetchCloudSourceAgentMetrics(cloudConfig, {
+            tenants,
+            period,
+            referenceDate: new Date(),
+        }).then((result) => {
+            if (cancelled) return;
+            if (result.success && result.summary) {
+                setServerSummaryState({ loading: false, summary: result.summary });
+                return;
+            }
+            if (shouldRunLocalSourceAgentMetricsFallback({ canUseServer, serverAttempted: true })) {
+                loadLocalSourceSummary(tenants, period)
+                    .then((summary) => {
+                        if (!cancelled) setServerSummaryState({ loading: false, summary });
+                    })
+                    .catch((error: unknown) => {
+                        if (!cancelled) {
+                            setServerSummaryState({
+                                loading: false,
+                                error: error instanceof Error ? error.message : '本地来源分析模块加载失败。',
+                            });
+                        }
+                    });
+                return;
+            }
+            setServerSummaryState({
+                loading: false,
+                error: result.message || '后台来源分析计算失败，未执行前端本地重算。',
+            });
+        }).catch((error: unknown) => {
+            if (!cancelled) {
+                if (shouldRunLocalSourceAgentMetricsFallback({ canUseServer, serverAttempted: true })) {
+                    loadLocalSourceSummary(tenants, period)
+                        .then((summary) => {
+                            if (!cancelled) setServerSummaryState({ loading: false, summary });
+                        })
+                        .catch((localError: unknown) => {
+                            if (!cancelled) {
+                                setServerSummaryState({
+                                    loading: false,
+                                    error: localError instanceof Error ? localError.message : '本地来源分析模块加载失败。',
+                                });
+                            }
+                        });
+                    return;
+                }
+                setServerSummaryState({
+                    loading: false,
+                    error: error instanceof Error ? error.message : '后台来源分析计算失败，未执行前端本地重算。',
+                });
+            }
+        });
+
+        return () => {
+            cancelled = true;
+        };
+    }, [canUseServer, cloudConfig, tenants, period]);
+
+    const emptySummary = useMemo(() => emptySourceSummary(period), [period]);
+    const summary = serverSummaryState.summary || localSummaryState.summary || emptySummary;
+    const loading = (
+        canUseServer ? serverSummaryState.loading : localSummaryState.loading
+    ) && !summary.rows.length;
+    const errorMessage = serverSummaryState.error || localSummaryState.error;
 
     const sortedRows = useMemo(() => {
         const rows = [...summary.rows];
@@ -82,8 +213,14 @@ export const SourceAnalysisDashboard: React.FC<SourceAnalysisDashboardProps> = (
         return rows;
     }, [summary.rows, sortKey, sortAsc]);
 
-    const chartRows = sortedRows.filter((r) => r.sourceName !== UNLABELED_SOURCE).slice(0, 8);
-    const pieRows = sortedRows.filter((r) => r.contractCount > 0).slice(0, 6);
+    const chartRows = useMemo(
+        () => sortedRows.filter((r) => r.sourceName !== UNLABELED_SOURCE).slice(0, 8),
+        [sortedRows],
+    );
+    const pieRows = useMemo(
+        () => sortedRows.filter((r) => r.contractCount > 0).slice(0, 6),
+        [sortedRows],
+    );
 
     const handleSort = (key: keyof SourceAgentRow) => {
         if (sortKey === key) {
@@ -99,28 +236,34 @@ export const SourceAnalysisDashboard: React.FC<SourceAnalysisDashboardProps> = (
         return sortAsc ? <ChevronUp size={12} /> : <ChevronDown size={12} />;
     };
 
-    const tenantById = useMemo(() => new Map(tenants.map((t) => [t.id, t])), [tenants]);
+    const shouldBuildTenantLookup = shouldBuildSourceTenantLookup({ expandedSource });
+    const tenantById = useMemo(
+        () => shouldBuildTenantLookup ? new Map(tenants.map((t) => [t.id, t])) : EMPTY_TENANT_BY_ID,
+        [shouldBuildTenantLookup, tenants],
+    );
 
     return (
-        <div className="space-y-6 animate-in fade-in duration-500">
-            <div className="flex flex-col lg:flex-row gap-4 lg:items-center lg:justify-between">
-                <div>
-                    <h3 className="text-lg font-bold text-slate-800 flex items-center gap-2">
-                        <Briefcase size={20} className="text-indigo-600" />
+        <div className="liquid-analysis-shell space-y-5 rounded-[28px] p-4 animate-in fade-in duration-500 sm:p-5 lg:p-6">
+            <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+                <div className="min-w-0">
+                    <h3 className="flex items-center gap-2 text-lg font-black text-slate-950">
+                        <span className="liquid-icon-well inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl text-blue-700">
+                            <Briefcase size={20} />
+                        </span>
                         客户来源分析
                     </h3>
-                    <p className="text-xs text-slate-500 mt-1">
+                    <p className="mt-1 text-xs font-medium text-slate-500">
                         按「招商客户经理/中介名称」汇总签约、退租与租期表现，评估各来源客户稳定性
                     </p>
                 </div>
-                <div className="grid grid-cols-4 gap-1 bg-slate-100 p-1 rounded-xl w-full lg:w-auto">
+                <div className="liquid-glass-control grid w-full grid-cols-4 gap-1 rounded-full p-1 lg:w-auto">
                     {(Object.keys(PERIOD_LABELS) as SourceAnalysisPeriod[]).map((p) => (
                         <button
                             key={p}
                             type="button"
                             onClick={() => setPeriod(p)}
-                            className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${
-                                period === p ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'
+                            className={`rounded-full px-3 py-2 text-xs font-bold transition-all focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-blue-200/80 ${
+                                period === p ? 'liquid-analysis-segment-active' : 'text-slate-500 hover:bg-blue-50/70 hover:text-blue-700'
                             }`}
                         >
                             {PERIOD_LABELS[p]}
@@ -129,36 +272,52 @@ export const SourceAnalysisDashboard: React.FC<SourceAnalysisDashboardProps> = (
                 </div>
             </div>
 
+            {(loading || errorMessage) && (
+                <div
+                    className={`liquid-analysis-card flex items-start gap-2 rounded-2xl px-4 py-3 text-sm font-semibold ${
+                        errorMessage
+                            ? 'text-amber-800 ring-1 ring-amber-200/80'
+                            : 'text-blue-800 ring-1 ring-blue-200/80'
+                    }`}
+                >
+                    <AlertCircle size={16} className="mt-0.5 shrink-0" />
+                    <span>
+                        {errorMessage ||
+                            (canUseServer ? '后台正在计算客户来源分析...' : '本地来源分析模块加载中...')}
+                    </span>
+                </div>
+            )}
+
             <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
-                <div className="bg-white rounded-2xl border border-slate-200 p-5 shadow-sm">
-                    <div className="text-xs font-bold text-slate-400 uppercase tracking-widest">来源标注率</div>
-                    <div className="text-3xl font-black text-slate-800 mt-2">{formatPercent(summary.labeledRate)}</div>
-                    <div className="text-xs text-slate-500 mt-2">
+                <div className="liquid-analysis-card rounded-[22px] p-5">
+                    <div className="text-xs font-black uppercase tracking-widest text-slate-500">来源标注率</div>
+                    <div className="mt-2 text-3xl font-black text-slate-950">{formatPercent(summary.labeledRate)}</div>
+                    <div className="mt-2 text-xs font-medium text-slate-500">
                         已标注 {summary.labeledContracts} / {summary.totalContracts} 份合同
                     </div>
                 </div>
-                <div className="bg-white rounded-2xl border border-slate-200 p-5 shadow-sm">
-                    <div className="text-xs font-bold text-slate-400 uppercase tracking-widest">来源数量</div>
-                    <div className="text-3xl font-black text-slate-800 mt-2">{summary.sourceCount}</div>
-                    <div className="text-xs text-slate-500 mt-2">含 {summary.unlabeledCount} 份未标注合同</div>
+                <div className="liquid-analysis-card rounded-[22px] p-5">
+                    <div className="text-xs font-black uppercase tracking-widest text-slate-500">来源数量</div>
+                    <div className="mt-2 text-3xl font-black text-slate-950">{summary.sourceCount}</div>
+                    <div className="mt-2 text-xs font-medium text-slate-500">含 {summary.unlabeledCount} 份未标注合同</div>
                 </div>
-                <div className="bg-white rounded-2xl border border-emerald-100 p-5 shadow-sm bg-gradient-to-br from-emerald-50 to-white">
-                    <div className="text-xs font-bold text-emerald-600 uppercase tracking-widest">签约面积 Top1</div>
-                    <div className="text-lg font-black text-emerald-800 mt-2 truncate">
+                <div className="liquid-analysis-card rounded-[22px] p-5 ring-1 ring-cyan-100/80">
+                    <div className="text-xs font-black uppercase tracking-widest text-cyan-700">签约面积 Top1</div>
+                    <div className="mt-2 truncate text-lg font-black text-slate-950">
                         {summary.topBySignedArea?.sourceName || '—'}
                     </div>
-                    <div className="text-xs text-emerald-700 mt-2">
+                    <div className="mt-2 text-xs font-semibold text-cyan-700">
                         {summary.topBySignedArea ? formatArea(summary.topBySignedArea.signedArea) : '暂无数据'}
                     </div>
                 </div>
-                <div className="bg-white rounded-2xl border border-indigo-100 p-5 shadow-sm bg-gradient-to-br from-indigo-50 to-white">
-                    <div className="text-xs font-bold text-indigo-600 uppercase tracking-widest flex items-center gap-1">
+                <div className="liquid-analysis-card rounded-[22px] p-5 ring-1 ring-blue-100/80">
+                    <div className="flex items-center gap-1 text-xs font-black uppercase tracking-widest text-blue-700">
                         <ShieldCheck size={12} /> 最稳定来源
                     </div>
-                    <div className="text-lg font-black text-indigo-800 mt-2 truncate">
+                    <div className="mt-2 truncate text-lg font-black text-slate-950">
                         {summary.mostStable?.sourceName || '—'}
                     </div>
-                    <div className="text-xs text-indigo-700 mt-2">
+                    <div className="mt-2 text-xs font-semibold text-blue-700">
                         {summary.mostStable
                             ? `稳定指数 ${summary.mostStable.stabilityScore} · ${summary.mostStable.contractCount} 份合同`
                             : '需至少 2 份同来源合同'}
@@ -166,124 +325,123 @@ export const SourceAnalysisDashboard: React.FC<SourceAnalysisDashboardProps> = (
                 </div>
             </div>
 
-            <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
-                <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm">
-                    <div className="flex items-center gap-2 mb-4">
-                        <BarChart3 size={18} className="text-blue-600" />
-                        <h4 className="font-bold text-slate-800">各来源签约面积</h4>
+            <React.Suspense
+                fallback={
+                    <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
+                        <div className="liquid-analysis-chart h-[352px] rounded-[24px]" />
+                        <div className="liquid-analysis-chart h-[352px] rounded-[24px]" />
                     </div>
-                    <div className="h-[280px]">
-                        {chartRows.length > 0 ? (
-                            <ResponsiveContainer width="100%" height="100%">
-                                <BarChart data={chartRows} layout="vertical" margin={{ left: 10, right: 20 }}>
-                                    <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="#f1f5f9" />
-                                    <XAxis type="number" tick={{ fill: '#94a3b8', fontSize: 10 }} unit="㎡" />
-                                    <YAxis
-                                        type="category"
-                                        dataKey="sourceName"
-                                        width={90}
-                                        tick={{ fill: '#64748b', fontSize: 11 }}
-                                    />
-                                    <Tooltip formatter={(value: number) => [formatArea(value), '签约面积']} />
-                                    <Bar dataKey="signedArea" radius={[0, 4, 4, 0]} barSize={18}>
-                                        {chartRows.map((_, i) => (
-                                            <Cell key={i} fill={CHART_COLORS[i % CHART_COLORS.length]} />
-                                        ))}
-                                    </Bar>
-                                </BarChart>
-                            </ResponsiveContainer>
-                        ) : (
-                            <div className="h-full flex items-center justify-center text-slate-400 text-sm">
-                                当前筛选下暂无已标注来源
-                            </div>
-                        )}
-                    </div>
-                </div>
+                }
+            >
+                <SourceAnalysisCharts
+                    chartRows={chartRows}
+                    pieRows={pieRows}
+                    signingTrend={summary.signingTrend}
+                />
+            </React.Suspense>
 
-                <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm">
-                    <div className="flex items-center gap-2 mb-4">
-                        <Users size={18} className="text-violet-600" />
-                        <h4 className="font-bold text-slate-800">来源合同占比</h4>
-                    </div>
-                    <div className="h-[280px] flex items-center">
-                        {pieRows.length > 0 ? (
-                            <>
-                                <div className="w-1/2 h-full">
-                                    <ResponsiveContainer width="100%" height="100%">
-                                        <PieChart>
-                                            <Pie
-                                                data={pieRows}
-                                                dataKey="contractCount"
-                                                nameKey="sourceName"
-                                                cx="50%"
-                                                cy="50%"
-                                                innerRadius={52}
-                                                outerRadius={78}
-                                                paddingAngle={3}
-                                            >
-                                                {pieRows.map((_, i) => (
-                                                    <Cell key={i} fill={CHART_COLORS[i % CHART_COLORS.length]} />
-                                                ))}
-                                            </Pie>
-                                            <Tooltip />
-                                        </PieChart>
-                                    </ResponsiveContainer>
-                                </div>
-                                <div className="w-1/2 space-y-2 pr-2">
-                                    {pieRows.map((row, i) => (
-                                        <div key={row.sourceName} className="flex items-center justify-between text-xs gap-2">
-                                            <div className="flex items-center gap-2 min-w-0">
-                                                <div
-                                                    className="w-2.5 h-2.5 rounded-full shrink-0"
-                                                    style={{ backgroundColor: CHART_COLORS[i % CHART_COLORS.length] }}
-                                                />
-                                                <span className="truncate text-slate-700">{row.sourceName}</span>
-                                            </div>
-                                            <span className="font-bold text-slate-800 shrink-0">{row.contractCount} 份</span>
-                                        </div>
-                                    ))}
-                                </div>
-                            </>
-                        ) : (
-                            <div className="w-full text-center text-slate-400 text-sm">暂无合同数据</div>
-                        )}
-                    </div>
-                </div>
-            </div>
-
-            <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm">
-                <div className="flex items-center gap-2 mb-4">
-                    <TrendingUp size={18} className="text-indigo-600" />
-                    <h4 className="font-bold text-slate-800">近 12 个月签约趋势</h4>
-                </div>
-                <div className="h-[260px]">
-                    <ResponsiveContainer width="100%" height="100%">
-                        <ComposedChart data={summary.signingTrend} margin={{ top: 10, right: 10, left: -10, bottom: 0 }}>
-                            <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
-                            <XAxis dataKey="month" tick={{ fill: '#94a3b8', fontSize: 10 }} />
-                            <YAxis yAxisId="area" tick={{ fill: '#94a3b8', fontSize: 10 }} unit="㎡" />
-                            <YAxis yAxisId="count" orientation="right" tick={{ fill: '#94a3b8', fontSize: 10 }} />
-                            <Tooltip />
-                            <Legend />
-                            <Bar yAxisId="area" dataKey="totalArea" name="签约面积" fill="#6366f1" radius={[4, 4, 0, 0]} barSize={20} />
-                            <Line yAxisId="count" type="monotone" dataKey="totalCount" name="签约数" stroke="#10b981" strokeWidth={2} dot={{ r: 3 }} />
-                        </ComposedChart>
-                    </ResponsiveContainer>
-                </div>
-            </div>
-
-            <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
-                <div className="px-6 py-4 border-b border-slate-100 flex items-center justify-between gap-3">
-                    <div>
-                        <h4 className="font-bold text-slate-800">来源明细对比</h4>
-                        <p className="text-xs text-slate-500 mt-0.5">
+            <div className="liquid-analysis-table overflow-hidden rounded-[24px]">
+                <div className="liquid-analysis-table-toolbar flex flex-col gap-3 border-b border-white/70 px-4 py-4 sm:px-6 md:flex-row md:items-center md:justify-between">
+                    <div className="min-w-0">
+                        <h4 className="font-black text-slate-950">来源明细对比</h4>
+                        <p className="mt-0.5 text-xs font-medium text-slate-500">
                             稳定指数 = 35% 留存 + 35% 非提前退租 + 30% 平均租期；点击行可展开合同列表
                         </p>
                     </div>
                 </div>
-                <div className="overflow-x-auto">
+
+                <div className="space-y-3 p-3 md:hidden">
+                    {sortedRows.map((row) => {
+                        const badge = stabilityBadge(row.stabilityScore);
+                        const expanded = expandedSource === row.sourceName;
+                        return (
+                            <div
+                                key={row.sourceName}
+                                className={`liquid-analysis-card rounded-[22px] p-3 ${row.sourceName === UNLABELED_SOURCE ? 'ring-1 ring-amber-200/80' : ''}`}
+                            >
+                                <button
+                                    type="button"
+                                    onClick={() => setExpandedSource(expanded ? null : row.sourceName)}
+                                    className="liquid-pressable w-full rounded-2xl px-1 py-1 text-left focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-blue-200/80"
+                                >
+                                    <div className="flex items-start justify-between gap-3">
+                                        <div className="min-w-0">
+                                            <div className="flex min-w-0 items-center gap-2">
+                                                {expanded ? <ChevronUp size={14} className="shrink-0 text-blue-700" /> : <ChevronDown size={14} className="shrink-0 text-slate-500" />}
+                                                <div className={`break-words text-base font-black ${row.sourceName === UNLABELED_SOURCE ? 'text-amber-700' : 'text-slate-950'}`}>
+                                                    {row.sourceName}
+                                                </div>
+                                            </div>
+                                            <div className="mt-1 text-xs font-semibold text-slate-500">
+                                                {row.contractCount} 份合同 · 签约 {formatArea(row.signedArea)}
+                                            </div>
+                                        </div>
+                                        <span className={`liquid-analysis-stability shrink-0 rounded-full border px-2 py-0.5 text-xs font-bold ${badge.className}`}>
+                                            {row.stabilityScore} · {badge.label}
+                                        </span>
+                                    </div>
+                                </button>
+
+                                <div className="mt-3 grid grid-cols-2 gap-2">
+                                    <div className="liquid-glass-subtle rounded-2xl px-3 py-2">
+                                        <div className="text-xs font-black uppercase tracking-wide text-slate-500">在租 / 退租</div>
+                                        <div className="mt-1 text-sm font-black text-slate-900">{row.activeCount} / {row.terminatedCount}</div>
+                                    </div>
+                                    <div className="liquid-glass-subtle rounded-2xl px-3 py-2">
+                                        <div className="text-xs font-black uppercase tracking-wide text-slate-500">续签数</div>
+                                        <div className="mt-1 text-sm font-black text-slate-900">{row.renewalCount}</div>
+                                    </div>
+                                    <div className="liquid-glass-subtle rounded-2xl px-3 py-2">
+                                        <div className="text-xs font-black uppercase tracking-wide text-slate-500">退租率</div>
+                                        <div className="mt-1 text-sm font-black tabular-nums text-slate-900">{formatPercent(row.churnRate)}</div>
+                                    </div>
+                                    <div className="liquid-glass-subtle rounded-2xl px-3 py-2">
+                                        <div className="text-xs font-black uppercase tracking-wide text-slate-500">提前退租率</div>
+                                        <div className="mt-1 text-sm font-black tabular-nums text-slate-900">{formatPercent(row.earlyTerminationRate)}</div>
+                                    </div>
+                                </div>
+
+                                <div className="mt-2 liquid-glass-subtle rounded-2xl px-3 py-2 text-xs font-semibold text-slate-600">
+                                    平均租期 <span className="font-black tabular-nums text-slate-900">{row.avgTenureMonths.toFixed(1)}</span> 月
+                                </div>
+
+                                {expanded && (
+                                    <div className="mt-3 space-y-2">
+                                        {row.tenantIds.map((id) => {
+                                            const tenant = tenantById.get(id);
+                                            if (!tenant) return null;
+                                            return (
+                                                <button
+                                                    key={id}
+                                                    type="button"
+                                                    onClick={(e) => {
+                                                        e.stopPropagation();
+                                                        onEditTenant?.(tenant);
+                                                    }}
+                                                    className="liquid-glass-readable liquid-pressable w-full rounded-2xl px-3 py-2 text-left focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-blue-200/80"
+                                                >
+                                                    <div className="break-words font-bold text-slate-900">{tenant.name}</div>
+                                                    <div className="mt-1 text-xs font-medium text-slate-500">
+                                                        {tenant.leaseStart} ~ {tenant.leaseEnd} · {formatArea(tenant.totalArea || 0)}
+                                                    </div>
+                                                </button>
+                                            );
+                                        })}
+                                    </div>
+                                )}
+                            </div>
+                        );
+                    })}
+                    {sortedRows.length === 0 && (
+                        <div className="liquid-analysis-empty rounded-2xl px-4 py-10 text-center text-sm font-semibold text-slate-500">
+                            当前筛选下暂无合同
+                        </div>
+                    )}
+                </div>
+
+                <div className="hidden overflow-x-auto md:block">
                     <table className="w-full text-sm min-w-[980px]">
-                        <thead className="bg-slate-50 text-slate-500">
+                        <thead className="liquid-analysis-sticky text-slate-600">
                             <tr>
                                 {[
                                     ['sourceName', '来源'],
@@ -299,7 +457,7 @@ export const SourceAnalysisDashboard: React.FC<SourceAnalysisDashboardProps> = (
                                 ].map(([key, label]) => (
                                     <th
                                         key={key}
-                                        className="px-4 py-3 text-left font-bold cursor-pointer select-none whitespace-nowrap"
+                                        className="cursor-pointer select-none whitespace-nowrap px-4 py-3 text-left font-black"
                                         onClick={() => handleSort(key as keyof SourceAgentRow)}
                                     >
                                         <span className="inline-flex items-center gap-1">
@@ -310,17 +468,17 @@ export const SourceAnalysisDashboard: React.FC<SourceAnalysisDashboardProps> = (
                                 ))}
                             </tr>
                         </thead>
-                        <tbody className="divide-y divide-slate-100">
+                        <tbody className="liquid-analysis-table-body divide-y divide-slate-200/70">
                             {sortedRows.map((row) => {
                                 const badge = stabilityBadge(row.stabilityScore);
                                 const expanded = expandedSource === row.sourceName;
                                 return (
                                     <React.Fragment key={row.sourceName}>
                                         <tr
-                                            className={`hover:bg-slate-50/80 cursor-pointer ${row.sourceName === UNLABELED_SOURCE ? 'bg-amber-50/40' : ''}`}
+                                            className={`liquid-analysis-table-row cursor-pointer ${row.sourceName === UNLABELED_SOURCE ? 'liquid-analysis-table-row--warning' : ''}`}
                                             onClick={() => setExpandedSource(expanded ? null : row.sourceName)}
                                         >
-                                            <td className="px-4 py-3 font-medium text-slate-800">
+                                            <td className="px-4 py-3 font-bold text-slate-900">
                                                 <div className="flex items-center gap-2">
                                                     {expanded ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
                                                     <span className={row.sourceName === UNLABELED_SOURCE ? 'text-amber-700' : ''}>
@@ -328,22 +486,22 @@ export const SourceAnalysisDashboard: React.FC<SourceAnalysisDashboardProps> = (
                                                     </span>
                                                 </div>
                                             </td>
-                                            <td className="px-4 py-3">{row.contractCount}</td>
-                                            <td className="px-4 py-3 tabular-nums">{formatArea(row.signedArea)}</td>
-                                            <td className="px-4 py-3">{row.activeCount}</td>
-                                            <td className="px-4 py-3">{row.terminatedCount}</td>
-                                            <td className="px-4 py-3 tabular-nums">{formatPercent(row.churnRate)}</td>
-                                            <td className="px-4 py-3 tabular-nums">{formatPercent(row.earlyTerminationRate)}</td>
-                                            <td className="px-4 py-3">{row.renewalCount}</td>
-                                            <td className="px-4 py-3 tabular-nums">{row.avgTenureMonths.toFixed(1)}</td>
+                                            <td className="px-4 py-3 font-semibold text-slate-700">{row.contractCount}</td>
+                                            <td className="px-4 py-3 font-semibold tabular-nums text-slate-700">{formatArea(row.signedArea)}</td>
+                                            <td className="px-4 py-3 font-semibold text-slate-700">{row.activeCount}</td>
+                                            <td className="px-4 py-3 font-semibold text-slate-700">{row.terminatedCount}</td>
+                                            <td className="px-4 py-3 font-semibold tabular-nums text-slate-700">{formatPercent(row.churnRate)}</td>
+                                            <td className="px-4 py-3 font-semibold tabular-nums text-slate-700">{formatPercent(row.earlyTerminationRate)}</td>
+                                            <td className="px-4 py-3 font-semibold text-slate-700">{row.renewalCount}</td>
+                                            <td className="px-4 py-3 font-semibold tabular-nums text-slate-700">{row.avgTenureMonths.toFixed(1)}</td>
                                             <td className="px-4 py-3">
-                                                <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full border text-xs font-bold ${badge.className}`}>
+                                                <span className={`liquid-analysis-stability inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs font-bold ${badge.className}`}>
                                                     {row.stabilityScore} · {badge.label}
                                                 </span>
                                             </td>
                                         </tr>
                                         {expanded && (
-                                            <tr className="bg-slate-50/60">
+                                            <tr className="liquid-analysis-expand-row">
                                                 <td colSpan={10} className="px-4 py-3">
                                                     <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-2">
                                                         {row.tenantIds.map((id) => {
@@ -357,10 +515,10 @@ export const SourceAnalysisDashboard: React.FC<SourceAnalysisDashboardProps> = (
                                                                         e.stopPropagation();
                                                                         onEditTenant?.(tenant);
                                                                     }}
-                                                                    className="text-left bg-white border border-slate-200 rounded-xl px-3 py-2 hover:border-indigo-300 hover:bg-indigo-50/40 transition-colors"
+                                                                    className="liquid-analysis-card liquid-pressable rounded-2xl px-3 py-2 text-left transition-colors hover:border-blue-300 hover:bg-blue-50/55 focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-blue-200/80"
                                                                 >
-                                                                    <div className="font-medium text-slate-800 truncate">{tenant.name}</div>
-                                                                    <div className="text-[11px] text-slate-500 mt-1">
+                                                                    <div className="truncate font-bold text-slate-900">{tenant.name}</div>
+                                                                    <div className="mt-1 text-xs font-medium text-slate-500">
                                                                         {tenant.leaseStart} ~ {tenant.leaseEnd} · {formatArea(tenant.totalArea || 0)}
                                                                     </div>
                                                                 </button>
@@ -374,8 +532,8 @@ export const SourceAnalysisDashboard: React.FC<SourceAnalysisDashboardProps> = (
                                 );
                             })}
                             {sortedRows.length === 0 && (
-                                <tr>
-                                    <td colSpan={10} className="px-4 py-10 text-center text-slate-400">
+                                <tr className="liquid-analysis-empty">
+                                    <td colSpan={10} className="px-4 py-10 text-center text-sm font-semibold text-slate-500">
                                         当前筛选下暂无合同
                                     </td>
                                 </tr>

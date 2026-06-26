@@ -6,8 +6,6 @@ import {
     RentFreePeriod,
     LeaseUnitTerm,
     Building,
-    DepositStatus,
-    ContractStatus,
     PaymentCycle,
 } from '../types';
 import {
@@ -16,6 +14,7 @@ import {
     snapBeijingLateMonthReceivableBillDate,
     usesSameMonthReceivableBillDate,
 } from './parkBillingConfig';
+export { getVirtualTenants } from './virtualTenants';
 
 const rentFreePeriodKey = (r: RentFreePeriod) => `${r.start}|${r.end}`;
 
@@ -1543,132 +1542,4 @@ export const generateBudgetedBills = (
         if (b.amount < 0 && !b.earlyTerminationExtraDetail) return false;
         return true;
     });
-};
-
-// Helper to generate virtual tenants from assumptions for Budget Calculation
-export const getVirtualTenants = (
-    tenants: Tenant[], 
-    buildings: Building[], 
-    assumptions: BudgetAssumption[]
-): Tenant[] => {
-    const virtualTenants: Tenant[] = [];
-    
-    // Helper to shift date by months for First Payment calculation
-    const addMonths = (dateStr: string, months: number): string => {
-        const d = parseDateLocal(dateStr);
-        d.setMonth(d.getMonth() + months);
-        return toLocalDateString(d);
-    };
-
-    // 1. Vacancy Assumptions
-    // Identify occupied unit IDs to filter for vacancies
-    const occupiedUnitIds = new Set<string>();
-    tenants.forEach(t => {
-        if(t.status === 'Active' || t.status === 'Expiring' || t.status === 'Pending') {
-            t.unitIds.forEach(id => occupiedUnitIds.add(id));
-        }
-    });
-
-    buildings.forEach(b => {
-        b.units.forEach(u => {
-            // Find truly vacant units (not self-use, not occupied by active tenant)
-            if (!u.isSelfUse && !occupiedUnitIds.has(u.id) && u.status !== 'Occupied') {
-                // Check for vacancy assumption
-                const asm = assumptions.find(a => a.targetId === u.id && a.targetType === 'Vacancy');
-                if (asm && asm.projectedSignDate) {
-                    const start = parseDateLocal(asm.projectedSignDate);
-                    const end = new Date(start);
-                    end.setFullYear(end.getFullYear() + 5); // Assume 5 year lease for budget projection
-                    
-                    // Logic Update: First payment delayed by Rent Free period
-                    const firstPayDate = addMonths(asm.projectedSignDate, asm.projectedRentFreeMonths || 0);
-
-                    virtualTenants.push({
-                        id: `virt_vac_${u.id}`,
-                        name: '待租去化 (预算)',
-                        buildingId: b.id,
-                        unitIds: [u.id],
-                        totalArea: u.area,
-                        leaseStart: asm.projectedSignDate,
-                        leaseEnd: toLocalDateString(end),
-                        unitPrice: asm.projectedUnitPrice,
-                        monthlyRent: 0, // Will be calculated by billing service
-                        paymentCycle: 'Quarterly',
-                        paymentCycleMonths: 3,
-                        firstPaymentMonths: 3,
-                        firstPaymentDate: firstPayDate,
-                        depositAmount: 0,
-                        depositStatus: DepositStatus.Unpaid,
-                        status: ContractStatus.Active,
-                        rentFreePeriods: asm.projectedRentFreeMonths > 0 ? [{
-                            start: asm.projectedSignDate,
-                            end: toLocalDateString(new Date(new Date(start).setMonth(start.getMonth() + asm.projectedRentFreeMonths))),
-                            description: 'Budget Rent Free'
-                        }] : [],
-                        freeRentHandling: 'Defer' // 账期顺延模式
-                    });
-                }
-            }
-        });
-    });
-
-    // 2. Renewal / Risk Assumptions (Extension of existing tenants)
-    assumptions.forEach(asm => {
-        if (asm.targetType === 'Vacancy' || asm.targetType === 'Existing') return;
-
-        const tenant = tenants.find(t => t.id === asm.targetId);
-        if (!tenant) return;
-
-        let newStart: Date | null = null;
-             
-        if (asm.targetType === 'Renewal' && asm.strategy !== 'ReLease') {
-             // Renewal strategy: Start immediately after current lease (Seamless)
-             const le = parseDateLocal(tenant.leaseEnd);
-             le.setDate(le.getDate() + 1);
-             newStart = le;
-        } else if (asm.strategy === 'ReLease' || asm.targetType === 'RiskTermination') {
-             // Re-lease / Risk Replacement: Start after gap
-             // Logic Update: Gap calculation is added to the previous end date
-             const baseDate = asm.targetType === 'RiskTermination' && asm.projectedTerminationDate 
-                ? parseDateLocal(asm.projectedTerminationDate) 
-                : parseDateLocal(tenant.leaseEnd);
-             
-             if (isNaN(baseDate.getTime())) return;
-
-             const gap = asm.vacancyGapMonths || 0;
-             newStart = new Date(baseDate);
-             newStart.setMonth(newStart.getMonth() + gap);
-             newStart.setDate(newStart.getDate() + 1);
-        }
-
-        if (newStart) {
-             const newStartStr = toLocalDateString(newStart);
-             const newEnd = new Date(newStart);
-             newEnd.setFullYear(newEnd.getFullYear() + 3); // 3 year projection
-             
-             // Logic Update: First payment delayed by Rent Free period for Renewals/Re-lease too
-             const firstPayDate = addMonths(newStartStr, asm.projectedRentFreeMonths || 0);
-
-             virtualTenants.push({
-                 ...tenant,
-                 id: `virt_${asm.targetType}_${tenant.id}`,
-                 name: `${tenant.name} (${asm.targetType === 'Renewal' ? '续签' : '调改'})`,
-                 leaseStart: newStartStr,
-                 leaseEnd: toLocalDateString(newEnd),
-                 unitPrice: asm.projectedUnitPrice,
-                 monthlyRent: 0,
-                 rentFreePeriods: asm.projectedRentFreeMonths > 0 ? [{
-                     start: newStartStr,
-                     end: toLocalDateString(new Date(new Date(newStart).setMonth(newStart.getMonth() + asm.projectedRentFreeMonths))),
-                     description: 'Assumption Rent Free'
-                 }] : [],
-                 firstPaymentDate: firstPayDate,
-                 freeRentHandling: 'Defer', // 账期顺延模式
-                 status: ContractStatus.Active,
-                 depositStatus: DepositStatus.Unpaid
-             });
-        }
-    });
-
-    return virtualTenants;
 };

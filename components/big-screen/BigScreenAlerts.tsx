@@ -9,7 +9,7 @@ interface Props {
 
 const fmtWan = (v: number | null | undefined, d = 2) => formatWan(v, d);
 
-const sectionStyle = 'bg-white/[0.03] rounded-xl border border-white/8 p-3 md:p-4 flex flex-col min-h-0';
+const sectionStyle = 'liquid-bigscreen-panel rounded-[24px] p-3 md:p-4 flex flex-col min-h-0';
 
 const levelLabel: Record<BigScreenAlert['level'], string> = {
   high: '高风险',
@@ -67,7 +67,7 @@ const operationalRiskType = (a: BigScreenAlert) =>
 interface GroupedAlertListProps {
   groups: ParkRiskGroup[];
   emptyText: string;
-  accent: 'red' | 'amber' | 'purple';
+  accent: 'red' | 'amber' | 'cyan';
   renderMeta: (a: BigScreenAlert) => React.ReactNode;
 }
 
@@ -86,11 +86,11 @@ const accentStyles = {
     meta: 'text-amber-400',
     text: 'text-amber-300/80',
   },
-  purple: {
-    park: 'text-purple-300/90',
-    type: 'text-purple-400/70',
-    card: 'bg-purple-500/8 border-purple-500/10',
-    meta: 'text-purple-400',
+  cyan: {
+    park: 'text-cyan-300/90',
+    type: 'text-cyan-300/70',
+    card: 'bg-cyan-400/8 border-cyan-300/10',
+    meta: 'text-cyan-300',
     text: 'text-slate-300',
   },
 };
@@ -131,7 +131,7 @@ const GroupedAlertList: React.FC<GroupedAlertListProps> = ({
                       return (
                       <div
                         key={a.id}
-                        className={`border rounded-lg px-2.5 md:px-3 py-1.5 md:py-2 ${styles.card}`}
+                        className={`liquid-bigscreen-row rounded-2xl px-2.5 py-1.5 md:px-3 md:py-2 ${styles.card}`}
                       >
                         <div className="flex items-center justify-between gap-2">
                           <span className={`text-[11px] md:text-sm truncate ${styles.text}`}>
@@ -187,23 +187,23 @@ export const BigScreenAlerts: React.FC<Props> = ({ alerts }) => {
     <div className="h-full flex flex-col px-4 md:px-8 pt-3 md:pt-5 pb-4 md:pb-6">
       {/* ====== Header + stats ====== */}
       <div className="text-center mb-3 md:mb-4 shrink-0">
-        <h2 className="text-xl md:text-4xl font-bold">智能预警</h2>
-        <p className="text-slate-500 mt-0.5 text-[11px] md:text-sm">
+        <h2 className="text-xl font-black md:text-4xl">智能预警</h2>
+        <p className="mt-0.5 text-[11px] font-semibold text-slate-400 md:text-sm">
           共 {alerts.length} 条风险 · 按园区 / 风险类型分组
         </p>
       </div>
 
       {/* Stats row */}
       <div className="grid grid-cols-3 gap-2 md:gap-3 mb-3 md:mb-4 shrink-0 max-w-md mx-auto w-full">
-        <div className="bg-red-500/10 rounded-lg p-2 md:p-3 border border-red-500/20 text-center">
+        <div className="liquid-bigscreen-card rounded-2xl p-2 text-center md:p-3">
           <div className="text-lg md:text-2xl font-bold text-red-400">{highCount}</div>
           <div className="text-[11px] md:text-sm text-red-300/60">高风险</div>
         </div>
-        <div className="bg-amber-500/10 rounded-lg p-2 md:p-3 border border-amber-500/20 text-center">
+        <div className="liquid-bigscreen-card rounded-2xl p-2 text-center md:p-3">
           <div className="text-lg md:text-2xl font-bold text-amber-400">{mediumCount}</div>
           <div className="text-[11px] md:text-sm text-amber-300/60">中风险</div>
         </div>
-        <div className="bg-sky-500/10 rounded-lg p-2 md:p-3 border border-sky-500/20 text-center">
+        <div className="liquid-bigscreen-card rounded-2xl p-2 text-center md:p-3">
           <div className="text-lg md:text-2xl font-bold text-sky-400">{lowCount}</div>
           <div className="text-[11px] md:text-sm text-sky-300/60">低风险</div>
         </div>
@@ -219,7 +219,7 @@ export const BigScreenAlerts: React.FC<Props> = ({ alerts }) => {
       ) : (
         <div className="flex-1 grid grid-cols-1 md:grid-cols-[1.4fr_1fr] gap-2 md:gap-3 min-h-0">
           {/* Left: Receivables by park + risk type */}
-          <div className={`${sectionStyle} ${receivables.length > 0 ? 'border-red-500/15' : ''}`}>
+          <div className={`${sectionStyle} ${receivables.length > 0 ? 'border-red-500/20' : ''}`}>
             <div className="flex items-center gap-2 mb-2 md:mb-3 shrink-0">
               <div className="w-5 h-0.5 rounded-full bg-red-400/60" />
               <span className="text-xs md:text-sm text-red-400 font-semibold uppercase tracking-wider">
@@ -259,8 +259,8 @@ export const BigScreenAlerts: React.FC<Props> = ({ alerts }) => {
 
             <div className={`${sectionStyle} flex-1 min-h-0`}>
               <div className="flex items-center gap-2 mb-2 md:mb-3 shrink-0">
-                <div className="w-5 h-0.5 rounded-full bg-purple-400/60" />
-                <span className="text-xs md:text-sm text-purple-400 font-semibold uppercase tracking-wider">
+                <div className="w-5 h-0.5 rounded-full bg-cyan-400/70" />
+                <span className="text-xs md:text-sm text-cyan-300 font-semibold uppercase tracking-wider">
                   经营指标风险
                 </span>
                 <span className="text-[11px] md:text-sm text-slate-500">{operational.length} 条</span>
@@ -269,7 +269,7 @@ export const BigScreenAlerts: React.FC<Props> = ({ alerts }) => {
                 <GroupedAlertList
                   groups={groupedOperational}
                   emptyText="经营指标正常"
-                  accent="purple"
+                  accent="cyan"
                   renderMeta={() => ''}
                 />
               </div>

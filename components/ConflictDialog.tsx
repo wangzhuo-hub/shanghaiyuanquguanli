@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { AlertCircle, CheckCircle2, X } from 'lucide-react';
 import type { IncrementalConflict } from '../services/cloudService';
 
@@ -101,6 +101,15 @@ const getDefaultAction = (c: IncrementalConflict): ConflictAction => {
     return 'skip';
 };
 
+const conflictActionButtonClass = (active: boolean, tone: ConflictAction): string => {
+    if (active) {
+        if (tone === 'mine') return 'liquid-conflict-decision-active-mine';
+        if (tone === 'theirs') return 'liquid-conflict-decision-active-theirs';
+        return 'liquid-conflict-decision-active-skip';
+    }
+    return 'liquid-conflict-decision-idle';
+};
+
 export const ConflictDialog: React.FC<ConflictDialogProps> = ({
     open,
     conflicts,
@@ -162,38 +171,56 @@ export const ConflictDialog: React.FC<ConflictDialogProps> = ({
         }
     };
 
+    useEffect(() => {
+        if (!open) return;
+
+        const handleKeyDown = (event: KeyboardEvent) => {
+            if (event.key !== 'Escape') return;
+            onClose();
+        };
+
+        window.addEventListener('keydown', handleKeyDown);
+        return () => window.removeEventListener('keydown', handleKeyDown);
+    }, [onClose, open]);
+
     if (!open) return null;
 
     return (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-            <div className="bg-white rounded-2xl shadow-2xl w-full max-w-4xl max-h-[90vh] flex flex-col">
-                <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100">
-                    <div className="flex items-center gap-3">
-                        <div className="w-10 h-10 rounded-full bg-amber-100 flex items-center justify-center">
+        <div className="liquid-elevated-backdrop fixed inset-0 z-50 flex items-end justify-center p-0 sm:p-4 md:items-center" onClick={onClose}>
+            <section
+                role="dialog"
+                aria-modal="true"
+                aria-labelledby="cloud-save-conflict-dialog-title"
+                className="liquid-elevated-panel flex max-h-[94vh] w-full max-w-4xl flex-col overflow-hidden rounded-t-[30px] md:max-h-[92vh] md:rounded-[28px]"
+                onClick={(event) => event.stopPropagation()}
+            >
+                <div className="liquid-elevated-header flex items-start justify-between gap-3 border-b border-white/70 px-4 py-4 sm:px-6">
+                    <div className="flex min-w-0 items-start gap-3">
+                        <div className="liquid-icon-well flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl bg-amber-100">
                             <AlertCircle size={20} className="text-amber-600" />
                         </div>
-                        <div>
-                            <h3 className="text-lg font-bold text-slate-800">
+                        <div className="min-w-0">
+                            <h3 id="cloud-save-conflict-dialog-title" className="truncate text-lg font-black text-slate-950">
                                 数据冲突（{conflicts.length} 条）
                             </h3>
-                            <p className="text-xs text-slate-500 mt-0.5">
+                            <p className="mt-0.5 text-xs font-semibold leading-relaxed text-slate-500">
                                 您编辑的记录在保存前已被他人更新，请逐条选择处理方式
                             </p>
                         </div>
                     </div>
                     <button
                         onClick={onClose}
-                        className="text-slate-400 hover:text-slate-600 p-2 rounded-lg hover:bg-slate-100"
-                        aria-label="关闭"
+                        className="liquid-glass-control liquid-pressable inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-slate-500 hover:text-slate-950"
+                        aria-label="关闭数据冲突弹窗"
                     >
                         <X size={20} />
                     </button>
                 </div>
 
-                <div className="px-6 py-3 border-b border-slate-100 bg-slate-50 flex items-center justify-between">
-                    <div className="text-xs text-slate-600">
+                <div className="liquid-elevated-header flex flex-col gap-3 border-b border-white/70 px-4 py-3 sm:px-6 lg:flex-row lg:items-center lg:justify-between">
+                    <div className="text-xs font-bold text-slate-600">
                         当前选择：
-                        <span className="ml-2 inline-flex items-center gap-1 text-emerald-700">
+                        <span className="ml-2 inline-flex items-center gap-1 text-cyan-700">
                             用我的 {counts.mine}
                         </span>
                         <span className="ml-3 inline-flex items-center gap-1 text-blue-700">
@@ -203,52 +230,80 @@ export const ConflictDialog: React.FC<ConflictDialogProps> = ({
                             跳过 {counts.skip}
                         </span>
                     </div>
-                    <div className="flex gap-2">
+                    <div className="grid grid-cols-3 gap-2 sm:flex sm:flex-wrap">
                         <button
                             onClick={() => setAllAction('theirs')}
-                            className="px-3 py-1.5 text-xs rounded border border-blue-200 text-blue-700 hover:bg-blue-50"
+                            className="liquid-conflict-bulk-action liquid-conflict-bulk-theirs liquid-pressable rounded-full px-3 py-2 text-xs font-black"
                         >
                             全部用服务端
                         </button>
                         <button
                             onClick={() => setAllAction('mine')}
-                            className="px-3 py-1.5 text-xs rounded border border-emerald-200 text-emerald-700 hover:bg-emerald-50"
+                            className="liquid-conflict-bulk-action liquid-conflict-bulk-mine liquid-pressable rounded-full px-3 py-2 text-xs font-black"
                         >
                             全部用我的
                         </button>
                         <button
                             onClick={() => setAllAction('skip')}
-                            className="px-3 py-1.5 text-xs rounded border border-slate-200 text-slate-600 hover:bg-slate-50"
+                            className="liquid-conflict-bulk-action liquid-conflict-bulk-skip liquid-pressable rounded-full px-3 py-2 text-xs font-black"
                         >
                             全部跳过
                         </button>
                     </div>
                 </div>
 
-                <div className="flex-1 overflow-y-auto px-6 py-4 space-y-4">
+                <div className="flex-1 space-y-4 overflow-y-auto px-4 py-4 sm:px-6">
                     {items.map((it) => (
                         <div
                             key={it.key}
-                            className="border border-slate-200 rounded-xl overflow-hidden"
+                            className="liquid-elevated-card overflow-hidden rounded-3xl"
                         >
-                            <div className="px-4 py-3 bg-slate-50 border-b border-slate-100 flex items-center justify-between">
-                                <div className="flex items-center gap-2">
-                                    <span className="text-xs px-2 py-0.5 rounded bg-slate-200 text-slate-700 font-medium">
+                            <div className="liquid-conflict-card-head flex flex-col gap-2 border-b border-white/70 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+                                <div className="flex flex-wrap items-center gap-2">
+                                    <span className="liquid-conflict-type-pill rounded-full px-2 py-0.5 text-xs font-black">
                                         {it.label}
                                     </span>
                                     <span className="font-bold text-slate-800">{it.name}</span>
-                                    <span className="text-xs text-slate-400">
+                                    <span className="text-xs font-semibold text-slate-500">
                                         ({it.conflict.op === 'delete' ? '删除' : '更新'})
                                     </span>
                                 </div>
-                                <div className="text-[11px] text-slate-400">
+                                <div className="text-xs font-semibold text-slate-500">
                                     本地基准：{it.conflict.baseUpdated || '—'} ／ 服务端最新：
                                     {it.conflict.serverUpdated || '—'}
                                 </div>
                             </div>
 
-                            <table className="w-full text-sm">
-                                <thead className="bg-white text-slate-500 text-xs">
+                            <div className="space-y-2 p-3 md:hidden">
+                                {it.diffs.map((d, idx) => (
+                                    <div key={idx} className="liquid-conflict-mobile-field rounded-2xl p-3">
+                                        <div className="mb-2 flex items-center justify-between gap-2">
+                                            <span className="text-xs font-black text-slate-500">字段</span>
+                                            <span className="liquid-conflict-field-pill rounded-full px-2 py-0.5 font-mono text-xs font-black">
+                                                {d.field}
+                                            </span>
+                                        </div>
+                                        <div className="grid gap-2">
+                                            <div className="liquid-conflict-value-local rounded-2xl px-3 py-2">
+                                                <div className="text-xs font-black text-cyan-700">我的值（本地）</div>
+                                                <div className="mt-1 break-all text-sm font-bold text-cyan-900">
+                                                    {formatValue(d.localValue)}
+                                                </div>
+                                            </div>
+                                            <div className="liquid-conflict-value-server rounded-2xl px-3 py-2">
+                                                <div className="text-xs font-black text-blue-700">服务端最新值</div>
+                                                <div className="mt-1 break-all text-sm font-bold text-blue-900">
+                                                    {formatValue(d.serverValue)}
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                ))}
+                            </div>
+
+                            <div className="hidden overflow-x-auto md:block">
+                            <table className="w-full min-w-[680px] text-sm">
+                                <thead className="liquid-contract-sticky text-slate-500 text-xs">
                                     <tr>
                                         <th className="text-left px-4 py-2 w-1/4">字段</th>
                                         <th className="text-left px-4 py-2 w-1/3">我的值（本地）</th>
@@ -257,11 +312,11 @@ export const ConflictDialog: React.FC<ConflictDialogProps> = ({
                                 </thead>
                                 <tbody>
                                     {it.diffs.map((d, idx) => (
-                                        <tr key={idx} className="border-t border-slate-100">
+                                        <tr key={idx} className="liquid-conflict-table-row border-t border-white/70">
                                             <td className="px-4 py-2 font-mono text-xs text-slate-600">
                                                 {d.field}
                                             </td>
-                                            <td className="px-4 py-2 text-emerald-700 font-medium break-all">
+                                            <td className="px-4 py-2 text-cyan-700 font-medium break-all">
                                                 {formatValue(d.localValue)}
                                             </td>
                                             <td className="px-4 py-2 text-blue-700 font-medium break-all">
@@ -271,35 +326,24 @@ export const ConflictDialog: React.FC<ConflictDialogProps> = ({
                                     ))}
                                 </tbody>
                             </table>
+                            </div>
 
-                            <div className="px-4 py-3 bg-white border-t border-slate-100 flex gap-2 justify-end">
+                            <div className="liquid-conflict-actions grid grid-cols-3 gap-2 border-t border-white/70 px-3 py-3 sm:flex sm:flex-wrap sm:justify-end sm:px-4">
                                 <button
                                     onClick={() => setAction(it.key, 'theirs')}
-                                    className={`px-3 py-1.5 text-xs rounded border transition ${
-                                        it.action === 'theirs'
-                                            ? 'border-blue-500 bg-blue-50 text-blue-700 font-bold'
-                                            : 'border-slate-200 text-slate-600 hover:bg-slate-50'
-                                    }`}
+                                    className={`liquid-conflict-decision liquid-pressable min-h-10 rounded-full px-2 py-2 text-xs font-black transition ${conflictActionButtonClass(it.action === 'theirs', 'theirs')}`}
                                 >
                                     用服务端值
                                 </button>
                                 <button
                                     onClick={() => setAction(it.key, 'mine')}
-                                    className={`px-3 py-1.5 text-xs rounded border transition ${
-                                        it.action === 'mine'
-                                            ? 'border-emerald-500 bg-emerald-50 text-emerald-700 font-bold'
-                                            : 'border-slate-200 text-slate-600 hover:bg-slate-50'
-                                    }`}
+                                    className={`liquid-conflict-decision liquid-pressable min-h-10 rounded-full px-2 py-2 text-xs font-black transition ${conflictActionButtonClass(it.action === 'mine', 'mine')}`}
                                 >
                                     用我的值
                                 </button>
                                 <button
                                     onClick={() => setAction(it.key, 'skip')}
-                                    className={`px-3 py-1.5 text-xs rounded border transition ${
-                                        it.action === 'skip'
-                                            ? 'border-slate-400 bg-slate-100 text-slate-700 font-bold'
-                                            : 'border-slate-200 text-slate-600 hover:bg-slate-50'
-                                    }`}
+                                    className={`liquid-conflict-decision liquid-pressable min-h-10 rounded-full px-2 py-2 text-xs font-black transition ${conflictActionButtonClass(it.action === 'skip', 'skip')}`}
                                 >
                                     跳过此条
                                 </button>
@@ -307,41 +351,41 @@ export const ConflictDialog: React.FC<ConflictDialogProps> = ({
                         </div>
                     ))}
                     {items.length === 0 && (
-                        <div className="text-center text-slate-400 py-12">
-                            <CheckCircle2 size={32} className="mx-auto mb-2 text-emerald-400" />
+                        <div className="liquid-elevated-card rounded-3xl py-12 text-center text-sm font-semibold text-slate-500">
+                            <CheckCircle2 size={32} className="mx-auto mb-2 text-cyan-500" />
                             没有冲突
                         </div>
                     )}
                 </div>
 
-                <div className="px-6 py-4 border-t border-slate-100 flex justify-between items-center bg-slate-50">
-                    <div className="text-xs text-slate-500">
+                <div className="liquid-elevated-footer flex flex-col gap-3 border-t border-white/70 px-4 py-4 pb-[calc(env(safe-area-inset-bottom)+1rem)] sm:flex-row sm:items-center sm:justify-between sm:px-6 sm:pb-4">
+                    <div className="text-xs font-semibold leading-relaxed text-slate-500">
                         提示：
-                        <span className="ml-1 text-emerald-700">用我的值</span>
+                        <span className="ml-1 text-cyan-700">用我的值</span>
                         会强制覆盖服务端；
                         <span className="ml-1 text-blue-700">用服务端值</span>
                         会丢弃本次本地改动；
                         <span className="ml-1 text-slate-700">跳过</span>
                         保留为待解决（不写库，本地数据不变）
                     </div>
-                    <div className="flex gap-3">
+                    <div className="grid grid-cols-2 gap-2 sm:flex sm:justify-end">
                         <button
                             onClick={onClose}
                             disabled={isApplying}
-                            className="px-5 py-2 border border-slate-300 rounded-lg text-slate-700 hover:bg-white disabled:opacity-50"
+                            className="liquid-elevated-field liquid-pressable rounded-full px-5 py-2.5 font-black text-slate-700 hover:bg-white disabled:opacity-50 sm:py-2"
                         >
                             取消
                         </button>
                         <button
                             onClick={handleApply}
                             disabled={isApplying}
-                            className="px-5 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-bold shadow disabled:opacity-50"
+                            className="liquid-action-strong liquid-pressable rounded-full px-5 py-2.5 font-black shadow disabled:opacity-50 sm:py-2"
                         >
                             {isApplying ? '正在应用…' : '应用决策'}
                         </button>
                     </div>
                 </div>
-            </div>
+            </section>
         </div>
     );
 };

@@ -1,5 +1,5 @@
 import { ContractStatus, Tenant } from '../types';
-import { parseDateLocal } from './billingService';
+import { parseDateLocal } from './billingLightweight';
 
 /** 不计入当年新签面积的原因（供导出/Agent 标注） */
 export type NewSigningExcludeReason =

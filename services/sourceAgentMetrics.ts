@@ -119,63 +119,131 @@ function countRenewals(tenants: Tenant[]): number {
     return renewals;
 }
 
+type SourceAccumulator = {
+    sourceName: string;
+    contractCount: number;
+    activeCount: number;
+    terminatedCount: number;
+    earlyTerminatedCount: number;
+    signedArea: number;
+    activeArea: number;
+    terminatedArea: number;
+    tenureMonthsTotal: number;
+    tenantIds: string[];
+    clientKeys: Set<string>;
+    chainCounts: Map<string, number>;
+};
+
+const emptySourceAccumulator = (sourceName: string): SourceAccumulator => ({
+    sourceName,
+    contractCount: 0,
+    activeCount: 0,
+    terminatedCount: 0,
+    earlyTerminatedCount: 0,
+    signedArea: 0,
+    activeArea: 0,
+    terminatedArea: 0,
+    tenureMonthsTotal: 0,
+    tenantIds: [],
+    clientKeys: new Set(),
+    chainCounts: new Map(),
+});
+
+const addTrend = (
+    trendByMonth: Map<string, { month: string; totalArea: number; totalCount: number }>,
+    signedAt: Date | null,
+    tenant: Tenant,
+) => {
+    if (!signedAt) return;
+    const key = `${signedAt.getFullYear()}-${String(signedAt.getMonth() + 1).padStart(2, '0')}`;
+    const row = trendByMonth.get(key);
+    if (!row) return;
+    row.totalArea += tenant.totalArea || 0;
+    row.totalCount += 1;
+};
+
+const finalizeSourceRow = (acc: SourceAccumulator, referenceDate: Date): SourceAgentRow => {
+    const churnRate = acc.contractCount > 0 ? (acc.terminatedCount / acc.contractCount) * 100 : 0;
+    const earlyTerminationRate =
+        acc.terminatedCount > 0 ? (acc.earlyTerminatedCount / acc.terminatedCount) * 100 : 0;
+    const avgTenureMonths =
+        acc.contractCount > 0 ? acc.tenureMonthsTotal / acc.contractCount : 0;
+    let renewalCount = 0;
+    acc.chainCounts.forEach((count) => {
+        if (count > 1) renewalCount += count - 1;
+    });
+
+    return {
+        sourceName: acc.sourceName,
+        contractCount: acc.contractCount,
+        clientCount: acc.clientKeys.size,
+        activeCount: acc.activeCount,
+        terminatedCount: acc.terminatedCount,
+        signedArea: Math.round(acc.signedArea),
+        activeArea: Math.round(acc.activeArea),
+        terminatedArea: Math.round(acc.terminatedArea),
+        churnRate: Math.round(churnRate * 10) / 10,
+        earlyTerminationRate: Math.round(earlyTerminationRate * 10) / 10,
+        renewalCount,
+        avgTenureMonths: Math.round(avgTenureMonths * 10) / 10,
+        stabilityScore: computeStabilityScore(churnRate, earlyTerminationRate, avgTenureMonths),
+        tenantIds: acc.tenantIds,
+    };
+};
+
 export function computeSourceAgentMetrics(
     tenants: Tenant[],
     period: SourceAnalysisPeriod = 'All',
     referenceDate = new Date(),
 ): SourceAnalysisSummary {
-    const scoped = tenants.filter((t) => {
-        const signedAt = getSigningDate(t);
-        return signedAt ? isInPeriod(signedAt, period, referenceDate) : period === 'All';
-    });
+    const signingTrend: SourceAnalysisSummary['signingTrend'] = [];
+    const trendByMonth = new Map<string, SourceAnalysisSummary['signingTrend'][number]>();
+    const now = referenceDate;
+    for (let i = 11; i >= 0; i -= 1) {
+        const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+        const label = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+        const row = { month: label, totalArea: 0, totalCount: 0 };
+        signingTrend.push(row);
+        trendByMonth.set(label, row);
+    }
 
-    const totalContracts = scoped.length;
-    const labeledContracts = scoped.filter((t) => normalizeSourceAgentName(t.sourceAgentName) !== UNLABELED_SOURCE).length;
+    let totalContracts = 0;
+    let labeledContracts = 0;
+    const bySource = new Map<string, SourceAccumulator>();
+
+    for (const tenant of tenants) {
+        const signedAt = getSigningDate(tenant);
+        addTrend(trendByMonth, signedAt, tenant);
+        if (!(signedAt ? isInPeriod(signedAt, period, referenceDate) : period === 'All')) continue;
+
+        totalContracts += 1;
+        const sourceName = normalizeSourceAgentName(tenant.sourceAgentName);
+        if (sourceName !== UNLABELED_SOURCE) labeledContracts += 1;
+        const acc = bySource.get(sourceName) || emptySourceAccumulator(sourceName);
+        bySource.set(sourceName, acc);
+
+        const area = tenant.totalArea || 0;
+        const chainKey = getChainKey(tenant);
+        acc.contractCount += 1;
+        acc.signedArea += area;
+        acc.tenureMonthsTotal += computeTenureMonths(tenant, referenceDate);
+        acc.tenantIds.push(tenant.id);
+        acc.clientKeys.add(chainKey);
+        acc.chainCounts.set(chainKey, (acc.chainCounts.get(chainKey) || 0) + 1);
+
+        if (ACTIVE_STATUSES.has(tenant.status)) {
+            acc.activeCount += 1;
+            acc.activeArea += area;
+        }
+        if (tenant.status === ContractStatus.Terminated) {
+            acc.terminatedCount += 1;
+            acc.terminatedArea += area;
+            if (tenant.terminationType === 'Early') acc.earlyTerminatedCount += 1;
+        }
+    }
+
     const unlabeledCount = totalContracts - labeledContracts;
-
-    const bySource = new Map<string, Tenant[]>();
-    scoped.forEach((t) => {
-        const source = normalizeSourceAgentName(t.sourceAgentName);
-        const list = bySource.get(source) || [];
-        list.push(t);
-        bySource.set(source, list);
-    });
-
-    const rows: SourceAgentRow[] = Array.from(bySource.entries()).map(([sourceName, list]) => {
-        const active = list.filter((t) => ACTIVE_STATUSES.has(t.status));
-        const terminated = list.filter((t) => t.status === ContractStatus.Terminated);
-        const earlyTerminated = terminated.filter((t) => t.terminationType === 'Early');
-        const clientCount = new Set(list.map(getChainKey)).size;
-        const signedArea = list.reduce((sum, t) => sum + (t.totalArea || 0), 0);
-        const activeArea = active.reduce((sum, t) => sum + (t.totalArea || 0), 0);
-        const terminatedArea = terminated.reduce((sum, t) => sum + (t.totalArea || 0), 0);
-        const contractCount = list.length;
-        const churnRate = contractCount > 0 ? (terminated.length / contractCount) * 100 : 0;
-        const earlyTerminationRate =
-            terminated.length > 0 ? (earlyTerminated.length / terminated.length) * 100 : 0;
-        const avgTenureMonths =
-            list.length > 0
-                ? list.reduce((sum, t) => sum + computeTenureMonths(t, referenceDate), 0) / list.length
-                : 0;
-
-        return {
-            sourceName,
-            contractCount,
-            clientCount,
-            activeCount: active.length,
-            terminatedCount: terminated.length,
-            signedArea: Math.round(signedArea),
-            activeArea: Math.round(activeArea),
-            terminatedArea: Math.round(terminatedArea),
-            churnRate: Math.round(churnRate * 10) / 10,
-            earlyTerminationRate: Math.round(earlyTerminationRate * 10) / 10,
-            renewalCount: countRenewals(list),
-            avgTenureMonths: Math.round(avgTenureMonths * 10) / 10,
-            stabilityScore: computeStabilityScore(churnRate, earlyTerminationRate, avgTenureMonths),
-            tenantIds: list.map((t) => t.id),
-        };
-    });
-
+    const rows = Array.from(bySource.values()).map((acc) => finalizeSourceRow(acc, referenceDate));
     rows.sort((a, b) => b.stabilityScore - a.stabilityScore || b.signedArea - a.signedArea);
 
     const eligibleStable = rows.filter((r) => r.contractCount >= 2 && r.sourceName !== UNLABELED_SOURCE);
@@ -184,22 +252,6 @@ export function computeSourceAgentMetrics(
         rows[0] ||
         null;
     const mostStable = eligibleStable[0] || null;
-
-    const signingTrend: SourceAnalysisSummary['signingTrend'] = [];
-    const now = referenceDate;
-    for (let i = 11; i >= 0; i -= 1) {
-        const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
-        const label = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
-        const monthTenants = tenants.filter((t) => {
-            const signedAt = getSigningDate(t);
-            return signedAt && signedAt.getFullYear() === d.getFullYear() && signedAt.getMonth() === d.getMonth();
-        });
-        signingTrend.push({
-            month: label,
-            totalArea: Math.round(monthTenants.reduce((sum, t) => sum + (t.totalArea || 0), 0)),
-            totalCount: monthTenants.length,
-        });
-    }
 
     return {
         period,
@@ -211,6 +263,10 @@ export function computeSourceAgentMetrics(
         rows,
         topBySignedArea,
         mostStable,
-        signingTrend,
+        signingTrend: signingTrend.map((row) => ({
+            month: row.month,
+            totalArea: Math.round(row.totalArea),
+            totalCount: row.totalCount,
+        })),
     };
 }

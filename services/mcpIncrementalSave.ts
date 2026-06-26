@@ -35,6 +35,11 @@ export interface McpSaveContext {
   year?: number;
 }
 
+export type SaveRefreshStatus =
+  | { refresh_status: 'success'; refreshed_at?: string; data_version?: number; debounced?: boolean }
+  | { refresh_status: 'failed'; refresh_error: string; data_version?: number }
+  | { refresh_status: 'skipped'; data_version?: number };
+
 export function buildMcpSaveContext(
   user: AuthUser,
   userPb: PocketBase,
@@ -73,13 +78,32 @@ function computeRefreshUrl(): string {
   return 'http://127.0.0.1:8787/api/integration/compute/refresh';
 }
 
-async function triggerServerComputeRefresh(projectId: string, year: number): Promise<void> {
+export function affectedMetricsFromDirtyPayload(payload: DirtyPayload): string[] {
+  const affected = new Set<string>();
+  const add = (items: string[]) => items.forEach((x) => affected.add(x));
+  if (payload.pb_payments) add(['kpi', 'billing']);
+  if (payload.pb_tenants) add(['kpi', 'tenants', 'billing', 'dashboard']);
+  if (payload.pb_buildings || payload.pb_units) add(['kpi', 'tenants', 'dashboard']);
+  if (
+    payload.pb_budget_scenarios ||
+    payload.pb_budget_assumptions ||
+    payload.pb_budget_adjustments ||
+    payload.pb_yearly_targets ||
+    payload.pb_monthly_init_data ||
+    payload.pb_billing_period_notes
+  ) {
+    add(['kpi', 'dashboard']);
+  }
+  return [...affected];
+}
+
+async function triggerServerComputeRefresh(projectId: string, year: number, dataVersion?: number | null): Promise<SaveRefreshStatus> {
   const token = String(
-    process.env.INTEGRATION_INTERNAL_TOKEN || process.env.VITE_INTEGRATION_INTERNAL_TOKEN || '',
+    process.env.INTEGRATION_INTERNAL_TOKEN || '',
   ).trim();
-  if (!token) return;
+  if (!token) return { refresh_status: 'skipped', data_version: dataVersion ?? undefined };
   try {
-    await fetch(computeRefreshUrl(), {
+    const res = await fetch(computeRefreshUrl(), {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -87,8 +111,24 @@ async function triggerServerComputeRefresh(projectId: string, year: number): Pro
       },
       body: JSON.stringify({ project_id: projectId, year }),
     });
+    const body = await res.json().catch(() => null) as
+      | { ok?: boolean; dataVersion?: number; computedAt?: string; debounced?: boolean; message?: string }
+      | null;
+    if (!res.ok || body?.ok === false) {
+      return {
+        refresh_status: 'failed',
+        refresh_error: body?.message || `compute/refresh HTTP ${res.status}`,
+        data_version: dataVersion ?? body?.dataVersion,
+      };
+    }
+    return {
+      refresh_status: 'success',
+      refreshed_at: body?.computedAt,
+      data_version: dataVersion ?? body?.dataVersion,
+      debounced: body?.debounced,
+    };
   } catch {
-    /* 与前端一致：静默失败 */
+    return { refresh_status: 'failed', refresh_error: 'compute/refresh 请求失败', data_version: dataVersion ?? undefined };
   }
 }
 
@@ -99,7 +139,7 @@ async function triggerServerComputeRefresh(projectId: string, year: number): Pro
 async function runDirectedSave(
   payload: DirtyPayload,
   ctx: McpSaveContext,
-): Promise<{ ok: boolean; result: SaveIncrementalResult; message: string }> {
+): Promise<{ ok: boolean; result: SaveIncrementalResult; message: string; dataVersion?: number; refresh: SaveRefreshStatus; affectedMetrics: string[] }> {
   const projectId = resolveAuthorizedProjectId(ctx.user, ctx.projectId);
   restorePocketBaseUserSession(
     ctx.pbUrl,
@@ -116,6 +156,8 @@ async function runDirectedSave(
       ok: true,
       result: { success: true, applied: [], conflicts: [], errors: [], message: '无改动' },
       message: '无改动，无需保存',
+      refresh: { refresh_status: 'skipped' },
+      affectedMetrics: [],
     };
   }
 
@@ -133,6 +175,8 @@ async function runDirectedSave(
       ok: false,
       result: res,
       message: `保存冲突 ${res.conflicts.length} 条，请在前端冲突对话框处理或使用最新数据重试`,
+      refresh: { refresh_status: 'skipped' },
+      affectedMetrics: affectedMetricsFromDirtyPayload(filteredPayload),
     };
   }
   if (res.errors.length > 0) {
@@ -140,23 +184,27 @@ async function runDirectedSave(
       ok: false,
       result: res,
       message: res.errors.map((e) => `${e.collection}/${e.originalId}: ${e.message}`).join('；'),
+      refresh: { refresh_status: 'skipped' },
+      affectedMetrics: affectedMetricsFromDirtyPayload(filteredPayload),
     };
   }
 
+  let dataVersion: number | null = null;
   try {
-    await bumpCloudSaveVersion(cloudConfig);
+    dataVersion = await bumpCloudSaveVersion(cloudConfig);
   } catch { /* 非关键 */ }
 
   const year = ctx.year || new Date().getFullYear();
-  await triggerServerComputeRefresh(projectId, year);
+  const affectedMetrics = affectedMetricsFromDirtyPayload(filteredPayload);
+  const refresh = await triggerServerComputeRefresh(projectId, year, dataVersion);
 
-  return { ok: true, result: res, message: res.message };
+  return { ok: true, result: res, message: res.message, dataVersion: dataVersion ?? undefined, refresh, affectedMetrics };
 }
 
 async function runIncrementalSaveFromDashboardData(
   currentData: DashboardData,
   ctx: McpSaveContext,
-): Promise<{ ok: boolean; result: SaveIncrementalResult; message: string }> {
+): Promise<{ ok: boolean; result: SaveIncrementalResult; message: string; dataVersion?: number; refresh: SaveRefreshStatus; affectedMetrics: string[] }> {
   const projectId = resolveAuthorizedProjectId(ctx.user, ctx.projectId);
   restorePocketBaseUserSession(
     ctx.pbUrl,
@@ -170,6 +218,8 @@ async function runIncrementalSaveFromDashboardData(
       ok: false,
       result: { success: false, applied: [], conflicts: [], errors: [], message: backupRes.message },
       message: backupRes.message || '无法读取云端基线',
+      refresh: { refresh_status: 'skipped' },
+      affectedMetrics: [],
     };
   }
 
@@ -188,6 +238,8 @@ async function runIncrementalSaveFromDashboardData(
       ok: true,
       result: { success: true, applied: [], conflicts: [], errors: [], message: '无改动' },
       message: '无改动，无需保存',
+      refresh: { refresh_status: 'skipped' },
+      affectedMetrics: [],
     };
   }
 
@@ -197,6 +249,8 @@ async function runIncrementalSaveFromDashboardData(
       ok: false,
       result: { success: false, applied: [], conflicts: [], errors: [], message: '跨园区数据' },
       message: `数据一致性校验失败：${consistency.mismatchCount} 条租户不属于 ${projectId}`,
+      refresh: { refresh_status: 'skipped' },
+      affectedMetrics: [],
     };
   }
 
@@ -214,6 +268,8 @@ async function runIncrementalSaveFromDashboardData(
       ok: false,
       result: res,
       message: `保存冲突 ${res.conflicts.length} 条，请在前端冲突对话框处理或使用最新数据重试`,
+      refresh: { refresh_status: 'skipped' },
+      affectedMetrics: affectedMetricsFromDirtyPayload(payload),
     };
   }
   if (res.errors.length > 0) {
@@ -221,19 +277,44 @@ async function runIncrementalSaveFromDashboardData(
       ok: false,
       result: res,
       message: res.errors.map((e) => `${e.collection}/${e.originalId}: ${e.message}`).join('；'),
+      refresh: { refresh_status: 'skipped' },
+      affectedMetrics: affectedMetricsFromDirtyPayload(payload),
     };
   }
 
+  let dataVersion: number | null = null;
   try {
-    await bumpCloudSaveVersion(cloudConfig);
+    dataVersion = await bumpCloudSaveVersion(cloudConfig);
   } catch {
     /* 非关键 */
   }
 
   const year = ctx.year || new Date().getFullYear();
-  await triggerServerComputeRefresh(projectId, year);
+  const affectedMetrics = affectedMetricsFromDirtyPayload(payload);
+  const refresh = await triggerServerComputeRefresh(projectId, year, dataVersion);
 
-  return { ok: true, result: res, message: '保存成功（增量路径，与看板一致）' };
+  return {
+    ok: true,
+    result: res,
+    message: '保存成功（增量路径，与看板一致）',
+    dataVersion: dataVersion ?? undefined,
+    refresh,
+    affectedMetrics,
+  };
+}
+
+function saveResponseMeta(save: {
+  dataVersion?: number;
+  refresh: SaveRefreshStatus;
+  affectedMetrics: string[];
+}) {
+  return {
+    data_version: save.refresh.data_version ?? save.dataVersion,
+    affected_metrics: save.affectedMetrics,
+    refresh_status: save.refresh.refresh_status,
+    refreshed_at: save.refresh.refresh_status === 'success' ? save.refresh.refreshed_at : undefined,
+    refresh_error: save.refresh.refresh_status === 'failed' ? save.refresh.refresh_error : undefined,
+  };
 }
 
 export async function savePaymentLikeFrontend(
@@ -315,6 +396,7 @@ export async function savePaymentLikeFrontend(
     payment_id: paymentId,
     save_path: 'directed',
     applied: save.result.applied,
+    ...saveResponseMeta(save),
   };
 }
 
@@ -389,6 +471,7 @@ export async function updatePaymentLikeFrontend(
     payment_id: paymentId,
     save_path: 'directed',
     applied: save.result.applied,
+    ...saveResponseMeta(save),
   };
 }
 
@@ -435,6 +518,7 @@ export async function deletePaymentLikeFrontend(
     payment_id: paymentId,
     save_path: 'frontend_incremental',
     applied: save.result.applied,
+    ...saveResponseMeta(save),
   };
 }
 
@@ -598,6 +682,7 @@ export async function saveTenantLikeFrontend(
     tenant_id: oid,
     save_path: 'directed',
     applied: save.result.applied,
+    ...saveResponseMeta(save),
   };
 }
 
@@ -649,6 +734,7 @@ export async function archiveTenantLikeFrontend(
     tenant_id: tenantId,
     save_path: 'directed',
     applied: save.result.applied,
+    ...saveResponseMeta(save),
   };
 }
 
@@ -692,5 +778,6 @@ export async function deleteTenantLikeFrontend(
     tenant_id: tenantId,
     save_path: 'frontend_incremental',
     applied: save.result.applied,
+    ...saveResponseMeta(save),
   };
 }

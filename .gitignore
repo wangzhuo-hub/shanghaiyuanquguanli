@@ -28,6 +28,9 @@ pocketbase/pb_data/
 test-screenshots/
 test-screenshots-detailed/
 screenshot-*.png
+.playwright-cli/
+output/mobile-screenshot-qa/
+output/mobile-auth-state/
 
 # Logs
 logs
@@ -57,3 +60,7 @@ pocketbase/pb_public/
 
 # 本地备份（含业务 JSON / pb_data 归档）
 backups/
+
+# 临时构建 / 回滚 / 同步中间产物
+tmp/
+.vercel-tmp/

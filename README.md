@@ -30,7 +30,7 @@
 - PocketBase：`/api/pb/` → 由 Nginx 反代到 PocketBase
 - 千问代理：`/api/chat` → `ai-proxy`
 
-数据持久化在 Docker 卷 `pb_data`（勿把 `pocketbase/pb_data/` 提交到 Git）。多园区登录、飞书/OpenClaw 来源映射和 Tailscale 异地访问见 [多园区登录与 Tailscale 部署](docs/04-多园区登录与Tailscale部署.md)。深圳园区物业费收款、工作台 KPI 租金/物业费分项及权限见 [06-深圳物业费收款与权限方案](docs/06-深圳物业费收款与权限方案.md)。
+数据持久化在 Docker 卷 `pb_data`（勿把 `pocketbase/pb_data/` 提交到 Git）。多园区登录、飞书/OpenClaw 来源映射和 Tailscale 异地访问见 [多园区登录与 Tailscale 部署](docs/04-多园区登录与Tailscale部署.md)。深圳园区物业费收款、工作台 KPI 租金/物业费分项及权限见 [06-深圳物业费收款与权限方案](docs/06-深圳物业费收款与权限方案.md)。界面毛玻璃设计原则、移动端优化规则和字段口径保护见 [09-毛玻璃设计原则与渐进优化](docs/09-毛玻璃设计原则与渐进优化.md)。
 
 ### PocketBase 空库初始化说明
 
@@ -158,6 +158,7 @@ git add -A && git commit -m "描述" && git push
 | `QWEN_API_KEY` | DashScope / 千问 API Key（`ai-proxy` 使用） |
 | `VITE_POCKETBASE_URL` | 可选；不设置时浏览器默认使用同源 `/api/pb` |
 | `VITE_QWEN_PROXY_URL` | 可选；不设置时 AI 请求使用同源 `/api/chat` |
+| `VITE_ENABLE_LOCAL_HEAVY_COMPUTE_FALLBACK` | 可选；`auto`/空值表示开发测试允许、生产禁用；生产离线重算需显式设为 `true` |
 | `VITE_DEV_PORT` / `VITE_PB_DEV_PORT` / `VITE_AI_PROXY_PORT` | 本地开发端口覆盖 |
 | `PB_URL` / `PB_ADMIN_EMAIL` / `PB_ADMIN_PASSWORD` | 初始化多园区和 integration-gateway 访问 PocketBase 使用 |
 | `INTEGRATION_GATEWAY_PORT` | OpenClaw / 飞书写入网关端口，默认 `8787` |

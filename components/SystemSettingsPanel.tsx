@@ -17,7 +17,7 @@ import {
     X,
 } from 'lucide-react';
 import type { AIConfig, CloudBackupMetadata, CloudConfig, ParkInfo, UserRole } from '../types';
-import type { ManagedUserAccount, SignupRequestRecord } from '../services/cloudService';
+import type { ManagedUserAccount, SignupRequestRecord } from '../services/cloudAccountService';
 import { userRoleLabel } from '../services/receivablePermissions';
 
 export type NewManagedUserForm = {
@@ -97,8 +97,23 @@ export type SystemSettingsPanelProps = {
 };
 
 const inputClass =
-    'w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 outline-none focus:border-sky-400 focus:ring-2 focus:ring-sky-100';
-const labelClass = 'mb-1 block text-xs font-medium text-slate-500';
+    'liquid-settings-field min-h-[44px] w-full rounded-2xl px-3 py-2 text-sm font-semibold text-slate-900 outline-none focus-visible:ring-4 focus-visible:ring-blue-200/80';
+const labelClass = 'mb-1.5 block text-xs font-black text-slate-500';
+const settingsTableHeaderClass =
+    'liquid-settings-table-head px-3 py-2 text-xs font-black text-slate-600 sm:px-4';
+const settingsGroupHeaderClass =
+    'liquid-settings-group-head px-3 py-2 text-sm font-black text-slate-800 sm:px-4';
+const settingsRowClass = 'liquid-settings-row px-3 py-3 sm:px-4';
+const settingsCompactRowClass = 'liquid-settings-row-compact px-3 py-2.5 text-sm sm:px-4';
+const settingsActionBaseClass =
+    'liquid-settings-action liquid-pressable inline-flex min-h-[36px] items-center justify-center gap-1 rounded-full px-3 py-1.5 text-xs font-bold';
+const settingsDangerButtonClass =
+    `${settingsActionBaseClass} liquid-settings-action--danger`;
+const settingsWarnButtonClass =
+    `${settingsActionBaseClass} liquid-settings-action--warning`;
+const settingsTinyButtonClass =
+    'liquid-settings-action liquid-pressable inline-flex min-h-[36px] items-center justify-center rounded-full px-3 py-1.5 text-xs font-bold';
+const settingsTinyNeutralButtonClass = `${settingsTinyButtonClass} liquid-settings-action--neutral`;
 
 function SectionCard({
     title,
@@ -114,29 +129,29 @@ function SectionCard({
     children: React.ReactNode;
 }) {
     return (
-        <section className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
-            <div className="flex flex-wrap items-start justify-between gap-3 border-b border-slate-100 px-5 py-4">
-                <div className="min-w-0">
+        <section className="liquid-settings-card overflow-hidden rounded-[24px]">
+            <div className="flex flex-col gap-3 border-b border-white/65 bg-white/18 px-4 py-4 sm:flex-row sm:items-start sm:justify-between sm:px-5">
+                <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-2">
                         {icon}
-                        <h2 className="text-base font-semibold text-slate-800">{title}</h2>
+                        <h2 className="text-base font-black text-slate-950">{title}</h2>
                     </div>
-                    {description ? <p className="mt-1 text-sm text-slate-500">{description}</p> : null}
+                    {description ? <p className="mt-1 text-sm font-semibold text-slate-500">{description}</p> : null}
                 </div>
-                {action}
+                {action ? <div className="flex w-full shrink-0 justify-start sm:w-auto sm:justify-end">{action}</div> : null}
             </div>
-            <div className="px-5 py-4">{children}</div>
+            <div className="px-4 py-4 sm:px-5">{children}</div>
         </section>
     );
 }
 
 function StatusPill({ connected }: { connected: boolean }) {
     return connected ? (
-        <span className="inline-flex items-center gap-1 rounded-full border border-emerald-200 bg-emerald-50 px-2.5 py-1 text-xs font-medium text-emerald-700">
+        <span className="liquid-settings-status-pill inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-black" data-state="connected">
             <CheckCircle2 size={12} /> 已连接
         </span>
     ) : (
-        <span className="inline-flex items-center gap-1 rounded-full border border-rose-200 bg-rose-50 px-2.5 py-1 text-xs font-medium text-rose-700">
+        <span className="liquid-settings-status-pill inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-black" data-state="disconnected">
             <AlertCircle size={12} /> 未连接
         </span>
     );
@@ -157,14 +172,14 @@ function UserTabButton({
         <button
             type="button"
             onClick={onClick}
-            className={`rounded-lg px-3 py-1.5 text-sm font-medium transition-colors ${
-                active ? 'bg-sky-600 text-white shadow-sm' : 'text-slate-600 hover:bg-slate-100'
+            className={`liquid-pressable inline-flex min-h-[38px] items-center justify-center rounded-full px-3 py-1.5 text-sm font-bold transition ${
+                active ? 'liquid-action-strong' : 'liquid-glass-control text-slate-600 hover:bg-white/70'
             }`}
         >
             {children}
             {count != null && count > 0 ? (
                 <span
-                    className={`ml-1.5 inline-flex min-w-[1.25rem] justify-center rounded-full px-1 text-[10px] ${
+                    className={`ml-1.5 inline-flex min-w-[1.5rem] justify-center rounded-full px-1.5 text-xs font-black ${
                         active ? 'bg-white/20 text-white' : 'bg-slate-200 text-slate-600'
                     }`}
                 >
@@ -176,7 +191,7 @@ function UserTabButton({
 }
 
 function EmptyRow({ children }: { children: React.ReactNode }) {
-    return <div className="py-8 text-center text-sm text-slate-500">{children}</div>;
+    return <div className="liquid-glass-readable rounded-[18px] px-4 py-8 text-center text-sm font-semibold text-slate-500">{children}</div>;
 }
 
 export const SystemSettingsPanel: React.FC<SystemSettingsPanelProps> = (props) => {
@@ -246,7 +261,25 @@ export const SystemSettingsPanel: React.FC<SystemSettingsPanelProps> = (props) =
     };
 
     return (
-        <div className="mx-auto max-w-4xl space-y-5 pb-8 animate-in fade-in duration-300">
+        <div className="mx-auto max-w-5xl space-y-4 pb-8 animate-in fade-in duration-300 sm:space-y-5">
+            <div className="liquid-settings-hero rounded-[28px] px-5 py-5 md:px-6">
+                <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+                    <div className="min-w-0">
+                        <div className="flex items-center gap-2 text-xs font-black text-blue-700">
+                            <Sparkles size={14} />
+                            系统配置
+                        </div>
+                        <h2 className="mt-1 text-xl font-black tracking-normal text-slate-950 md:text-2xl">系统与备份</h2>
+                        <p className="mt-1 text-sm font-semibold text-slate-500">
+                            后端连接、登录人员、AI 识别、历史备份和数据维护集中管理。
+                        </p>
+                    </div>
+                    <div className="liquid-glass-readable rounded-[20px] px-4 py-3 text-sm">
+                        <div className="text-xs font-black text-slate-500">当前园区</div>
+                        <div className="mt-1 max-w-[220px] truncate font-black text-slate-900">{currentParkName || '未选择园区'}</div>
+                    </div>
+                </div>
+            </div>
             <SectionCard
                 title="连接与同步"
                 icon={<CloudCog size={18} className="text-sky-600" />}
@@ -262,7 +295,7 @@ export const SystemSettingsPanel: React.FC<SystemSettingsPanelProps> = (props) =
                         <dt className={labelClass}>当前园区</dt>
                         <dd className="text-slate-800">
                             {currentParkName}
-                            <span className="ml-2 text-xs text-slate-400">（顶栏切换）</span>
+                            <span className="ml-2 text-xs font-semibold text-slate-500">（顶栏切换）</span>
                         </dd>
                     </div>
                 </dl>
@@ -277,9 +310,8 @@ export const SystemSettingsPanel: React.FC<SystemSettingsPanelProps> = (props) =
                 </label>
                 {cloudConnectionMsg ? (
                     <p
-                        className={`mt-3 text-sm ${
-                            cloudConnectionMsg.type === 'success' ? 'text-emerald-600' : 'text-rose-600'
-                        }`}
+                        className="liquid-settings-notice mt-3 rounded-2xl px-3 py-2 text-sm font-semibold"
+                        data-tone={cloudConnectionMsg.type === 'success' ? 'success' : 'danger'}
                     >
                         {cloudConnectionMsg.text}
                     </p>
@@ -293,23 +325,23 @@ export const SystemSettingsPanel: React.FC<SystemSettingsPanelProps> = (props) =
                     description={isPlatformAdmin ? '新增账号、审批待办与权限维护。' : '仅平台管理员可维护登录人员。'}
                     action={
                         isPlatformAdmin ? (
-                            <button
-                                type="button"
-                                onClick={onRefreshUsers}
-                                className="inline-flex items-center gap-1 rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50"
-                            >
+	                            <button
+	                                type="button"
+	                                onClick={onRefreshUsers}
+	                                className="liquid-glass-control liquid-pressable inline-flex items-center gap-1 rounded-full px-3 py-1.5 text-xs font-bold text-slate-600"
+	                            >
                                 <RefreshCw size={14} /> 刷新
                             </button>
                         ) : null
                     }
                 >
                     {!isPlatformAdmin ? (
-                        <div className="rounded-lg border border-amber-100 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+                        <div className="liquid-settings-notice rounded-2xl px-4 py-3 text-sm font-semibold" data-tone="warning">
                             当前为园区/集团管理员，仅可查看连接设置，不可维护登录人员。
                         </div>
                     ) : (
                         <>
-                            <div className="mb-4 flex flex-wrap gap-1 rounded-xl border border-slate-200 bg-slate-50 p-1">
+                            <div className="liquid-glass-readable mb-4 grid grid-cols-2 gap-1 rounded-[22px] p-1 sm:flex sm:flex-wrap sm:rounded-full">
                                 <UserTabButton active={userTab === 'add'} onClick={() => setUserTab('add')}>
                                     新增
                                 </UserTabButton>
@@ -403,12 +435,12 @@ export const SystemSettingsPanel: React.FC<SystemSettingsPanelProps> = (props) =
                                         />
                                         新增后直接启用
                                     </label>
-                                    <div className="sm:col-span-2 flex justify-end">
-                                        <button
-                                            type="submit"
-                                            disabled={isCreatingUser}
-                                            className="rounded-lg bg-sky-600 px-4 py-2 text-sm font-medium text-white hover:bg-sky-700 disabled:opacity-60"
-                                        >
+                                    <div className="flex sm:col-span-2 sm:justify-end">
+	                                        <button
+	                                            type="submit"
+	                                            disabled={isCreatingUser}
+	                                            className="liquid-action-strong liquid-pressable w-full rounded-full px-4 py-2 text-sm font-black disabled:opacity-60 sm:w-auto"
+	                                        >
                                             {isCreatingUser ? '提交中…' : '新增登录人员'}
                                         </button>
                                     </div>
@@ -417,8 +449,8 @@ export const SystemSettingsPanel: React.FC<SystemSettingsPanelProps> = (props) =
 
                             {userTab === 'pending' && (
                                 <div className="space-y-4">
-                                    <div className="rounded-lg border border-slate-200 overflow-hidden">
-                                        <div className="border-b border-slate-100 bg-slate-50 px-4 py-2 text-xs font-semibold text-slate-600">
+	                                    <div className="liquid-settings-table overflow-hidden rounded-[20px]">
+	                                        <div className={settingsTableHeaderClass}>
                                             待启用账号 · {pendingUsers.length}
                                         </div>
                                         {isLoadingManagedUsers ? (
@@ -431,9 +463,9 @@ export const SystemSettingsPanel: React.FC<SystemSettingsPanelProps> = (props) =
                                             pendingUsers.map((u) => (
                                                 <div
                                                     key={u.id}
-                                                    className="flex items-center justify-between gap-3 border-t border-slate-100 px-4 py-3 first:border-t-0"
+                                                    className={`flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between ${settingsRowClass}`}
                                                 >
-                                                    <div className="min-w-0">
+                                                    <div className="min-w-0 self-stretch sm:self-auto">
                                                         <div className="truncate text-sm font-medium text-slate-800">
                                                             {u.email}
                                                         </div>
@@ -448,19 +480,19 @@ export const SystemSettingsPanel: React.FC<SystemSettingsPanelProps> = (props) =
                                                             ) : null}
                                                         </div>
                                                     </div>
-                                                    <button
-                                                        type="button"
-                                                        onClick={() => onApproveManagedUser(u, true)}
-                                                        className="shrink-0 rounded-lg bg-sky-600 px-3 py-1.5 text-xs text-white hover:bg-sky-700"
-                                                    >
+	                                                    <button
+	                                                        type="button"
+	                                                        onClick={() => onApproveManagedUser(u, true)}
+	                                                        className="liquid-action-strong liquid-pressable min-h-[36px] w-full shrink-0 rounded-full px-3 py-1.5 text-xs font-bold sm:w-auto"
+	                                                    >
                                                         通过
                                                     </button>
                                                 </div>
                                             ))
                                         )}
                                     </div>
-                                    <div className="rounded-lg border border-slate-200 overflow-hidden">
-                                        <div className="border-b border-slate-100 bg-slate-50 px-4 py-2 text-xs font-semibold text-slate-600">
+	                                    <div className="liquid-settings-table overflow-hidden rounded-[20px]">
+	                                        <div className={settingsTableHeaderClass}>
                                             注册申请 · {pendingSignups.length}
                                         </div>
                                         {isLoadingSignupRequests ? (
@@ -473,7 +505,7 @@ export const SystemSettingsPanel: React.FC<SystemSettingsPanelProps> = (props) =
                                             pendingSignups.map((req) => (
                                                 <div
                                                     key={req.id}
-                                                    className="space-y-2 border-t border-slate-100 px-4 py-3 first:border-t-0"
+                                                    className={`space-y-2 ${settingsRowClass}`}
                                                 >
                                                     <div className="text-sm font-medium text-slate-800">
                                                         {req.applicantName || '（未填姓名）'}
@@ -485,26 +517,26 @@ export const SystemSettingsPanel: React.FC<SystemSettingsPanelProps> = (props) =
                                                             <span className="font-mono text-slate-600">{req.password}</span>
                                                         </div>
                                                     ) : null}
-                                                    <div className="flex flex-wrap justify-end gap-2">
+                                                    <div className="grid grid-cols-1 gap-2 sm:flex sm:flex-wrap sm:justify-end">
                                                         <button
                                                             type="button"
                                                             onClick={() => onDeleteSignupRequest(req)}
-                                                            className="inline-flex items-center gap-1 rounded-lg border border-rose-200 px-3 py-1.5 text-xs text-rose-700 hover:bg-rose-50"
+                                                            className={`${settingsDangerButtonClass} w-full sm:w-auto`}
                                                         >
                                                             <Trash2 size={13} /> 删除申请
                                                         </button>
                                                         <button
                                                             type="button"
                                                             onClick={() => onRejectSignupRequest(req)}
-                                                            className="inline-flex items-center gap-1 rounded-lg border border-amber-200 px-3 py-1.5 text-xs text-amber-700 hover:bg-amber-50"
+                                                            className={`${settingsWarnButtonClass} w-full sm:w-auto`}
                                                         >
                                                             <RotateCcw size={13} /> 退回
                                                         </button>
-                                                        <button
-                                                            type="button"
-                                                            onClick={() => onApproveSignupRequest(req)}
-                                                            className="inline-flex items-center gap-1 rounded-lg bg-sky-600 px-3 py-1.5 text-xs text-white hover:bg-sky-700"
-                                                        >
+	                                                        <button
+	                                                            type="button"
+	                                                            onClick={() => onApproveSignupRequest(req)}
+	                                                            className="liquid-action-strong liquid-pressable inline-flex min-h-[36px] w-full items-center justify-center gap-1 rounded-full px-3 py-1.5 text-xs font-bold sm:w-auto"
+	                                                        >
                                                             <CheckCircle2 size={13} />
                                                             审批通过
                                                         </button>
@@ -517,7 +549,7 @@ export const SystemSettingsPanel: React.FC<SystemSettingsPanelProps> = (props) =
                             )}
 
                             {userTab === 'accounts' && (
-                                <div className="max-h-96 overflow-y-auto rounded-lg border border-slate-200">
+	                                <div className="liquid-settings-table max-h-96 overflow-y-auto rounded-[20px]">
                                     {isLoadingManagedUsers ? (
                                         <EmptyRow>加载中…</EmptyRow>
                                     ) : managedUsersError ? (
@@ -528,7 +560,7 @@ export const SystemSettingsPanel: React.FC<SystemSettingsPanelProps> = (props) =
                                         activeUsers.map((u) => (
                                             <div
                                                 key={u.id}
-                                                className="flex flex-wrap items-center justify-between gap-2 border-t border-slate-100 px-4 py-3 first:border-t-0"
+                                                className={`flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between ${settingsRowClass}`}
                                             >
                                                 <div className="min-w-0">
                                                     <div className="truncate text-sm font-medium text-slate-800">
@@ -546,18 +578,18 @@ export const SystemSettingsPanel: React.FC<SystemSettingsPanelProps> = (props) =
                                                         ) : null}
                                                     </div>
                                                 </div>
-                                                <div className="flex shrink-0 gap-1">
-                                                    <button
-                                                        type="button"
-                                                        onClick={() => onOpenUserManage(u)}
-                                                        className="rounded border border-slate-200 px-2 py-1 text-xs text-slate-700 hover:bg-slate-50"
-                                                    >
+                                                <div className="grid w-full shrink-0 grid-cols-2 gap-2 sm:w-auto sm:flex sm:gap-1">
+	                                                    <button
+	                                                        type="button"
+	                                                        onClick={() => onOpenUserManage(u)}
+	                                                        className="liquid-glass-control liquid-pressable inline-flex min-h-[36px] items-center justify-center rounded-full px-2.5 py-1 text-xs font-bold text-slate-700"
+	                                                    >
                                                         <Pencil size={12} className="inline" /> 编辑
                                                     </button>
                                                     <button
                                                         type="button"
                                                         onClick={() => onDeleteManagedUser(u)}
-                                                        className="rounded border border-rose-200 px-2 py-1 text-xs text-rose-700 hover:bg-rose-50"
+                                                        className={settingsDangerButtonClass}
                                                     >
                                                         删除
                                                     </button>
@@ -569,7 +601,7 @@ export const SystemSettingsPanel: React.FC<SystemSettingsPanelProps> = (props) =
                             )}
 
                             {userTab === 'signup' && (
-                                <div className="max-h-96 overflow-y-auto rounded-lg border border-slate-200">
+	                                <div className="liquid-settings-table max-h-96 overflow-y-auto rounded-[20px]">
                                     {isLoadingSignupRequests ? (
                                         <EmptyRow>加载中…</EmptyRow>
                                     ) : approvedSignupByPark.parkOrder.length === 0 && rejectedSignups.length === 0 ? (
@@ -583,7 +615,7 @@ export const SystemSettingsPanel: React.FC<SystemSettingsPanelProps> = (props) =
                                                 const rows = approvedSignupByPark.byPark.get(projectId) || [];
                                                 return (
                                                     <div key={projectId}>
-                                                        <div className="border-t border-slate-200 bg-slate-50 px-4 py-2 text-sm font-medium text-slate-800 first:border-t-0">
+	                                                        <div className={settingsGroupHeaderClass}>
                                                             {parkTitle}
                                                         </div>
                                                         {rows.map((req) => {
@@ -597,26 +629,26 @@ export const SystemSettingsPanel: React.FC<SystemSettingsPanelProps> = (props) =
                                                             return (
                                                                 <div
                                                                     key={`${req.id}-${projectId}`}
-                                                                    className="border-t border-slate-100 px-4 py-2.5 text-sm"
+                                                                    className={settingsCompactRowClass}
                                                                 >
                                                                     <div className="font-medium text-slate-800">
                                                                         {req.applicantName || '（未填姓名）'}
                                                                     </div>
                                                                     <div className="text-xs text-slate-500">{req.email}</div>
-                                                                    <div className="mt-2 flex flex-wrap justify-end gap-1">
+                                                                    <div className="mt-2 grid grid-cols-2 gap-1.5 sm:flex sm:flex-wrap sm:justify-end">
                                                                         {linked && (
                                                                             <>
                                                                                 <button
                                                                                     type="button"
                                                                                     onClick={() => onOpenUserManage(linked)}
-                                                                                    className="rounded border border-slate-200 px-2 py-0.5 text-[11px] hover:bg-slate-50"
+                                                                                    className={settingsTinyNeutralButtonClass}
                                                                                 >
                                                                                     编辑
                                                                                 </button>
                                                                                 <button
                                                                                     type="button"
                                                                                     onClick={() => onDeleteManagedUser(linked)}
-                                                                                    className="rounded border border-rose-200 px-2 py-0.5 text-[11px] text-rose-700 hover:bg-rose-50"
+                                                                                    className={`${settingsTinyButtonClass} liquid-settings-action--danger`}
                                                                                 >
                                                                                     删除账号
                                                                                 </button>
@@ -625,7 +657,7 @@ export const SystemSettingsPanel: React.FC<SystemSettingsPanelProps> = (props) =
                                                                         <button
                                                                             type="button"
                                                                             onClick={() => onDeleteSignupRequest(req)}
-                                                                            className="rounded border border-amber-200 px-2 py-0.5 text-[11px] text-amber-700 hover:bg-amber-50"
+                                                                            className={`${settingsTinyButtonClass} liquid-settings-action--warning`}
                                                                         >
                                                                             清理记录
                                                                         </button>
@@ -638,13 +670,13 @@ export const SystemSettingsPanel: React.FC<SystemSettingsPanelProps> = (props) =
                                             })}
                                             {rejectedSignups.length > 0 ? (
                                                 <div>
-                                                    <div className="border-t border-slate-200 bg-amber-50 px-4 py-2 text-sm font-medium text-amber-800">
+                                                    <div className={`${settingsGroupHeaderClass} liquid-settings-group-head--warning`}>
                                                         已退回申请 · {rejectedSignups.length}
                                                     </div>
                                                     {rejectedSignups.map((req) => (
                                                         <div
                                                             key={req.id}
-                                                            className="border-t border-amber-100 px-4 py-2.5 text-sm"
+                                                            className={`${settingsCompactRowClass} liquid-settings-row--warning`}
                                                         >
                                                             <div className="font-medium text-slate-800">
                                                                 {req.applicantName || '（未填姓名）'}
@@ -655,11 +687,11 @@ export const SystemSettingsPanel: React.FC<SystemSettingsPanelProps> = (props) =
                                                                     {req.reviewNote}
                                                                 </div>
                                                             ) : null}
-                                                            <div className="mt-2 flex justify-end">
+                                                            <div className="mt-2 flex justify-stretch sm:justify-end">
                                                                 <button
                                                                     type="button"
                                                                     onClick={() => onDeleteSignupRequest(req)}
-                                                                    className="rounded border border-amber-200 px-2 py-0.5 text-[11px] text-amber-700 hover:bg-amber-50"
+                                                                    className={`${settingsTinyButtonClass} liquid-settings-action--warning w-full sm:w-auto`}
                                                                 >
                                                                     清理记录
                                                                 </button>
@@ -677,20 +709,20 @@ export const SystemSettingsPanel: React.FC<SystemSettingsPanelProps> = (props) =
                 </SectionCard>
             ) : null}
 
-            <details className="group overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
-                <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-5 py-4 marker:content-none">
-                    <div className="flex items-center gap-2">
-                        <Sparkles size={18} className="text-violet-600" />
-                        <span className="text-base font-semibold text-slate-800">AI 助手</span>
+	            <details className="liquid-settings-card group overflow-hidden rounded-[24px]">
+	                <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-5 py-4 marker:content-none">
+	                    <div className="flex items-center gap-2">
+                        <Sparkles size={18} className="text-blue-600" />
+                        <span className="text-base font-black text-slate-950">AI 助手</span>
                         {aiConfig.enabled ? (
-                            <span className="text-xs text-emerald-600">已启用</span>
+                            <span className="liquid-settings-status-pill rounded-full px-2 py-0.5 text-xs font-black" data-state="enabled">已启用</span>
                         ) : (
-                            <span className="text-xs text-slate-400">未启用</span>
+                            <span className="liquid-settings-status-pill rounded-full px-2 py-0.5 text-xs font-black" data-state="muted">未启用</span>
                         )}
                     </div>
-                    <span className="text-xs text-slate-400 group-open:hidden">展开配置</span>
+                    <span className="text-xs font-semibold text-slate-500 group-open:hidden">展开配置</span>
                 </summary>
-                <div className="space-y-4 border-t border-slate-100 px-5 py-4">
+                <div className="liquid-settings-panel-body space-y-4 px-4 py-4 sm:px-5">
                     <div>
                         <label className={labelClass}>提供商</label>
                         <select
@@ -761,7 +793,7 @@ export const SystemSettingsPanel: React.FC<SystemSettingsPanelProps> = (props) =
                         </>
                     )}
                     {aiConfig.provider !== 'none' && (
-                        <div className="flex flex-wrap items-center justify-between gap-3 pt-1">
+                        <div className="flex flex-col gap-3 pt-1 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
                             <label className="flex items-center gap-2 text-sm text-slate-700">
                                 <input
                                     type="checkbox"
@@ -770,11 +802,11 @@ export const SystemSettingsPanel: React.FC<SystemSettingsPanelProps> = (props) =
                                 />
                                 启用 AI 助手
                             </label>
-                            <button
-                                type="button"
-                                onClick={onSaveAiConfig}
-                                className="rounded-lg bg-sky-600 px-4 py-2 text-sm font-medium text-white hover:bg-sky-700"
-                            >
+	                            <button
+	                                type="button"
+	                                onClick={onSaveAiConfig}
+	                                className="liquid-action-strong liquid-pressable w-full rounded-full px-4 py-2 text-sm font-black sm:w-auto"
+	                            >
                                 保存配置
                             </button>
                         </div>
@@ -788,51 +820,51 @@ export const SystemSettingsPanel: React.FC<SystemSettingsPanelProps> = (props) =
                     icon={<History size={18} className="text-sky-600" />}
                     action={
                         <div className="flex gap-2">
-                            <button
-                                type="button"
-                                onClick={onRefreshHistory}
-                                className="rounded-lg p-2 text-slate-500 hover:bg-slate-100"
-                                title="刷新"
+	                            <button
+	                                type="button"
+	                                onClick={onRefreshHistory}
+	                                className="liquid-glass-control liquid-pressable rounded-full p-2 text-slate-500"
+	                                title="刷新"
                             >
                                 <RefreshCw size={14} />
                             </button>
-                            <button
-                                type="button"
-                                onClick={onOpenSnapshot}
-                                className="rounded-lg bg-sky-50 px-3 py-1.5 text-xs font-medium text-sky-700 hover:bg-sky-100"
-                            >
+	                            <button
+	                                type="button"
+	                                onClick={onOpenSnapshot}
+	                                className="liquid-glass-control liquid-pressable rounded-full px-3 py-1.5 text-xs font-bold text-blue-700"
+	                            >
                                 新建备份
                             </button>
                         </div>
                     }
                 >
-                    <div className="max-h-48 overflow-y-auto rounded-lg border border-slate-200">
+	                    <div className="liquid-settings-table max-h-48 overflow-y-auto rounded-[20px]">
                         {isLoadingHistory ? (
                             <EmptyRow>加载中…</EmptyRow>
                         ) : cloudHistory.length === 0 ? (
                             <EmptyRow>暂无备份</EmptyRow>
                         ) : (
                             cloudHistory.map((backup) => (
-                                <div
-                                    key={backup.id}
-                                    className="flex items-center justify-between gap-3 border-t border-slate-100 px-4 py-3 first:border-t-0"
-                                >
-                                    <div>
+	                                <div
+	                                    key={backup.id}
+	                                    className={`flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between ${settingsRowClass}`}
+	                                >
+                                    <div className="min-w-0 self-stretch sm:self-auto">
                                         <div className="text-sm font-medium text-slate-700">
                                             {backup.note || '无备注'}
                                         </div>
-                                        <div className="flex items-center gap-1 text-xs text-slate-400">
+                                        <div className="flex items-center gap-1 text-xs font-semibold text-slate-500">
                                             <FileClock size={10} />
                                             {new Date(backup.created_at).toLocaleString()}
                                         </div>
                                     </div>
-                                    <div className="flex gap-2">
-                                        <button
-                                            type="button"
-                                            onClick={() => onRestoreBackup(backup.id)}
-                                            disabled={restoringId === backup.id}
-                                            className="flex items-center gap-1 rounded border border-orange-200 px-2 py-1 text-xs text-orange-600 hover:bg-orange-50"
-                                        >
+                                    <div className="grid w-full grid-cols-2 gap-2 sm:w-auto sm:flex">
+	                                        <button
+	                                            type="button"
+	                                            onClick={() => onRestoreBackup(backup.id)}
+	                                            disabled={restoringId === backup.id}
+	                                            className={`${settingsWarnButtonClass} flex w-full sm:w-auto`}
+	                                        >
                                             {restoringId === backup.id ? (
                                                 <Loader2 size={12} className="animate-spin" />
                                             ) : (
@@ -843,7 +875,7 @@ export const SystemSettingsPanel: React.FC<SystemSettingsPanelProps> = (props) =
                                         <button
                                             type="button"
                                             onClick={() => onDownloadBackup(backup.id, backup.note)}
-                                            className="flex items-center gap-1 rounded border border-slate-200 px-2 py-1 text-xs text-slate-600 hover:bg-slate-50"
+                                            className="liquid-glass-control liquid-pressable flex min-h-[36px] items-center justify-center gap-1 rounded-full px-2.5 py-1 text-xs font-bold text-slate-700"
                                         >
                                             <Download size={12} /> 下载
                                         </button>
@@ -857,67 +889,67 @@ export const SystemSettingsPanel: React.FC<SystemSettingsPanelProps> = (props) =
 
             <SectionCard title="本地数据" icon={<Database size={18} className="text-sky-600" />}>
                 <div className="space-y-2">
-                    <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-slate-200 px-4 py-3">
-                        <div>
+		                    <div className="liquid-settings-maintenance-row flex flex-col gap-3 rounded-[18px] px-3 py-3 sm:flex-row sm:items-center sm:justify-between sm:px-4">
+                        <div className="min-w-0">
                             <div className="text-sm font-medium text-slate-700">导出 JSON 备份</div>
-                            <div className="text-xs text-slate-400">含 project_id={cloudConfig.projectId}</div>
+                            <div className="text-xs font-semibold text-slate-500">含 project_id={cloudConfig.projectId}</div>
                         </div>
                         <button
                             type="button"
                             onClick={onExport}
-                            className="rounded-lg bg-slate-100 px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-200"
+	                            className="liquid-glass-control liquid-pressable min-h-[36px] w-full rounded-full px-3 py-1.5 text-xs font-bold text-slate-700 sm:w-auto"
                         >
                             导出
                         </button>
                     </div>
-                    <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-slate-200 px-4 py-3">
-                        <div>
+		                    <div className="liquid-settings-maintenance-row flex flex-col gap-3 rounded-[18px] px-3 py-3 sm:flex-row sm:items-center sm:justify-between sm:px-4">
+                        <div className="min-w-0">
                             <div className="text-sm font-medium text-slate-700">导入到当前园区</div>
-                            <div className="text-xs text-slate-400">校验备份 project_id</div>
+                            <div className="text-xs font-semibold text-slate-500">校验备份 project_id</div>
                         </div>
-                        <label className="cursor-pointer rounded-lg bg-slate-100 px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-200">
+	                        <label className="liquid-glass-control liquid-pressable inline-flex min-h-[36px] w-full cursor-pointer items-center justify-center rounded-full px-3 py-1.5 text-xs font-bold text-slate-700 sm:w-auto">
                             选择文件
                             <input type="file" className="hidden" accept=".json" onChange={onImport} />
                         </label>
                     </div>
-                    <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-rose-100 bg-rose-50/50 px-4 py-3">
-                        <div>
+		                    <div className="liquid-settings-maintenance-row liquid-settings-maintenance-row--danger flex flex-col gap-3 rounded-[18px] px-3 py-3 sm:flex-row sm:items-center sm:justify-between sm:px-4">
+                        <div className="min-w-0">
                             <div className="text-sm font-medium text-rose-700">重置本地缓存</div>
                             <div className="text-xs text-rose-400">仅当前园区浏览器数据</div>
                         </div>
-                        <button
-                            type="button"
-                            onClick={onResetData}
-                            className="rounded-lg border border-rose-200 bg-white px-3 py-1.5 text-xs font-medium text-rose-600 hover:bg-rose-100"
-                        >
+	                        <button
+		                            type="button"
+		                            onClick={onResetData}
+		                            className={`${settingsDangerButtonClass} w-full sm:w-auto`}
+		                        >
                             重置
                         </button>
                     </div>
                 </div>
             </SectionCard>
 
-            <p className="text-center text-xs text-slate-400">
+            <p className="text-center text-xs font-semibold text-slate-500">
                 Kingdee Park Management System v4.0 · © 2024 Kingdee
             </p>
 
             {userManageTarget && (
-                <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/40 p-4">
-                    <div className="max-h-[90vh] w-full max-w-md overflow-y-auto rounded-xl border border-slate-200 bg-white p-5 shadow-xl">
-                        <div className="mb-4 flex items-start justify-between gap-2">
-                            <div>
-                                <h4 className="text-sm font-bold text-slate-800">管理登录账号</h4>
-                                <p className="mt-0.5 break-all text-xs text-slate-500">{userManageTarget.email}</p>
-                            </div>
-                            <button
-                                type="button"
-                                aria-label="关闭"
-                                className="rounded p-1 text-slate-500 hover:bg-slate-100"
-                                onClick={onCloseUserManage}
-                            >
-                                <X size={18} />
-                            </button>
-                        </div>
-                        <div className="space-y-3">
+	                <div className="liquid-elevated-backdrop fixed inset-0 z-[80] flex items-end justify-center p-3 sm:items-center sm:p-4">
+	                    <div className="liquid-elevated-panel max-h-[92vh] w-full max-w-md overflow-y-auto rounded-[26px]">
+	                        <div className="liquid-elevated-header mb-4 flex items-start justify-between gap-2 px-5 py-4">
+	                            <div>
+	                                <h4 className="text-sm font-black text-slate-950">管理登录账号</h4>
+	                                <p className="mt-0.5 break-all text-xs text-slate-500">{userManageTarget.email}</p>
+	                            </div>
+	                            <button
+	                                type="button"
+	                                aria-label="关闭"
+	                                className="liquid-glass-control liquid-pressable rounded-full p-1.5 text-slate-500"
+	                                onClick={onCloseUserManage}
+	                            >
+	                                <X size={18} />
+	                            </button>
+	                        </div>
+	                        <div className="space-y-3 px-5">
                             <div>
                                 <label className={labelClass}>姓名</label>
                                 <input
@@ -928,8 +960,8 @@ export const SystemSettingsPanel: React.FC<SystemSettingsPanelProps> = (props) =
                             </div>
                             <div>
                                 <label className={labelClass}>角色</label>
-                                <select
-                                    className={inputClass}
+	                                <select
+	                                    className={inputClass}
                                     value={userManageForm.role}
                                     onChange={(e) =>
                                         onUserManageFormChange({ role: e.target.value as UserRole })
@@ -941,11 +973,11 @@ export const SystemSettingsPanel: React.FC<SystemSettingsPanelProps> = (props) =
                                     <option value="group_admin">集团管理员</option>
                                     <option value="platform_admin">平台管理员</option>
                                 </select>
-                                {userManageForm.role === 'property_staff' && (
-                                    <p className="mt-2 text-xs leading-relaxed text-teal-700">
-                                        物业人员不显示租金相关字段，可维护物业费应收。
-                                    </p>
-                                )}
+	                                {userManageForm.role === 'property_staff' && (
+	                                    <p className="liquid-settings-notice mt-2 rounded-2xl px-3 py-2 text-xs font-semibold leading-relaxed" data-tone="info">
+	                                        物业人员不显示租金相关字段，可维护物业费应收。
+	                                    </p>
+	                                )}
                             </div>
                             <div>
                                 <label className={labelClass}>默认园区</label>
@@ -957,7 +989,7 @@ export const SystemSettingsPanel: React.FC<SystemSettingsPanelProps> = (props) =
                             </div>
                             <div>
                                 <label className={labelClass}>可访问园区</label>
-                                <div className="max-h-40 space-y-2 overflow-y-auto rounded-lg border border-slate-100 bg-slate-50/80 p-3">
+	                                <div className="liquid-settings-table max-h-40 space-y-2 overflow-y-auto rounded-[18px] p-3">
                                     {authorizedParks.map((park) => (
                                         <label
                                             key={park.projectId}
@@ -976,7 +1008,7 @@ export const SystemSettingsPanel: React.FC<SystemSettingsPanelProps> = (props) =
                                                 }}
                                             />
                                             {park.name}{' '}
-                                            <span className="text-slate-400">({park.projectId})</span>
+                                            <span className="font-semibold text-slate-500">({park.projectId})</span>
                                         </label>
                                     ))}
                                     {authorizedParks.length === 0 && (
@@ -1009,28 +1041,28 @@ export const SystemSettingsPanel: React.FC<SystemSettingsPanelProps> = (props) =
                                 </p>
                             </div>
                         </div>
-                        <div className="mt-5 flex justify-end gap-2">
-                            <button
-                                type="button"
-                                onClick={onCloseUserManage}
-                                className="rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-600 hover:bg-slate-50"
-                            >
+	                        <div className="liquid-elevated-footer mt-5 grid grid-cols-1 gap-2 px-5 py-4 sm:flex sm:justify-end">
+	                            <button
+	                                type="button"
+	                                onClick={onCloseUserManage}
+	                                className="liquid-glass-control liquid-pressable rounded-full px-3 py-2 text-sm font-bold text-slate-600"
+	                            >
                                 取消
                             </button>
-                            <button
-                                type="button"
-                                onClick={onDeleteUserManage}
-                                disabled={userManageSaving}
-                                className="rounded-lg border border-rose-200 px-3 py-2 text-sm text-rose-700 hover:bg-rose-50"
-                            >
+	                            <button
+		                            type="button"
+		                            onClick={onDeleteUserManage}
+		                            disabled={userManageSaving}
+		                                className={`${settingsDangerButtonClass} px-3 py-2 text-sm`}
+		                            >
                                 删除
                             </button>
-                            <button
-                                type="button"
-                                onClick={onSaveUserManage}
-                                disabled={userManageSaving}
-                                className="rounded-lg bg-sky-600 px-3 py-2 text-sm text-white hover:bg-sky-700 disabled:opacity-50"
-                            >
+	                            <button
+	                                type="button"
+	                                onClick={onSaveUserManage}
+	                                disabled={userManageSaving}
+	                                className="liquid-action-strong liquid-pressable rounded-full px-3 py-2 text-sm font-black disabled:opacity-50"
+	                            >
                                 {userManageSaving ? '保存中…' : '保存'}
                             </button>
                         </div>

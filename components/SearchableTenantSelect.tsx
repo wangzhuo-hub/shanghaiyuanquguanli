@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { resolveTenantAssetLabels } from './ContractSummaryModal';
+import { RotateCcw, Search } from 'lucide-react';
+import { resolveTenantAssetLabels } from './contractSummaryHelpers';
 import type { Building, Tenant } from '../types';
 
 function tenantPickerMeta(tenant: Tenant, buildings: Building[] | undefined) {
@@ -12,23 +13,23 @@ function tenantPickerMeta(tenant: Tenant, buildings: Building[] | undefined) {
   return { contractCode, unitNames, buildingLabel, searchHaystack };
 }
 
-type Theme = 'emerald' | 'indigo';
+type Theme = 'blue' | 'cyan';
 
 const themeClasses: Record<
   Theme,
-  { border: string; hover: string; selectedBg: string; label: string }
+  { accent: string; option: string; selectedRing: string; label: string }
 > = {
-  emerald: {
-    border: 'border-emerald-200',
-    hover: 'hover:bg-emerald-50/60',
-    selectedBg: 'bg-white',
-    label: 'text-emerald-700',
+  blue: {
+    accent: 'text-blue-700',
+    option: 'liquid-tenant-picker-option-blue',
+    selectedRing: 'ring-blue-100/80',
+    label: 'text-blue-700',
   },
-  indigo: {
-    border: 'border-indigo-200',
-    hover: 'hover:bg-indigo-50/60',
-    selectedBg: 'bg-white',
-    label: 'text-indigo-700',
+  cyan: {
+    accent: 'text-cyan-700',
+    option: 'liquid-tenant-picker-option-cyan',
+    selectedRing: 'ring-cyan-100/80',
+    label: 'text-cyan-700',
   },
 };
 
@@ -56,19 +57,19 @@ function TenantPickerSubline({
 }) {
   const meta = tenantPickerMeta(tenant, buildings);
   return (
-    <div className="text-[11px] text-slate-500 mt-0.5 leading-snug">
+    <div className="mt-0.5 text-xs font-semibold leading-snug text-slate-500">
       <span className="font-mono">合同 {meta.contractCode}</span>
-      <span className="text-slate-300 mx-1">·</span>
+      <span className="mx-1 text-slate-400">·</span>
       <span>房号 {meta.unitNames}</span>
       {meta.buildingLabel && meta.buildingLabel !== '未知楼宇' ? (
         <>
-          <span className="text-slate-300 mx-1">·</span>
+          <span className="mx-1 text-slate-400">·</span>
           <span>{meta.buildingLabel}</span>
         </>
       ) : null}
       {suffix ? (
         <>
-          <span className="text-slate-300 mx-1">·</span>
+          <span className="mx-1 text-slate-400">·</span>
           <span>{suffix}</span>
         </>
       ) : null}
@@ -82,7 +83,7 @@ export function SearchableTenantSelect({
   onChange,
   buildings,
   placeholder = '搜索客户、合同编码或房号…',
-  theme = 'emerald',
+  theme = 'blue',
   filterTenant,
   getOptionSuffix,
   maxResults = 80,
@@ -136,17 +137,18 @@ export function SearchableTenantSelect({
   if (!showPicker && selectedTenant) {
     const suffix = getOptionSuffix?.(selectedTenant);
     return (
-      <div className={`border rounded-lg p-2 ${classes.border} ${classes.selectedBg}`}>
+      <div className={`liquid-tenant-picker-selected rounded-2xl p-3 ring-1 ${classes.selectedRing}`}>
         <div className="flex items-start justify-between gap-2">
           <div className="min-w-0">
-            <div className="text-sm font-medium text-slate-800 truncate">{selectedTenant.name}</div>
+            <div className="truncate text-sm font-black text-slate-950">{selectedTenant.name}</div>
             <TenantPickerSubline tenant={selectedTenant} buildings={buildings} suffix={suffix} />
           </div>
           <button
             type="button"
             onClick={handleReselect}
-            className={`text-[11px] shrink-0 hover:underline ${classes.label}`}
+            className={`liquid-tenant-picker-reselect liquid-pressable inline-flex shrink-0 items-center gap-1 rounded-full px-2.5 py-1.5 text-xs font-black ${classes.label}`}
           >
+            <RotateCcw size={12} />
             重选
           </button>
         </div>
@@ -156,19 +158,24 @@ export function SearchableTenantSelect({
 
   return (
     <div className="space-y-1">
-      <input
-        type="search"
-        value={keyword}
-        onChange={(e) => setKeyword(e.target.value)}
-        placeholder={placeholder}
-        className={`w-full p-2 rounded border text-sm ${classes.border} bg-white`}
-        autoComplete="off"
-      />
+      <label className="liquid-tenant-picker-input flex min-h-11 items-center gap-2 rounded-2xl px-3.5 py-2.5">
+        <Search size={15} className={`shrink-0 ${classes.accent}`} />
+        <input
+          type="search"
+          inputMode="search"
+          enterKeyHint="search"
+          value={keyword}
+          onChange={(e) => setKeyword(e.target.value)}
+          placeholder={placeholder}
+          className="min-w-0 flex-1 bg-transparent text-sm font-semibold text-slate-900 outline-none placeholder:text-slate-500"
+          autoComplete="off"
+        />
+      </label>
       <div
-        className={`max-h-[240px] overflow-y-auto rounded-lg border bg-white divide-y divide-slate-100 ${classes.border}`}
+        className="liquid-tenant-picker-list max-h-[240px] overflow-y-auto rounded-2xl divide-y divide-slate-100/80"
       >
         {candidates.length === 0 ? (
-          <div className="p-3 text-center text-slate-400 text-xs">无匹配客户</div>
+          <div className="liquid-tenant-picker-empty p-4 text-center text-xs font-bold text-slate-500">无匹配客户</div>
         ) : (
           candidates.map((t) => {
             const suffix = getOptionSuffix?.(t);
@@ -177,9 +184,9 @@ export function SearchableTenantSelect({
                 key={t.id}
                 type="button"
                 onClick={() => handleSelect(t.id)}
-                className={`w-full text-left px-2 py-2 ${classes.hover}`}
+                className={`liquid-tenant-picker-option liquid-pressable w-full px-3 py-2.5 text-left transition ${classes.option} focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400/40`}
               >
-                <div className="text-sm font-medium text-slate-800 leading-snug">{t.name}</div>
+                <div className="text-sm font-black leading-snug text-slate-950">{t.name}</div>
                 <TenantPickerSubline tenant={t} buildings={buildings} suffix={suffix} />
               </button>
             );
@@ -187,7 +194,7 @@ export function SearchableTenantSelect({
         )}
       </div>
       {!keyword.trim() && sortedTenants.length > maxResults ? (
-        <p className="text-[10px] text-slate-400">输入关键字可缩小范围（默认展示前 {maxResults} 条）</p>
+        <p className="liquid-tenant-picker-hint px-1 text-xs font-semibold text-slate-500">输入关键字可缩小范围（默认展示前 {maxResults} 条）</p>
       ) : null}
     </div>
   );

@@ -4,6 +4,8 @@ import {
     resolveInitMonthInitialBudget,
     resolveInitMonthRevenueTarget,
     SHANGHAI_PARK_ID,
+    shouldRunLocalInitialBudgetImportFallback,
+    validateInitialBudgetImportServerItems,
 } from '../initDataBudget';
 
 describe('initDataBudget', () => {
@@ -39,5 +41,37 @@ describe('initDataBudget', () => {
         };
         expect(resolveInitMonthRevenueTarget(entry, 'beijing_park')).toBe(80_000);
         expect(resolveInitMonthInitialBudget(entry, 'beijing_park')).toBe(1);
+    });
+
+    it('does not auto-run heavy local initial budget import after a server attempt', () => {
+        expect(shouldRunLocalInitialBudgetImportFallback({
+            canUseServer: true,
+            tenantCount: 10,
+            serverAttempted: true,
+        })).toBe(false);
+
+        expect(shouldRunLocalInitialBudgetImportFallback({
+            canUseServer: false,
+            tenantCount: 10,
+            serverAttempted: false,
+        })).toBe(true);
+
+        expect(shouldRunLocalInitialBudgetImportFallback({
+            canUseServer: true,
+            tenantCount: 0,
+            serverAttempted: false,
+        })).toBe(true);
+
+        expect(shouldRunLocalInitialBudgetImportFallback({
+            canUseServer: false,
+            tenantCount: 10,
+            serverAttempted: false,
+            localFallbackEnabled: false,
+        })).toBe(false);
+    });
+
+    it('rejects incomplete server bill items for initial budget import', () => {
+        expect(validateInitialBudgetImportServerItems(['t1', 't2'], ['t1', 't2'])).toBeNull();
+        expect(validateInitialBudgetImportServerItems(['t1', 't2'], ['t1'])).toBe('后台年初预算导入缺少 1 个账单结果');
     });
 });

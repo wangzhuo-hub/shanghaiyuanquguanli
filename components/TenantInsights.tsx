@@ -14,6 +14,7 @@ export const TenantInsights: React.FC<TenantInsightsProps> = ({ tenants, onUpdat
   const [isSearching, setIsSearching] = useState(false);
   const [batchProgress, setBatchProgress] = useState<{current: number, total: number} | null>(null);
   const [searchFilter, setSearchFilter] = useState('');
+  const [singleUpdateNotice, setSingleUpdateNotice] = useState(false);
   
   // Mobile view state: true = list view, false = detail view
   const [showMobileList, setShowMobileList] = useState(true);
@@ -23,6 +24,7 @@ export const TenantInsights: React.FC<TenantInsightsProps> = ({ tenants, onUpdat
 
   const handleTenantSelect = (id: string) => {
       setSelectedTenantId(id);
+      setSingleUpdateNotice(false);
       setShowMobileList(false); // Switch to detail view on mobile
   };
 
@@ -70,9 +72,9 @@ export const TenantInsights: React.FC<TenantInsightsProps> = ({ tenants, onUpdat
       case 'Anniversary': return <Calendar className="text-rose-500" size={18} />;
       case 'Product': return <Megaphone className="text-blue-500" size={18} />;
       case 'Award': return <Award className="text-amber-500" size={18} />;
-      case 'News': return <Globe className="text-indigo-500" size={18} />;
-      case 'ParkAnniversary': return <Flag className="text-emerald-500" size={18} />;
-      default: return <Clock className="text-slate-400" size={18} />;
+      case 'News': return <Globe className="text-blue-500" size={18} />;
+      case 'ParkAnniversary': return <Flag className="text-blue-600" size={18} />;
+      default: return <Clock className="text-slate-500" size={18} />;
     }
   };
 
@@ -157,21 +159,23 @@ export const TenantInsights: React.FC<TenantInsightsProps> = ({ tenants, onUpdat
   const allMoments = selectedTenant 
       ? [...(selectedTenant.keyMoments || []), ...generateParkMoments(selectedTenant)].sort((a,b) => new Date(b.date).getTime() - new Date(a.date).getTime())
       : [];
+  const timelineNodeClass = 'absolute -left-[9px] top-1 flex h-4 w-4 items-center justify-center rounded-full border shadow-sm backdrop-blur-xl transition-colors';
+  const timelineNodeDotClass = 'h-1.5 w-1.5 rounded-full';
 
   return (
-    <div className="flex min-h-[320px] h-[calc(100dvh-10rem)] md:h-[calc(100vh-140px)] bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden min-w-0">
+    <div className="liquid-glass-readable flex min-h-[320px] h-[calc(100dvh-10rem)] md:h-[calc(100vh-140px)] overflow-hidden rounded-[24px] min-w-0">
         {/* Left Sidebar: Tenant List */}
-        <div className={`w-full md:w-80 border-r border-slate-200 flex flex-col bg-slate-50 min-w-0 ${showMobileList ? 'flex' : 'hidden md:flex'}`}>
-            <div className="p-4 border-b border-slate-200 space-y-3">
-                <h3 className="font-bold text-slate-700 flex items-center gap-2">
-                    <Sparkles size={18} className="text-purple-500"/> 客户洞察
+        <div className={`liquid-glass-toolbar w-full md:w-80 border-r border-white/65 flex flex-col min-w-0 ${showMobileList ? 'flex' : 'hidden md:flex'}`}>
+            <div className="space-y-3 px-4 py-4">
+                <h3 className="flex items-center gap-2 font-black text-slate-950">
+                    <Sparkles size={18} className="text-blue-600"/> 客户洞察
                 </h3>
                 <div className="relative">
-                    <Search className="absolute left-3 top-2.5 text-slate-400 w-4 h-4" />
+                    <Search className="absolute left-3 top-2.5 text-slate-500 w-4 h-4" />
                     <input 
                         type="text" 
                         placeholder="搜索客户..." 
-                        className="w-full pl-9 pr-4 py-2 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-purple-100"
+                        className="liquid-elevated-field w-full rounded-2xl py-2 pl-9 pr-4 text-sm font-semibold text-slate-700 outline-none focus-visible:ring-4 focus-visible:ring-blue-500/15"
                         value={searchFilter}
                         onChange={e => setSearchFilter(e.target.value)}
                     />
@@ -179,29 +183,29 @@ export const TenantInsights: React.FC<TenantInsightsProps> = ({ tenants, onUpdat
                 <button 
                     onClick={handleBatchCollect}
                     disabled={isSearching}
-                    className="w-full bg-white border border-purple-200 text-purple-600 py-2 rounded-lg text-xs font-medium hover:bg-purple-50 flex items-center justify-center gap-2 transition-colors disabled:opacity-50"
+                    className="liquid-action-strong liquid-pressable flex w-full items-center justify-center gap-2 rounded-full py-2 text-xs font-bold disabled:pointer-events-none disabled:opacity-50"
                 >
                     {isSearching ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
                     {isSearching ? `正在更新... (${batchProgress?.current}/${batchProgress?.total})` : '一键更新全员动态'}
                 </button>
             </div>
-            <div className="flex-1 overflow-y-auto">
+            <div className="flex-1 space-y-2 overflow-y-auto px-2 pb-3">
                 {filteredTenants.map(t => (
                     <div 
                         key={t.id}
                         onClick={() => handleTenantSelect(t.id)}
-                        className={`p-4 border-b border-slate-100 cursor-pointer hover:bg-white transition-colors ${selectedTenantId === t.id ? 'bg-white border-l-4 border-l-purple-500 shadow-sm' : 'border-l-4 border-l-transparent'}`}
+                        className={`liquid-pressable cursor-pointer rounded-[18px] border-l-4 p-4 transition-colors ${selectedTenantId === t.id ? 'liquid-nav-active border-l-blue-600' : 'border-l-transparent hover:bg-white/55'}`}
                     >
-                        <div className="font-medium text-slate-800 text-sm">{t.name}</div>
-                        <div className="text-xs text-slate-500 mt-1 flex items-center gap-2">
-                            <span>{t.industry || '行业未录入'}</span>
-                            <span className="w-1 h-1 bg-slate-300 rounded-full"></span>
-                            <span>{parkDurationForTenant(t)}</span>
+                        <div className="min-w-0 break-words text-sm font-bold leading-snug text-slate-900" title={t.name}>{t.name}</div>
+                        <div className="mt-1 flex min-w-0 flex-wrap items-center gap-2 text-xs text-slate-500">
+                            <span className="min-w-0 truncate">{t.industry || '行业未录入'}</span>
+                            <span className="h-1 w-1 shrink-0 rounded-full bg-slate-300/80"></span>
+                            <span className="shrink-0">{parkDurationForTenant(t)}</span>
                         </div>
                     </div>
                 ))}
                 {filteredTenants.length === 0 && (
-                    <div className="p-8 text-center text-slate-400 text-xs">未找到匹配客户</div>
+                    <div className="p-8 text-center text-xs font-semibold text-slate-500">未找到匹配客户</div>
                 )}
             </div>
         </div>
@@ -211,15 +215,15 @@ export const TenantInsights: React.FC<TenantInsightsProps> = ({ tenants, onUpdat
             {selectedTenant ? (
                 <>
                     {/* Header */}
-                    <div className="p-6 border-b border-slate-200 bg-white">
+                    <div className="liquid-glass-toolbar px-4 py-4 sm:px-6">
                         <div className="md:hidden mb-4">
-                             <button onClick={() => setShowMobileList(true)} className="text-slate-500 flex items-center gap-1 text-sm"><ArrowLeft size={16}/> 返回列表</button>
+                             <button onClick={() => setShowMobileList(true)} className="liquid-glass-control liquid-pressable flex items-center gap-1 rounded-full px-3 py-1.5 text-sm font-bold text-slate-600"><ArrowLeft size={16}/> 返回列表</button>
                         </div>
-                        <div className="flex justify-between items-start">
+                        <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-start">
                             <div>
-                                <h2 className="text-2xl font-bold text-slate-800 flex items-center gap-2">
+                                <h2 className="flex flex-wrap items-center gap-2 text-xl font-black text-slate-950 sm:text-2xl">
                                     {selectedTenant.name}
-                                    {selectedTenant.industry && <span className="bg-purple-100 text-purple-700 text-xs px-2 py-1 rounded-full font-medium">{selectedTenant.industry}</span>}
+                                    {selectedTenant.industry && <span className="liquid-glass-control rounded-full px-2.5 py-1 text-xs font-bold text-blue-700">{selectedTenant.industry}</span>}
                                 </h2>
                                 <div className="flex flex-wrap items-center gap-4 mt-3 text-sm text-slate-500">
                                     <div className="flex items-center gap-1.5" title="成立日期">
@@ -231,44 +235,54 @@ export const TenantInsights: React.FC<TenantInsightsProps> = ({ tenants, onUpdat
                                         <span>入驻: {calculateParkDuration(selectedTenant.moveInDate || selectedTenant.leaseStart)}</span>
                                     </div>
                                     <div className="flex items-center gap-1.5" title="法人代表">
-                                        <User size={16} className="text-slate-400"/>
+                                        <User size={16} className="text-slate-500"/>
                                         <span>法人: {selectedTenant.legalRepName || '未知'}</span>
                                     </div>
                                 </div>
                             </div>
-                            <button className="text-sm text-purple-600 hover:text-purple-800 flex items-center gap-1 px-3 py-1.5 bg-purple-50 rounded-lg hover:bg-purple-100 transition-colors"
-                                onClick={() => {
-                                    // Trigger single update
-                                    const dummyList = [selectedTenant]; // Hack to reuse logic or just implement single update
-                                    alert("单个客户更新功能开发中，请使用左侧批量更新");
-                                }}
+                            <button className="liquid-glass-control liquid-pressable flex items-center justify-center gap-1 rounded-full px-3 py-2 text-sm font-bold text-blue-700"
+                                onClick={() => setSingleUpdateNotice(true)}
                             >
                                 <RefreshCw size={14}/> 更新动态
                             </button>
                         </div>
+                        {singleUpdateNotice && (
+                            <div className="liquid-glass-readable mt-4 flex flex-col gap-2 rounded-2xl border border-blue-200/70 px-3 py-2 text-sm font-semibold text-blue-800 sm:flex-row sm:items-center sm:justify-between">
+                                <span>单个客户更新正在收口中。当前请使用左侧批量更新，系统会按筛选结果逐个采集并回写客户动态。</span>
+                                <button
+                                    type="button"
+                                    onClick={() => setSingleUpdateNotice(false)}
+                                    className="liquid-glass-control liquid-pressable self-start rounded-full px-3 py-1 text-xs font-black text-blue-700 sm:self-auto"
+                                >
+                                    知道了
+                                </button>
+                            </div>
+                        )}
                     </div>
 
                     {/* Timeline Content */}
-                    <div className="flex-1 overflow-y-auto p-6 bg-slate-50/50 space-y-6">
+                    <div className="flex-1 overflow-y-auto space-y-6 p-4 sm:p-6">
                          {/* 时间轴 */}
                          {allMoments.length > 0 ? (
-                             <div className="relative border-l-2 border-slate-200 ml-4 space-y-8 pb-8">
+                             <div className="relative ml-4 space-y-8 border-l-2 border-blue-200/70 pb-8">
                                  {allMoments.map((moment, index) => (
                                      <div key={moment.id || index} className="relative pl-8 group">
-                                         <div className="absolute -left-[9px] top-1 w-4 h-4 rounded-full bg-white border-2 border-slate-300 group-hover:border-purple-500 transition-colors"></div>
-                                         <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm hover:shadow-md transition-all group-hover:border-purple-200">
-                                             <div className="flex justify-between items-start mb-2">
-                                                 <div className="flex items-center gap-2">
+                                         <div className={`${timelineNodeClass} border-blue-200/80 bg-white/72 group-hover:border-blue-500/80 group-hover:bg-blue-50/90`}>
+                                             <span className={`${timelineNodeDotClass} bg-blue-500/80`} />
+                                         </div>
+                                         <div className="liquid-glass-readable liquid-pressable rounded-[20px] p-4 transition-all">
+                                             <div className="mb-2 flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+                                                 <div className="flex min-w-0 flex-wrap items-center gap-2">
                                                      {getIconForType(moment.type as any)}
                                                      <span className="text-xs font-bold uppercase tracking-wider text-slate-500">{getTypeLabel(moment.type as any)}</span>
-                                                     {moment.isAutoGenerated && <span className="bg-slate-100 text-slate-400 text-[10px] px-1.5 py-0.5 rounded">系统生成</span>}
+                                                     {moment.isAutoGenerated && <span className="liquid-glass-control rounded-full px-2.5 py-1 text-xs font-black text-slate-600">系统生成</span>}
                                                  </div>
-                                                 <span className="text-sm font-medium text-slate-400">{moment.date}</span>
+                                                 <span className="liquid-glass-control shrink-0 self-start rounded-full px-2.5 py-1 text-xs font-black tabular-nums text-slate-600 sm:self-auto">{moment.date}</span>
                                              </div>
-                                             <h4 className="text-lg font-bold text-slate-800 mb-1">{moment.title}</h4>
-                                             <p className="text-slate-600 text-sm leading-relaxed">{moment.description}</p>
+                                             <h4 className="mb-1 break-words text-lg font-black leading-snug text-slate-900">{moment.title}</h4>
+                                             <p className="break-words text-sm leading-relaxed text-slate-700">{moment.description}</p>
                                              {moment.sourceUrl && (
-                                                 <a href={moment.sourceUrl} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 text-xs text-blue-500 hover:underline mt-3">
+                                                 <a href={moment.sourceUrl} target="_blank" rel="noopener noreferrer" className="liquid-glass-control liquid-pressable mt-3 inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-bold text-blue-700">
                                                      查看来源 <ExternalLink size={10} />
                                                  </a>
                                              )}
@@ -277,12 +291,12 @@ export const TenantInsights: React.FC<TenantInsightsProps> = ({ tenants, onUpdat
                                  ))}
                              </div>
                          ) : (
-                             <div className="flex flex-col items-center justify-center h-full text-slate-400">
-                                 <div className="w-16 h-16 bg-slate-100 rounded-full flex items-center justify-center mb-4">
-                                     <Sparkles size={24} className="opacity-50"/>
+                             <div className="flex h-full min-h-[280px] flex-col items-center justify-center px-6 text-center text-slate-500">
+                                 <div className="liquid-icon-well mb-4 flex h-16 w-16 items-center justify-center rounded-full text-blue-700">
+                                     <Sparkles size={24}/>
                                  </div>
-                                 <p>暂无动态记录</p>
-                                 <p className="text-xs mt-1">点击左侧"更新全员动态"获取AI洞察</p>
+                                 <p className="text-base font-black text-slate-800">暂无动态记录</p>
+                                 <p className="mt-1 text-xs font-semibold text-slate-500">点击左侧"更新全员动态"获取AI洞察</p>
                              </div>
                          )}
 
@@ -290,19 +304,21 @@ export const TenantInsights: React.FC<TenantInsightsProps> = ({ tenants, onUpdat
                          {(selectedTenant.nameHistory && selectedTenant.nameHistory.length > 0) && (
                              <div>
                                  <h3 className="flex items-center gap-2 text-sm font-bold text-slate-600 mb-3"><Edit2 size={16} className="text-amber-500"/> 名称变更记录</h3>
-                                 <div className="relative border-l-2 border-amber-200 ml-4 space-y-4">
+                                 <div className="relative border-l-2 border-amber-200/80 ml-4 space-y-4">
                                      {[...selectedTenant.nameHistory].reverse().map(r => (
                                          <div key={r.id} className="relative pl-8">
-                                             <div className="absolute -left-[9px] top-1 w-4 h-4 rounded-full bg-white border-2 border-amber-300"></div>
-                                             <div className="bg-white p-3 rounded-lg border border-slate-200 text-sm">
-                                                 <div className="flex items-center gap-2 text-slate-500">
-                                                     <span className="line-through text-slate-400">{r.oldName}</span>
-                                                     <span className="text-slate-300">→</span>
-                                                     <span className="font-medium text-slate-700">{r.newName}</span>
+                                             <div className={`${timelineNodeClass} border-amber-300/80 bg-white/72`}>
+                                                 <span className={`${timelineNodeDotClass} bg-amber-500/85`} />
+                                             </div>
+                                             <div className="liquid-glass-readable rounded-[18px] p-3 text-sm">
+                                                 <div className="flex min-w-0 flex-wrap items-center gap-2 text-slate-600">
+                                                     <span className="min-w-0 break-all text-slate-500 line-through">{r.oldName}</span>
+                                                     <span className="font-black text-slate-500">→</span>
+                                                     <span className="min-w-0 break-all font-black text-slate-800">{r.newName}</span>
                                                  </div>
-                                                 <div className="flex items-center gap-2 mt-1 text-xs text-slate-400">
-                                                     <span>{r.changedAt?.slice(0, 10)}</span>
-                                                     {r.reason && <span>· {r.reason}</span>}
+                                                 <div className="mt-2 flex min-w-0 flex-wrap items-center gap-2 text-xs font-semibold text-slate-500">
+                                                     <span className="liquid-glass-control rounded-full px-2 py-0.5 tabular-nums text-slate-600">{r.changedAt?.slice(0, 10)}</span>
+                                                     {r.reason && <span className="min-w-0 break-words">· {r.reason}</span>}
                                                  </div>
                                              </div>
                                          </div>
@@ -315,19 +331,21 @@ export const TenantInsights: React.FC<TenantInsightsProps> = ({ tenants, onUpdat
                          {(selectedTenant.paymentCycleChanges && selectedTenant.paymentCycleChanges.length > 0) && (
                              <div>
                                  <h3 className="flex items-center gap-2 text-sm font-bold text-slate-600 mb-3"><Repeat size={16} className="text-blue-500"/> 付款周期变更记录</h3>
-                                 <div className="relative border-l-2 border-blue-200 ml-4 space-y-4">
+                                 <div className="relative border-l-2 border-blue-200/80 ml-4 space-y-4">
                                      {[...selectedTenant.paymentCycleChanges].reverse().map(r => (
                                          <div key={r.id} className="relative pl-8">
-                                             <div className="absolute -left-[9px] top-1 w-4 h-4 rounded-full bg-white border-2 border-blue-300"></div>
-                                             <div className="bg-white p-3 rounded-lg border border-slate-200 text-sm">
-                                                 <div className="flex items-center gap-2 text-slate-500">
-                                                     <span className="text-slate-400">{paymentCycleLabelMap[r.fromCycle] || r.fromCycle}</span>
-                                                     <span className="text-slate-300">→</span>
-                                                     <span className="font-medium text-slate-700">{paymentCycleLabelMap[r.toCycle] || r.toCycle}</span>
+                                             <div className={`${timelineNodeClass} border-blue-300/80 bg-white/72`}>
+                                                 <span className={`${timelineNodeDotClass} bg-blue-500/85`} />
+                                             </div>
+                                             <div className="liquid-glass-readable rounded-[18px] p-3 text-sm">
+                                                 <div className="flex min-w-0 flex-wrap items-center gap-2 text-slate-600">
+                                                     <span className="font-semibold text-slate-500">{paymentCycleLabelMap[r.fromCycle] || r.fromCycle}</span>
+                                                     <span className="font-black text-slate-500">→</span>
+                                                     <span className="font-black text-slate-800">{paymentCycleLabelMap[r.toCycle] || r.toCycle}</span>
                                                  </div>
-                                                 <div className="flex items-center gap-2 mt-1 text-xs text-slate-400">
-                                                     <span>生效: {r.effectiveDate}</span>
-                                                     {r.reason && <span>· {r.reason}</span>}
+                                                 <div className="mt-2 flex min-w-0 flex-wrap items-center gap-2 text-xs font-semibold text-slate-500">
+                                                     <span className="liquid-glass-control rounded-full px-2 py-0.5 tabular-nums text-slate-600">生效: {r.effectiveDate}</span>
+                                                     {r.reason && <span className="min-w-0 break-words">· {r.reason}</span>}
                                                  </div>
                                              </div>
                                          </div>
@@ -338,8 +356,8 @@ export const TenantInsights: React.FC<TenantInsightsProps> = ({ tenants, onUpdat
                     </div>
                 </>
             ) : (
-                <div className="flex flex-col items-center justify-center h-full text-slate-400 bg-slate-50/50">
-                    <Building2 size={48} className="opacity-20 mb-4" />
+                <div className="liquid-glass-readable flex h-full flex-col items-center justify-center px-6 text-center text-sm font-semibold text-slate-500">
+                    <Building2 size={48} className="mb-4 text-slate-500 opacity-80" />
                     <p>请选择一个客户查看详细洞察</p>
                 </div>
             )}

@@ -1,5 +1,5 @@
 /**
- * services/budgetTableImport.ts —— 「预算表」Excel 直接导入。
+ * services/budgetTableImport.ts —— 「预算表」导入快照读写与合并辅助。
  *
  * 模板结构（与 BudgetManager.exportToExcel 输出对齐）：
  *   - 第 1 行：标题（如「上海金蝶软件园 预算表」）
@@ -18,32 +18,17 @@
  *
  * 注意：本服务不直接修改业务状态，只负责 **解析 + 合并提示**；最终写库由调用方决定。
  */
-import type ExcelJS from 'exceljs';
-import type { Building, MonthlyInitData } from '../types';
+import type { MonthlyInitData } from '../types';
+import { importedBudgetRowKey } from './budgetRowKey';
+export {
+    buildBudgetRowKeyLookup,
+    importedBudgetRowKey,
+    normalizeBudgetRowKeyPart,
+    tenantImportedBudgetRowKey,
+} from './budgetRowKey';
 
 /** 与 `importedBudgetTableKey` 一致的前缀，供列举已导入年度等使用 */
 export const IMPORTED_BUDGET_TABLE_PREFIX = '__budget_table_';
-
-/** 与预算表 Excel、合同侧展示对齐：去空白、统一小写，用于「客户+房号+楼宇」匹配键 */
-export const normalizeBudgetRowKeyPart = (value: string | undefined | null): string =>
-    String(value || '')
-        .trim()
-        .replace(/\s+/g, '')
-        .toLowerCase();
-
-/** 导入预算表一行与合同行共用的匹配键（客户名|房号|楼宇） */
-export const importedBudgetRowKey = (customer: string, unit: string, building: string): string =>
-    `${normalizeBudgetRowKeyPart(customer)}|${normalizeBudgetRowKeyPart(unit)}|${normalizeBudgetRowKeyPart(building)}`;
-
-/** 由当前合同客户与楼宇资料生成与导入表对齐的匹配键 */
-export const tenantImportedBudgetRowKey = (
-    tenant: { name: string; buildingId: string; unitIds: string[] },
-    buildingById: Map<string, Building>
-): string => {
-    const building = buildingById.get(tenant.buildingId);
-    const unitNames = tenant.unitIds.map((uid) => building?.units.find((u) => u.id === uid)?.name || uid).join(', ');
-    return importedBudgetRowKey(tenant.name, unitNames, building?.name || '未知楼宇');
-};
 
 /** 预算表「导入行」与合同 tenantId 的手动关联（解决导入后客户改名导致键对不上的问题） */
 export interface BudgetCustomerNameLink {
@@ -115,205 +100,6 @@ export interface BudgetTableRow {
     total: number;
 }
 
-export interface ParsedBudgetTable {
-    year: number;
-    sheetName: string;
-    rows: BudgetTableRow[];
-    /** 每月汇总（仅累加数据行；分组小计/合计行不重复累加），长度 12。 */
-    monthlyTotals: number[];
-    annualTotal: number;
-    warnings: string[];
-}
-
-const HEADER_KEYS = ['客户', '房号', '所属楼宇', '租赁面积', '类别', '签约单价', '免租', '1月'];
-const SECTION_HEADER_RE = /^【.+】$/;
-const SUBTOTAL_RE = /(小计|合计)$/;
-
-const toCellString = (cell: ExcelJS.CellValue): string => {
-    if (cell === null || cell === undefined) return '';
-    if (typeof cell === 'string') return cell.trim();
-    if (typeof cell === 'number' || typeof cell === 'boolean') return String(cell).trim();
-    if (cell instanceof Date) return cell.toISOString();
-    if (typeof cell === 'object') {
-        // ExcelJS rich text / formula
-        const anyCell = cell as any;
-        if (Array.isArray(anyCell.richText)) {
-            return anyCell.richText.map((t: any) => String(t?.text || '')).join('').trim();
-        }
-        if (anyCell.text != null) return String(anyCell.text).trim();
-        if (anyCell.result != null) return String(anyCell.result).trim();
-    }
-    return '';
-};
-
-const toCellNumber = (cell: ExcelJS.CellValue): number | null => {
-    if (cell === null || cell === undefined || cell === '') return null;
-    if (typeof cell === 'number' && Number.isFinite(cell)) return cell;
-    if (typeof cell === 'string') {
-        const s = cell.replace(/[,，\s¥￥]/g, '').trim();
-        if (!s) return null;
-        const n = Number(s);
-        return Number.isFinite(n) ? n : null;
-    }
-    if (typeof cell === 'object') {
-        const anyCell = cell as any;
-        if (typeof anyCell.result === 'number') return anyCell.result;
-        if (typeof anyCell.result === 'string') return toCellNumber(anyCell.result);
-    }
-    return null;
-};
-
-const yearFromText = (text: string): number | null => {
-    const m = text.match(/(20\d{2})/);
-    return m ? Number(m[1]) : null;
-};
-
-/**
- * 解析「预算表」Excel。
- * @param buffer 上传的 .xlsx 文件 ArrayBuffer
- * @param sheetNameHint 可选：直接指定某 sheet 名（默认使用首个 sheet）
- */
-export async function parseBudgetTableExcel(
-    buffer: ArrayBuffer,
-    sheetNameHint?: string
-): Promise<ParsedBudgetTable> {
-    const ExcelJSModule = await import('exceljs');
-    const ExcelJSDefault = ExcelJSModule.default;
-    const workbook = new ExcelJSDefault.Workbook();
-    await workbook.xlsx.load(buffer);
-    const sheet =
-        (sheetNameHint && workbook.getWorksheet(sheetNameHint)) ||
-        workbook.worksheets[0];
-    if (!sheet) {
-        throw new Error('Excel 中没有可读取的工作表');
-    }
-
-    const warnings: string[] = [];
-    let year: number | null = null;
-    if (sheetNameHint) year = yearFromText(sheetNameHint) || null;
-    if (!year) year = yearFromText(sheet.name);
-    // 顶部标题行里也能拿到年份
-    if (!year) {
-        for (let r = 1; r <= Math.min(sheet.rowCount, 6); r++) {
-            const text = toCellString(sheet.getCell(r, 1).value as ExcelJS.CellValue);
-            const y = yearFromText(text);
-            if (y) {
-                year = y;
-                break;
-            }
-        }
-    }
-    if (!year) {
-        year = new Date().getFullYear();
-        warnings.push(`未能从 Excel 中识别预算年度，按当前年 ${year} 处理。`);
-    }
-
-    // 找表头行：包含「1月」且尽量包含「客户」等关键词
-    let headerRow = -1;
-    for (let r = 1; r <= Math.min(sheet.rowCount, 12); r++) {
-        const cellsText: string[] = [];
-        for (let c = 1; c <= sheet.columnCount; c++) {
-            cellsText.push(toCellString(sheet.getCell(r, c).value as ExcelJS.CellValue));
-        }
-        const joined = cellsText.join('|');
-        if (HEADER_KEYS.every((k) => joined.includes(k))) {
-            headerRow = r;
-            break;
-        }
-    }
-    if (headerRow < 0) {
-        throw new Error('未能识别表头行（应包含「客户/单元、房号、所属楼宇、租赁面积、类别、签约单价、本年度免租期、1月～12月」）');
-    }
-
-    // 列索引映射
-    const colIdx: Record<string, number> = {};
-    for (let c = 1; c <= sheet.columnCount; c++) {
-        const t = toCellString(sheet.getCell(headerRow, c).value as ExcelJS.CellValue);
-        if (!t) continue;
-        if (t.includes('客户')) colIdx.customer = c;
-        else if (t === '房号' || t.includes('房号')) colIdx.unit = c;
-        else if (t.includes('所属楼宇')) colIdx.building = c;
-        else if (t.includes('租赁面积') || t.includes('面积')) colIdx.area = c;
-        else if (t === '类别') colIdx.category = c;
-        else if (t.includes('签约单价') || t.includes('单价')) colIdx.unitPrice = c;
-        else if (t.includes('免租')) colIdx.rentFree = c;
-        else if (/^(\d{1,2})月$/.test(t)) {
-            const m = Number(t.replace('月', ''));
-            if (m >= 1 && m <= 12) colIdx[`m${m}`] = c;
-        } else if (t.includes('全年合计') || t === '合计') colIdx.total = c;
-    }
-
-    const monthCols: number[] = [];
-    for (let m = 1; m <= 12; m++) {
-        const c = colIdx[`m${m}`];
-        if (!c) {
-            throw new Error(`表头缺少 "${m}月" 列`);
-        }
-        monthCols.push(c);
-    }
-
-    const rows: BudgetTableRow[] = [];
-    const monthlyTotals = Array(12).fill(0);
-    let annualTotal = 0;
-
-    for (let r = headerRow + 1; r <= sheet.rowCount; r++) {
-        const customer = toCellString(sheet.getCell(r, colIdx.customer || 1).value as ExcelJS.CellValue);
-        // 跳过空行
-        const allEmpty =
-            !customer &&
-            !toCellString(sheet.getCell(r, colIdx.unit || 2).value as ExcelJS.CellValue) &&
-            !toCellString(sheet.getCell(r, colIdx.building || 3).value as ExcelJS.CellValue);
-        if (allEmpty) continue;
-        // 跳过分组标题与小计/合计
-        if (SECTION_HEADER_RE.test(customer)) continue;
-        if (SUBTOTAL_RE.test(customer)) continue;
-
-        const months: number[] = monthCols.map((c) => toCellNumber(sheet.getCell(r, c).value as ExcelJS.CellValue) || 0);
-        const totalCell = colIdx.total ? toCellNumber(sheet.getCell(r, colIdx.total).value as ExcelJS.CellValue) : null;
-        const rowTotal = months.reduce((a, b) => a + b, 0);
-        // 与 Excel 中「全年合计」做轻量校验
-        if (totalCell !== null && Math.abs(totalCell - rowTotal) > 1) {
-            warnings.push(
-                `${r} 行 [${customer || '(无客户名)'}] 月度求和 ${rowTotal.toFixed(2)} 与 全年合计 ${totalCell.toFixed(2)} 不一致，已采用月度求和。`
-            );
-        }
-
-        const area = colIdx.area ? toCellNumber(sheet.getCell(r, colIdx.area).value as ExcelJS.CellValue) : null;
-        const unitPrice = colIdx.unitPrice ? toCellNumber(sheet.getCell(r, colIdx.unitPrice).value as ExcelJS.CellValue) : null;
-        const category = colIdx.category ? toCellString(sheet.getCell(r, colIdx.category).value as ExcelJS.CellValue) : '';
-        const building = colIdx.building ? toCellString(sheet.getCell(r, colIdx.building).value as ExcelJS.CellValue) : '';
-        const unit = colIdx.unit ? toCellString(sheet.getCell(r, colIdx.unit).value as ExcelJS.CellValue) : '';
-        const rentFreeText = colIdx.rentFree ? toCellString(sheet.getCell(r, colIdx.rentFree).value as ExcelJS.CellValue) : '';
-
-        rows.push({
-            customer,
-            unit,
-            building,
-            area,
-            category,
-            unitPrice,
-            rentFreeText,
-            months,
-            total: rowTotal,
-        });
-        for (let i = 0; i < 12; i++) monthlyTotals[i] += months[i];
-        annualTotal += rowTotal;
-    }
-
-    if (rows.length === 0) {
-        warnings.push('未读取到任何数据行（仅有表头/分组/小计），请核对模板格式。');
-    }
-
-    return {
-        year,
-        sheetName: sheet.name,
-        rows,
-        monthlyTotals: monthlyTotals.map((v) => Math.round(v)),
-        annualTotal: Math.round(annualTotal),
-        warnings,
-    };
-}
-
 /**
  * 把解析得到的「每月预算」合并进 `initializationData`：
  *   - 删除目标年的所有现有 12 条记录（避免半月覆盖留尾巴）；
@@ -328,9 +114,11 @@ export async function parseBudgetTableExcel(
 export interface BudgetTableSnapshot {
     /** 数据导入时间，便于审计 */
     importedAt: string;
+    /** 手工编辑时间，便于区分原始导入与后续微调 */
+    updatedAt?: string;
     /** 来源工作表名（取自 Excel sheetName） */
     sourceSheet?: string;
-    /** 行级明细（与 ParsedBudgetTable.rows 同结构） */
+    /** 行级明细（与预算表解析结果 rows 同结构） */
     rows: BudgetTableRow[];
     /** 每月合计，长度 12 */
     monthlyTotals: number[];
@@ -395,6 +183,59 @@ const monthlyTotalsFromRows = (rows: BudgetTableRow[]): number[] => {
     });
     return totals.map((v) => Math.round(v));
 };
+
+const normalizeBudgetMonthAmount = (amount: number): number => {
+    const value = Math.round(Number(amount));
+    if (!Number.isFinite(value) || value < 0) {
+        throw new Error('budget month amount must be a non-negative finite number');
+    }
+    return value;
+};
+
+export function updateImportedBudgetTableRowMonth(
+    snapshot: BudgetTableSnapshot,
+    importKey: string,
+    monthIndex: number,
+    amount: number,
+    updatedAt = new Date().toISOString()
+): BudgetTableSnapshot {
+    if (!snapshot || typeof snapshot !== 'object' || !Array.isArray(snapshot.rows)) {
+        throw new Error('budget table snapshot is required');
+    }
+    const key = String(importKey || '').trim();
+    if (!key) {
+        throw new Error('importKey is required');
+    }
+    if (!Number.isInteger(monthIndex) || monthIndex < 0 || monthIndex > 11) {
+        throw new Error('monthIndex must be 0-11');
+    }
+    const nextAmount = normalizeBudgetMonthAmount(amount);
+    let matched = false;
+    const rows = snapshot.rows.map((row) => {
+        const rowKey = importedBudgetRowKey(row.customer, row.unit, row.building);
+        if (rowKey !== key) return row;
+        matched = true;
+        const months = Array.from({ length: 12 }, (_, i) =>
+            i === monthIndex ? nextAmount : normalizeBudgetMonthAmount(Number(row.months?.[i] || 0))
+        );
+        return {
+            ...row,
+            months,
+            total: months.reduce((sum, value) => sum + value, 0),
+        };
+    });
+    if (!matched) {
+        throw new Error('imported budget row not found');
+    }
+    const monthlyTotals = monthlyTotalsFromRows(rows);
+    return {
+        ...snapshot,
+        rows,
+        monthlyTotals,
+        annualTotal: monthlyTotals.reduce((sum, value) => sum + value, 0),
+        updatedAt,
+    };
+}
 
 /**
  * 兼容旧版 JSON 备份里的 effectiveBudgetTables：

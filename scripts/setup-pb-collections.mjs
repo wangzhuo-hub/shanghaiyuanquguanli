@@ -256,6 +256,25 @@ const COLLECTIONS = [
     comment: '租金账期备注 (tenantId###YYYY-MM → 文本)',
   },
   {
+    name: 'pb_sealed_months',
+    schema: [
+      { name: 'project_id', type: 'text', required: true, options: { min: null, max: null, pattern: '' } },
+      { name: 'sealed_year', type: 'number', required: true, options: { min: 2020, max: 2050, noDecimal: true } },
+      { name: 'sealed_month', type: 'number', required: true, options: { min: 1, max: 12, noDecimal: true } },
+      { name: 'receivable_total', type: 'number', required: false, options: { min: null, max: null, noDecimal: false } },
+      { name: 'unpaid_sum', type: 'number', required: false, options: { min: null, max: null, noDecimal: false } },
+      { name: 'arrears_increment', type: 'number', required: false, options: { min: null, max: null, noDecimal: false } },
+      { name: 'cumulative_arrears', type: 'number', required: false, options: { min: null, max: null, noDecimal: false } },
+      { name: 'details_json', type: 'json', required: false, options: { maxSize: 15000000 } },
+      { name: 'data_version', type: 'number', required: false, options: { min: null, max: null, noDecimal: true } },
+      { name: 'sealed_at', type: 'text', required: false, options: { min: null, max: null, pattern: '' } },
+    ],
+    indexes: [
+      'CREATE UNIQUE INDEX idx_sealed_months_pid_period ON pb_sealed_months (project_id, sealed_year, sealed_month)',
+    ],
+    comment: '月度封账快照（含客户级应收明细）',
+  },
+  {
     name: 'pb_integration_snapshots',
     schema: [
       { name: 'project_id', type: 'text', required: true, options: { min: null, max: null, pattern: '' } },

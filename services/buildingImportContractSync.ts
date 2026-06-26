@@ -1,5 +1,5 @@
-import * as XLSX from 'xlsx';
 import { ContractStatus, DepositStatus, Tenant } from '../types';
+import { excelSerialDateToYMD } from './xlsxLoader';
 
 const hasCellValue = (v: unknown): boolean => {
     if (v === undefined || v === null) return false;
@@ -11,8 +11,8 @@ export const normalizeExcelDate = (input: unknown): string => {
     const s = String(input ?? '').trim();
     if (!s) return '';
     if (typeof input === 'number' && Number.isFinite(input) && input > 20000 && input < 60000) {
-        const d = XLSX.SSF.parse_date_code(input);
-        if (d?.y && d?.m && d?.d) return `${d.y}-${String(d.m).padStart(2, '0')}-${String(d.d).padStart(2, '0')}`;
+        const ymd = excelSerialDateToYMD(input);
+        if (ymd) return ymd;
     }
     const m = s.match(/^(\d{4})[/.-](\d{1,2})[/.-](\d{1,2})$/);
     if (m) return `${m[1]}-${String(m[2]).padStart(2, '0')}-${String(m[3]).padStart(2, '0')}`;

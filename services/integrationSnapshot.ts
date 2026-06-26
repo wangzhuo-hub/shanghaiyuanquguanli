@@ -19,7 +19,20 @@ export type IntegrationFullSnapshotV1 = {
     source_cloud_save_version: number;
     stats_year: number;
     kpi: OpenClawKpiSnapshot;
+    /**
+     * 指标计算后的看板数据，用于首屏直接渲染。
+     * 兼容历史字段名 `dashboard`，OpenClaw 仍从这里读。
+     */
     dashboard: DashboardData;
+    /**
+     * 原始业务数据基线，用于前端生成保存 diff。
+     * 老快照没有该字段，消费端应回退到 dashboard。
+     */
+    baseline_dashboard?: DashboardData;
+    /** 前端行级乐观锁基线。老快照没有该字段，消费端应回退空对象。 */
+    record_meta?: Record<string, Record<string, string>>;
+    /** 快照计算时的加载范围，默认 full。 */
+    load_scope?: { kind: 'full' } | { kind: 'year'; year: number };
     /** calculateTrends(..., quarter='All')，与 KPI 同源 */
     full_year_monthly_trends: MonthlyTrend[];
 };
@@ -31,7 +44,14 @@ function cloneForJson<T>(v: T): T {
 export function buildIntegrationFullSnapshotV1(
     processedData: DashboardData,
     fullYearMonthlyTrends: MonthlyTrend[],
-    context: { statsYear: number; projectId: string; generatedAt?: Date }
+    context: {
+        statsYear: number;
+        projectId: string;
+        generatedAt?: Date;
+        baselineData?: DashboardData;
+        recordMeta?: Record<string, Record<string, string>>;
+        loadScope?: { kind: 'full' } | { kind: 'year'; year: number };
+    }
 ): IntegrationFullSnapshotV1 {
     const projectId = context.projectId.trim();
     const kpi = buildOpenClawKpiSnapshot(processedData, fullYearMonthlyTrends, {
@@ -51,6 +71,9 @@ export function buildIntegrationFullSnapshotV1(
         stats_year: context.statsYear,
         kpi,
         dashboard: cloneForJson(processedData),
+        ...(context.baselineData ? { baseline_dashboard: cloneForJson(context.baselineData) } : {}),
+        ...(context.recordMeta ? { record_meta: cloneForJson(context.recordMeta) } : {}),
+        ...(context.loadScope ? { load_scope: cloneForJson(context.loadScope) } : {}),
         full_year_monthly_trends: cloneForJson(fullYearMonthlyTrends),
     };
 }

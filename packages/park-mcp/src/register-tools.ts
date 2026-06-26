@@ -286,7 +286,9 @@ export function registerTools(server: McpServer): void {
           project_id: user.projectId,
           collection: 'pb_payments',
           ok: data.ok !== false,
-          detail: data.ok === false ? data : { tenant_id: input.tenant_id, save_path: data.save_path },
+          detail: data.ok === false
+            ? data
+            : { tenant_id: input.tenant_id, save_path: 'save_path' in data ? data.save_path : undefined },
         });
         return textResult(data, data.ok === false);
       } catch (e) {

@@ -1,7 +1,8 @@
 import React from 'react';
 import ReactDOM from 'react-dom/client';
-import App from './App';
-import BigScreenDashboard from './components/BigScreenDashboard';
+
+const App = React.lazy(() => import('./App'));
+const BigScreenDashboard = React.lazy(() => import('./components/BigScreenDashboard'));
 
 const isBigScreen =
   typeof window !== 'undefined' &&
@@ -13,8 +14,27 @@ if (!rootElement) {
 }
 
 const root = ReactDOM.createRoot(rootElement);
+const RootApp = isBigScreen ? BigScreenDashboard : App;
+
 root.render(
   <React.StrictMode>
-    {isBigScreen ? <BigScreenDashboard /> : <App />}
+    <React.Suspense
+      fallback={
+        <div
+          style={{
+            minHeight: '100vh',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            color: '#64748b',
+            fontFamily: 'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
+          }}
+        >
+          Loading...
+        </div>
+      }
+    >
+      <RootApp />
+    </React.Suspense>
   </React.StrictMode>
 );

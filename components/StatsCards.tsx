@@ -1,12 +1,15 @@
 
 import React, { useMemo } from 'react';
 import { TrendingUp, TrendingDown, Target, Edit3, CalendarRange, UserPlus, UserMinus } from 'lucide-react';
-import { AuthUser, DashboardData, Tenant, ContractStatus, MonthlyTrend } from '../types';
+import { AuthUser, DashboardData, Tenant, MonthlyTrend } from '../types';
 import { formatArea, formatPercent, formatWan } from '../services/numberFormat';
-import { resolveAnnualInitialBudget } from '../services/dashboardMetrics';
+import { resolveAnnualInitialBudget } from '../services/dashboardMetricHelpers';
 import { resolveInitMonthInitialBudget } from '../services/initDataBudget';
 import { isManagementFeeBillingEnabled } from '../services/parkBillingConfig';
 import { canViewRentPricing } from '../services/receivablePermissions';
+import { summarizeLeaseStats } from '../services/leaseStats';
+
+export { summarizeLeaseStats } from '../services/leaseStats';
 
 type FeeScope = 'rent' | 'management_fee' | 'combined';
 
@@ -76,89 +79,11 @@ export const StatsCards: React.FC<StatsCardsProps> = ({
 
   const isNetNegative = data.netIncreaseArea < 0;
 
-  // 计算新租、退租数据（含数量和面积）- 使用selectedYear而非当前年份
-  const leaseStats = useMemo(() => {
-    const now = new Date();
-    const currentMonth = now.getMonth(); // 0-11
-    const currentQuarter = Math.floor(currentMonth / 3); // 0-3
-
-    // 计算当期新租（根据 signingDate 签约时间）
-    const newLeasesYearList = tenants.filter(t => {
-      if (!t.signingDate) return false;
-      const signingDate = new Date(t.signingDate);
-      return signingDate.getFullYear() === selectedYear;
-    });
-    const newLeasesYear = newLeasesYearList.length;
-    const newLeasesYearArea = newLeasesYearList.reduce((sum, t) => sum + (t.totalArea || 0), 0);
-
-    const newLeasesQuarterList = tenants.filter(t => {
-      if (!t.signingDate) return false;
-      const signingDate = new Date(t.signingDate);
-      return signingDate.getFullYear() === selectedYear && 
-             Math.floor(signingDate.getMonth() / 3) === currentQuarter;
-    });
-    const newLeasesQuarter = newLeasesQuarterList.length;
-    const newLeasesQuarterArea = newLeasesQuarterList.reduce((sum, t) => sum + (t.totalArea || 0), 0);
-
-    const newLeasesMonthList = tenants.filter(t => {
-      if (!t.signingDate) return false;
-      const signingDate = new Date(t.signingDate);
-      return signingDate.getFullYear() === selectedYear && 
-             signingDate.getMonth() === currentMonth;
-    });
-    const newLeasesMonth = newLeasesMonthList.length;
-    const newLeasesMonthArea = newLeasesMonthList.reduce((sum, t) => sum + (t.totalArea || 0), 0);
-
-    // 计算当期退租（根据 terminationDate 或 leaseEnd）
-    const terminatedYearList = tenants.filter(t => {
-      if (t.status !== ContractStatus.Terminated) return false;
-      const endDate = new Date(t.terminationDate || t.leaseEnd);
-      return endDate.getFullYear() === selectedYear;
-    });
-    const terminatedYear = terminatedYearList.length;
-    const terminatedYearArea = terminatedYearList.reduce((sum, t) => sum + (t.totalArea || 0), 0);
-
-    const terminatedQuarterList = tenants.filter(t => {
-      if (t.status !== ContractStatus.Terminated) return false;
-      const endDate = new Date(t.terminationDate || t.leaseEnd);
-      return endDate.getFullYear() === selectedYear && 
-             Math.floor(endDate.getMonth() / 3) === currentQuarter;
-    });
-    const terminatedQuarter = terminatedQuarterList.length;
-    const terminatedQuarterArea = terminatedQuarterList.reduce((sum, t) => sum + (t.totalArea || 0), 0);
-
-    const terminatedMonthList = tenants.filter(t => {
-      if (t.status !== ContractStatus.Terminated) return false;
-      const endDate = new Date(t.terminationDate || t.leaseEnd);
-      return endDate.getFullYear() === selectedYear && 
-             endDate.getMonth() === currentMonth;
-    });
-    const terminatedMonth = terminatedMonthList.length;
-    const terminatedMonthArea = terminatedMonthList.reduce((sum, t) => sum + (t.totalArea || 0), 0);
-
-    // 计算净增加面积（可为负数）
-    const netIncreaseYear = newLeasesYearArea - terminatedYearArea;
-    const netIncreaseQuarter = newLeasesQuarterArea - terminatedQuarterArea;
-    const netIncreaseMonth = newLeasesMonthArea - terminatedMonthArea;
-
-    return {
-      newLeasesYear,
-      newLeasesYearArea,
-      newLeasesQuarter,
-      newLeasesQuarterArea,
-      newLeasesMonth,
-      newLeasesMonthArea,
-      terminatedYear,
-      terminatedYearArea,
-      terminatedQuarter,
-      terminatedQuarterArea,
-      terminatedMonth,
-      terminatedMonthArea,
-      netIncreaseYear,
-      netIncreaseQuarter,
-      netIncreaseMonth
-    };
-  }, [tenants, selectedYear]);
+  // 后台指标计算已产出时直接展示；旧缓存/离线缺字段时才在前端兜底。
+  const leaseStats = useMemo(
+      () => data.leaseStats ?? summarizeLeaseStats(tenants, selectedYear),
+      [data.leaseStats, tenants, selectedYear]
+  );
 
   // 年初预算年度总值（用于完成率分母）
   const totalInitialBudget = useMemo(
@@ -372,6 +297,32 @@ export const StatsCards: React.FC<StatsCardsProps> = ({
       annualProgress,
   ]);
 
+  const feeScopeButtonClass = (scope: FeeScope) =>
+      `liquid-pressable min-h-8 rounded-full px-3 py-1.5 transition-all focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-400 ${
+          feeScope === scope
+              ? 'liquid-action-strong'
+              : 'text-slate-600 hover:bg-white/70 hover:text-blue-700'
+      }`;
+
+  const leasePeriodButtonClass = (period: typeof leasePeriod) =>
+      `liquid-pressable min-h-8 rounded-xl px-3 py-1.5 text-xs font-semibold transition-all focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-400 ${
+          leasePeriod === period
+              ? 'liquid-action-strong'
+              : 'text-slate-600 hover:bg-white/70 hover:text-blue-700'
+      }`;
+
+  const workbenchRateToneClass = (hasActual: boolean, rate: number) => {
+      if (!hasActual) return 'liquid-workbench-rate-pill--empty';
+      if (rate >= 100) return 'liquid-workbench-rate-pill--strong';
+      if (rate >= 80) return 'liquid-workbench-rate-pill--good';
+      return 'liquid-workbench-rate-pill--warn';
+  };
+
+  const workbenchCumulativeToneClass = (hasActual: boolean, rate: number) => {
+      if (!hasActual) return 'liquid-workbench-rate-pill--empty';
+      return rate >= 100 ? 'liquid-workbench-rate-pill--strong' : 'liquid-workbench-rate-pill--neutral';
+  };
+
   return (
     <div className="space-y-4 md:space-y-6">
         {/* Annual Goal Card with Monthly Breakdown Below */}
@@ -379,139 +330,210 @@ export const StatsCards: React.FC<StatsCardsProps> = ({
             {/* Monthly Breakdown Table - Integrated Budget Execution */}
             <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,2fr)_minmax(0,1fr)] gap-4 items-stretch">
                 {/* Left: Table */}
-                <div className="order-1 lg:order-1 bg-white rounded-xl shadow-sm border border-slate-100 overflow-hidden min-w-0 flex flex-col hover:shadow-md transition-shadow duration-300">
-                    <div className="bg-gradient-to-r from-emerald-50 to-emerald-100 px-4 sm:px-5 py-2.5 border-b border-emerald-200">
-                        <div className="flex flex-wrap items-center justify-between gap-2 text-emerald-800 min-w-0">
+                <div className="order-1 lg:order-1 liquid-workbench-card rounded-[24px] overflow-hidden min-w-0 flex flex-col transition-shadow duration-300">
+                    <div className="liquid-workbench-header px-4 sm:px-5 py-3">
+                        <div className="flex flex-wrap items-center justify-between gap-3 text-slate-900 min-w-0">
                             <div className="flex flex-wrap items-center gap-2 min-w-0">
-                                <CalendarRange size={16} className="shrink-0" />
+                                <CalendarRange size={16} className="shrink-0 text-blue-600" />
                                 <h3 className="font-bold text-xs sm:text-sm">{scopeLabels.budgetTitle}</h3>
-                                <span className="text-[10px] font-semibold bg-emerald-600 text-white px-1.5 py-0.5 rounded shrink-0">实时</span>
+                                <span className="liquid-glass-control shrink-0 rounded-full px-2 py-0.5 text-xs font-semibold text-blue-700">实时</span>
                             </div>
                             {mgmtFeeParkEnabled && (
-                                <div className="flex rounded-lg overflow-hidden border border-emerald-300/80 text-[10px] font-semibold shrink-0">
+                                <div className="liquid-workbench-segment flex shrink-0 rounded-full p-1 text-xs font-semibold">
                                     {viewRentPricing && (
-                                        <button type="button" onClick={() => setFeeScope('rent')} className={`px-2 py-1 ${feeScope === 'rent' ? 'bg-emerald-600 text-white' : 'bg-white/80 text-emerald-800'}`}>租金</button>
+                                        <button type="button" onClick={() => setFeeScope('rent')} className={feeScopeButtonClass('rent')}>租金</button>
                                     )}
-                                    <button type="button" onClick={() => setFeeScope('management_fee')} className={`px-2 py-1 ${feeScope === 'management_fee' ? 'bg-teal-600 text-white' : 'bg-white/80 text-emerald-800'}`}>物业费</button>
+                                    <button type="button" onClick={() => setFeeScope('management_fee')} className={feeScopeButtonClass('management_fee')}>物业费</button>
                                     {viewRentPricing && (
-                                        <button type="button" onClick={() => setFeeScope('combined')} className={`px-2 py-1 ${feeScope === 'combined' ? 'bg-indigo-600 text-white' : 'bg-white/80 text-emerald-800'}`}>合计</button>
+                                        <button type="button" onClick={() => setFeeScope('combined')} className={feeScopeButtonClass('combined')}>合计</button>
                                     )}
                                 </div>
                             )}
                         </div>
                     </div>
-                    <div className="overflow-x-auto min-w-0 flex-1">
+                    <div className="liquid-workbench-table min-w-0 flex-1">
+                        <div className="grid gap-3 p-3 sm:hidden">
+                            {monthlyBreakdown.map((month) => (
+                                <article key={month.month} className="liquid-workbench-month-card rounded-[20px] p-3">
+                                    <div className="flex items-start justify-between gap-3">
+                                        <div>
+                                            <div className="text-xs font-black text-slate-500">月份</div>
+                                            <div className="mt-0.5 text-lg font-black text-slate-950">{month.monthName}</div>
+                                        </div>
+                                        <span className={`liquid-workbench-rate-pill inline-flex min-w-[54px] items-center justify-center rounded-full px-2.5 py-1 text-xs font-black ${workbenchRateToneClass(month.hasActual, month.monthlyRate)}`}>
+                                            {month.hasActual ? dashboardPct(month.monthlyRate) : '—'}
+                                        </span>
+                                    </div>
+                                    <div className="mt-3 grid grid-cols-2 gap-2">
+                                        {feeScope !== 'management_fee' && (
+                                            <div className="liquid-workbench-month-field rounded-2xl px-3 py-2" data-tone="amber">
+                                                <div className="text-xs font-black text-amber-700">年初预算</div>
+                                                <div className="mt-1 font-black tabular-nums text-slate-900">
+                                                    {initialBudgetMonthMap.has(month.month)
+                                                        ? dashboardWan(initialBudgetMonthMap.get(month.month)!)
+                                                        : '—'}
+                                                </div>
+                                            </div>
+                                        )}
+                                        <div className="liquid-workbench-month-field rounded-2xl px-3 py-2" data-tone="blue">
+                                            <div className="text-xs font-black text-blue-700">{scopeLabels.contractCol}</div>
+                                            <div className="mt-1 font-black tabular-nums text-slate-900">{dashboardWan(month.budget)}</div>
+                                        </div>
+                                        <div className="liquid-workbench-month-field rounded-2xl px-3 py-2" data-tone="cyan">
+                                            <div className="text-xs font-black text-cyan-700">{scopeLabels.actualCol}</div>
+                                            <div className="mt-1 font-black tabular-nums text-slate-950">
+                                                {month.hasActual ? dashboardWan(month.actual!) : <span className="text-slate-500">-</span>}
+                                            </div>
+                                        </div>
+                                        <div className="liquid-workbench-month-field rounded-2xl px-3 py-2">
+                                            <div className="text-xs font-black text-slate-500">去年同期</div>
+                                            <div className="mt-1 font-black tabular-nums text-slate-700">{dashboardWan(month.prevActual)}</div>
+                                        </div>
+                                        <div className="liquid-workbench-month-field rounded-2xl px-3 py-2">
+                                            <div className="text-xs font-black text-slate-500">同比</div>
+                                            <div className={`mt-1 font-black tabular-nums ${month.hasActual && month.prevActual > 0 ? (month.yoy >= 0 ? 'text-blue-700' : 'text-rose-600') : 'text-slate-500'}`}>
+                                                {month.hasActual && month.prevActual > 0
+                                                    ? `${month.yoy > 0 ? '+' : ''}${dashboardPct(month.yoy)}`
+                                                    : '-'}
+                                            </div>
+                                        </div>
+                                        <div className="liquid-workbench-month-field rounded-2xl px-3 py-2">
+                                            <div className="text-xs font-black text-slate-500">累计达成</div>
+                                            <span className={`liquid-workbench-rate-pill mt-1 inline-flex min-w-[54px] items-center justify-center rounded-full px-2.5 py-1 text-xs font-black ${workbenchCumulativeToneClass(month.hasActual, month.cumulativeProgress)}`}>
+                                                {month.hasActual ? dashboardPct(month.cumulativeProgress) : '—'}
+                                            </span>
+                                        </div>
+                                    </div>
+                                </article>
+                            ))}
+                            <div className="liquid-workbench-mobile-total rounded-[20px] p-3 text-white">
+                                <div className="flex items-center justify-between gap-3">
+                                    <span className="text-xs font-black text-white/90">合计</span>
+                                    <span className="text-sm font-black tabular-nums">{dashboardWan(budgetExecutionTotal.totalBudget)}</span>
+                                </div>
+                                <div className="mt-2 grid grid-cols-2 gap-2 text-xs">
+                                    <div>
+                                        <div className="font-semibold text-white/80">已收</div>
+                                        <div className="mt-0.5 font-black tabular-nums">
+                                            {budgetExecutionTotal.hasActual ? dashboardWan(budgetExecutionTotal.totalActual) : '-'}
+                                        </div>
+                                    </div>
+                                    <div>
+                                        <div className="font-semibold text-white/80">累计达成</div>
+                                        <div className="mt-0.5 font-black tabular-nums">
+                                            {budgetExecutionTotal.hasActual ? dashboardPct(budgetExecutionTotal.cumulativeProgress) : '-'}
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        <div className="hidden overflow-x-auto sm:block">
                         <table className="w-full text-xs min-w-[720px]">
                             <thead>
-                                <tr className="bg-slate-50 border-b border-slate-200">
-                                    <th className="px-3 py-2.5 text-center font-semibold text-slate-700 whitespace-nowrap">月份</th>
+                                <tr className="liquid-workbench-sticky">
+                                    <th className="liquid-workbench-head-cell px-3 py-2.5 text-center font-semibold text-slate-700 whitespace-nowrap">月份</th>
                                     {feeScope !== 'management_fee' && (
-                                        <th className="px-3 py-2.5 text-right font-semibold text-amber-700 bg-amber-50/30 whitespace-nowrap">年初预算</th>
+                                        <th className="liquid-workbench-head-cell px-3 py-2.5 text-right font-semibold text-amber-700 whitespace-nowrap" data-tone="amber">年初预算</th>
                                     )}
-                                    <th className="px-3 py-2.5 text-right font-semibold text-blue-700 bg-blue-50/30 whitespace-nowrap">{scopeLabels.contractCol}</th>
-                                    <th className="px-3 py-2.5 text-right font-semibold text-emerald-700 bg-emerald-50/30 whitespace-nowrap">{scopeLabels.actualCol}</th>
-                                    <th className="px-3 py-2.5 text-right font-semibold text-slate-700 hidden sm:table-cell whitespace-nowrap">去年同期</th>
-                                    <th className="px-3 py-2.5 text-right font-semibold text-slate-700 whitespace-nowrap">同比</th>
-                                    <th className="px-3 py-2.5 text-center font-semibold text-slate-700 whitespace-nowrap">完成率</th>
-                                    <th className="px-3 py-2.5 text-right font-semibold text-slate-700 border-l border-slate-200 hidden sm:table-cell whitespace-nowrap">累计达成</th>
+                                    <th className="liquid-workbench-head-cell px-3 py-2.5 text-right font-semibold text-blue-700 whitespace-nowrap" data-tone="blue">{scopeLabels.contractCol}</th>
+                                    <th className="liquid-workbench-head-cell px-3 py-2.5 text-right font-semibold text-cyan-700 whitespace-nowrap" data-tone="cyan">{scopeLabels.actualCol}</th>
+                                    <th className="liquid-workbench-head-cell px-3 py-2.5 text-right font-semibold text-slate-700 hidden sm:table-cell whitespace-nowrap">去年同期</th>
+                                    <th className="liquid-workbench-head-cell px-3 py-2.5 text-right font-semibold text-slate-700 whitespace-nowrap">同比</th>
+                                    <th className="liquid-workbench-head-cell px-3 py-2.5 text-center font-semibold text-slate-700 whitespace-nowrap">完成率</th>
+                                    <th className="liquid-workbench-head-cell px-3 py-2.5 text-right font-semibold text-slate-700 hidden sm:table-cell whitespace-nowrap">累计达成</th>
                                 </tr>
                             </thead>
                             <tbody>
                                 {monthlyBreakdown.map((month) => (
-                                    <tr key={month.month} className="border-b border-slate-100 hover:bg-slate-50 transition-colors">
-                                        <td className="px-3 py-2.5 font-medium text-slate-800 text-center">{month.monthName}</td>
+                                    <tr key={month.month} className="liquid-workbench-row transition-colors">
+                                        <td className="liquid-workbench-cell px-3 py-2.5 font-medium text-slate-800 text-center">{month.monthName}</td>
                                         {feeScope !== 'management_fee' && (
-                                            <td className="px-3 py-2.5 text-right text-slate-500 tabular-nums bg-amber-50/10 whitespace-nowrap">
+                                            <td className="liquid-workbench-cell px-3 py-2.5 text-right text-slate-500 tabular-nums whitespace-nowrap" data-tone="amber">
                                                 {initialBudgetMonthMap.has(month.month)
                                                     ? dashboardWan(initialBudgetMonthMap.get(month.month)!)
                                                     : '—'}
                                             </td>
                                         )}
-                                        <td className="px-3 py-2.5 text-right text-slate-600 tabular-nums bg-blue-50/10 whitespace-nowrap">
+                                        <td className="liquid-workbench-cell px-3 py-2.5 text-right text-slate-600 tabular-nums whitespace-nowrap" data-tone="blue">
                                             {dashboardWan(month.budget)}
                                         </td>
-                                        <td className="px-3 py-2.5 text-right font-semibold text-slate-800 tabular-nums bg-emerald-50/10 whitespace-nowrap">
-                                            {month.hasActual ? dashboardWan(month.actual!) : <span className="text-slate-300">-</span>}
+                                        <td className="liquid-workbench-cell px-3 py-2.5 text-right font-semibold text-slate-900 tabular-nums whitespace-nowrap" data-tone="cyan">
+                                            {month.hasActual ? dashboardWan(month.actual!) : <span className="text-slate-500">-</span>}
                                         </td>
-                                        <td className="px-3 py-2.5 text-right text-slate-400 tabular-nums hidden sm:table-cell whitespace-nowrap">
+                                        <td className="liquid-workbench-cell hidden whitespace-nowrap px-3 py-2.5 text-right font-semibold tabular-nums text-slate-500 sm:table-cell">
                                             {dashboardWan(month.prevActual)}
                                         </td>
-                                        <td className="px-3 py-2.5 text-right whitespace-nowrap">
+                                        <td className="liquid-workbench-cell px-3 py-2.5 text-right whitespace-nowrap">
                                             {month.hasActual && month.prevActual > 0 ? (
-                                                <span className={`font-medium ${month.yoy >= 0 ? 'text-emerald-600' : 'text-rose-500'}`}>
+                                                <span className={`font-medium ${month.yoy >= 0 ? 'text-blue-600' : 'text-rose-500'}`}>
                                                     {month.yoy > 0 ? '+' : ''}{dashboardPct(month.yoy)}
                                                 </span>
-                                            ) : <span className="text-slate-300">-</span>}
+                                            ) : <span className="text-slate-500">-</span>}
                                         </td>
-                                        <td className="px-3 py-2.5 text-center whitespace-nowrap">
-                                            <span className={`inline-flex items-center justify-center min-w-[48px] px-2 py-1 rounded-full text-[11px] font-bold ${
-                                                month.hasActual
-                                                    ? month.monthlyRate >= 100 ? 'bg-emerald-100 text-emerald-700' :
-                                                      month.monthlyRate >= 80 ? 'bg-blue-100 text-blue-700' :
-                                                      'bg-amber-100 text-amber-700'
-                                                    : 'text-slate-300'
-                                            }`}>
+                                        <td className="liquid-workbench-cell px-3 py-2.5 text-center whitespace-nowrap">
+                                            <span className={`liquid-workbench-rate-pill inline-flex min-w-[48px] items-center justify-center rounded-full px-2 py-1 text-xs font-bold ${workbenchRateToneClass(month.hasActual, month.monthlyRate)}`}>
                                                 {month.hasActual ? dashboardPct(month.monthlyRate) : '—'}
                                             </span>
                                         </td>
-                                        <td className="px-3 py-2.5 text-right font-medium border-l border-slate-200 hidden sm:table-cell whitespace-nowrap">
+                                        <td className="liquid-workbench-cell px-3 py-2.5 text-right font-medium hidden sm:table-cell whitespace-nowrap" data-divider="left">
                                             {month.hasActual ? (
-                                                <span className={`text-[11px] px-2 py-0.5 rounded font-bold ${month.cumulativeProgress >= 100 ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-100 text-slate-600'}`}>
+                                                <span className={`liquid-workbench-rate-pill rounded-full px-2 py-0.5 text-xs font-bold ${workbenchCumulativeToneClass(month.hasActual, month.cumulativeProgress)}`}>
                                                     {dashboardPct(month.cumulativeProgress)}
                                                 </span>
-                                            ) : <span className="text-slate-300">-</span>}
+                                            ) : <span className="text-slate-500">-</span>}
                                         </td>
                                     </tr>
                                 ))}
                             </tbody>
                             <tfoot>
-                                <tr className="bg-slate-800 text-white border-t-2 border-slate-600">
-                                    <td className="px-3 py-2.5 font-bold text-center">合计</td>
+                                <tr className="liquid-workbench-total-row text-white">
+                                    <td className="liquid-workbench-total-cell px-3 py-2.5 font-bold text-center">合计</td>
                                     {feeScope !== 'management_fee' && (
-                                        <td className="px-3 py-2.5 text-right font-bold tabular-nums bg-amber-500/10 whitespace-nowrap">
+                                        <td className="liquid-workbench-total-cell px-3 py-2.5 text-right font-bold tabular-nums whitespace-nowrap" data-tone="amber">
                                             {initialBudgetFooterSum > 0 ? dashboardWan(initialBudgetFooterSum) : '—'}
                                         </td>
                                     )}
-                                    <td className="px-3 py-2.5 text-right font-bold tabular-nums bg-blue-500/10 whitespace-nowrap">
+                                    <td className="liquid-workbench-total-cell px-3 py-2.5 text-right font-bold tabular-nums whitespace-nowrap" data-tone="blue">
                                         {dashboardWan(budgetExecutionTotal.totalBudget)}
                                     </td>
-                                    <td className="px-3 py-2.5 text-right font-bold tabular-nums bg-emerald-500/10 whitespace-nowrap">
-                                        {budgetExecutionTotal.hasActual ? dashboardWan(budgetExecutionTotal.totalActual) : <span className="text-slate-400">-</span>}
+                                    <td className="liquid-workbench-total-cell px-3 py-2.5 text-right font-bold tabular-nums whitespace-nowrap" data-tone="cyan">
+                                        {budgetExecutionTotal.hasActual ? dashboardWan(budgetExecutionTotal.totalActual) : <span className="text-slate-500">-</span>}
                                     </td>
-                                    <td className="px-3 py-2.5 text-right text-slate-300 tabular-nums hidden sm:table-cell whitespace-nowrap">
+                                    <td className="liquid-workbench-total-cell hidden whitespace-nowrap px-3 py-2.5 text-right font-semibold tabular-nums text-slate-500 sm:table-cell">
                                         {dashboardWan(budgetExecutionTotal.yearPrevActual)}
                                     </td>
-                                    <td className="px-3 py-2.5 text-right whitespace-nowrap">
+                                    <td className="liquid-workbench-total-cell px-3 py-2.5 text-right whitespace-nowrap">
                                         {budgetExecutionTotal.hasActual && budgetExecutionTotal.comparablePrevActual > 0 ? (
-                                            <span className={`text-xs font-bold ${budgetExecutionTotal.yoy >= 0 ? 'text-emerald-300' : 'text-rose-300'}`}>
+                                            <span className={`text-xs font-bold ${budgetExecutionTotal.yoy >= 0 ? 'text-cyan-200' : 'text-rose-300'}`}>
                                                 {budgetExecutionTotal.yoy > 0 ? '+' : ''}{dashboardPct(budgetExecutionTotal.yoy)}
                                             </span>
-                                        ) : <span className="text-slate-400">-</span>}
+                                        ) : <span className="text-slate-500">-</span>}
                                     </td>
-                                    <td className="px-3 py-2.5 text-center whitespace-nowrap">
+                                    <td className="liquid-workbench-total-cell px-3 py-2.5 text-center whitespace-nowrap">
                                         {budgetExecutionTotal.hasActual ? (
-                                            <span className="inline-flex items-center px-2 py-1 rounded-full text-[11px] font-bold bg-white/15 text-white">
+                                            <span className="liquid-workbench-total-pill inline-flex items-center rounded-full px-2 py-1 text-xs font-bold text-white">
                                                 {dashboardPct(budgetExecutionTotal.monthlyRate)}
                                             </span>
-                                        ) : <span className="text-slate-400">-</span>}
+                                        ) : <span className="text-slate-500">-</span>}
                                     </td>
-                                    <td className="px-3 py-2.5 text-right font-bold border-l border-slate-700 hidden sm:table-cell whitespace-nowrap">
+                                    <td className="liquid-workbench-total-cell px-3 py-2.5 text-right font-bold hidden sm:table-cell whitespace-nowrap" data-divider="left">
                                         {budgetExecutionTotal.hasActual ? (
-                                            <span className="text-[11px] px-2 py-0.5 rounded font-bold bg-white/15 text-white">
+                                            <span className="liquid-workbench-total-pill rounded-full px-2 py-0.5 text-xs font-bold text-white">
                                                 {dashboardPct(budgetExecutionTotal.cumulativeProgress)}
                                             </span>
-                                        ) : <span className="text-slate-400">-</span>}
+                                        ) : <span className="text-slate-500">-</span>}
                                     </td>
                                 </tr>
                             </tfoot>
                         </table>
+                        </div>
                     </div>
                 </div>
 
                 {/* Right: Annual Completion Visualization */}
-                <div className="hidden md:flex order-2 lg:order-2 bg-white rounded-xl shadow-sm border border-slate-100 overflow-hidden group flex-col min-w-0 hover:shadow-md transition-shadow duration-300">
-                    <div className="bg-gradient-to-r from-blue-50 to-blue-100 px-3 sm:px-4 py-2.5 border-b border-blue-200 shrink-0">
-                        <h3 className="font-semibold text-xs sm:text-sm text-slate-800">年度指标完成率</h3>
+                <div className="hidden md:flex order-2 lg:order-2 liquid-workbench-card rounded-[24px] overflow-hidden group flex-col min-w-0 transition-shadow duration-300">
+                    <div className="liquid-workbench-header px-3 sm:px-4 py-3 shrink-0">
+                        <h3 className="font-semibold text-xs sm:text-sm text-slate-900">年度指标完成率</h3>
                     </div>
                     <div className="p-3 sm:p-4 flex-1 flex flex-col justify-between overflow-y-auto">
                         <div className="space-y-3.5">
@@ -520,17 +542,17 @@ export const StatsCards: React.FC<StatsCardsProps> = ({
                                 <div className="flex justify-between items-baseline mb-2">
                                     <span className="text-xs text-slate-600 font-medium">{scopeLabels.annualTitle}</span>
                                     <span className={`text-3xl font-bold tracking-tight tabular-nums ${
-                                        annualScopeMetrics.progress >= 100 ? 'text-emerald-600' :
+                                        annualScopeMetrics.progress >= 100 ? 'text-cyan-700' :
                                         annualScopeMetrics.progress >= 80 ? 'text-blue-600' :
                                         'text-amber-600'
                                     }`}>
                                         {formatPercent(annualScopeMetrics.progress)}
                                     </span>
                                 </div>
-                                <div className="w-full bg-slate-100 rounded-full h-3 overflow-hidden">
+                                <div className="liquid-workbench-progress w-full rounded-full h-3 overflow-hidden">
                                     <div 
                                         className={`h-full rounded-full transition-all duration-1000 ${
-                                            annualScopeMetrics.progress >= 100 ? 'bg-gradient-to-r from-emerald-400 to-emerald-600' :
+                                            annualScopeMetrics.progress >= 100 ? 'bg-gradient-to-r from-cyan-400 to-blue-500' :
                                             annualScopeMetrics.progress >= 80 ? 'bg-gradient-to-r from-blue-400 to-blue-600' :
                                             'bg-gradient-to-r from-amber-400 to-amber-600'
                                         }`}
@@ -538,11 +560,11 @@ export const StatsCards: React.FC<StatsCardsProps> = ({
                                     ></div>
                                 </div>
                                 <div className="grid grid-cols-2 gap-2 mt-2 text-xs">
-                                    <div className="bg-blue-50 rounded-lg p-2">
+                                    <div className="liquid-workbench-mini-card rounded-2xl p-2.5">
                                         <div className="text-slate-500 mb-0.5">{scopeLabels.completedLabel}</div>
                                         <div className="font-bold text-blue-700">{formatWanCurrency(annualScopeMetrics.collected)}</div>
                                     </div>
-                                    <div className="bg-slate-50 rounded-lg p-2">
+                                    <div className="liquid-workbench-mini-card rounded-2xl p-2.5">
                                         <div className="text-slate-500 mb-0.5">{scopeLabels.remainingLabel}</div>
                                         <div className="font-bold text-slate-700">{annualScopeMetrics.goal > 0
                                                 ? formatWanCurrency(Math.max(0, annualScopeMetrics.goal - annualScopeMetrics.collected))
@@ -558,24 +580,24 @@ export const StatsCards: React.FC<StatsCardsProps> = ({
                                         <span className="text-xs text-slate-600 font-medium">出租率</span>
                                         <button 
                                             onClick={() => onEditTargets('occupancy')}
-                                            className="p-1 text-slate-300 hover:text-blue-500 transition-colors opacity-0 group-hover:opacity-100"
+                                            className="liquid-glass-control liquid-pressable rounded-full p-1 text-slate-500 opacity-0 transition-colors hover:text-blue-600 focus-visible:opacity-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-400 group-hover:opacity-100"
                                             title="编辑目标"
                                         >
                                             <Edit3 size={12} />
                                         </button>
                                     </div>
                                     <span className={`text-3xl font-bold tracking-tight tabular-nums ${
-                                        occupancyGap <= 0 ? 'text-emerald-600' :
+                                        occupancyGap <= 0 ? 'text-cyan-700' :
                                         occupancyGap <= 5 ? 'text-blue-600' :
                                         'text-amber-600'
                                     }`}>
                                         {formatPercent(data.occupancyRate)}
                                     </span>
                                 </div>
-                                <div className="w-full bg-slate-100 rounded-full h-3 overflow-hidden">
+                                <div className="liquid-workbench-progress w-full rounded-full h-3 overflow-hidden">
                                     <div 
                                         className={`h-full rounded-full transition-all duration-1000 ${
-                                            occupancyGap <= 0 ? 'bg-gradient-to-r from-emerald-400 to-emerald-600' :
+                                            occupancyGap <= 0 ? 'bg-gradient-to-r from-cyan-400 to-blue-500' :
                                             occupancyGap <= 5 ? 'bg-gradient-to-r from-blue-400 to-blue-600' :
                                             'bg-gradient-to-r from-amber-400 to-amber-600'
                                         }`}
@@ -584,7 +606,7 @@ export const StatsCards: React.FC<StatsCardsProps> = ({
                                 </div>
                                 <div className="flex justify-between text-xs text-slate-500 mt-2">
                                     <span>目标: {formatPercent(data.annualOccupancyTarget)}</span>
-                                    <span className={occupancyGap > 0 ? 'text-amber-600 font-medium' : 'text-emerald-600 font-medium'}>
+                                    <span className={occupancyGap > 0 ? 'text-amber-600 font-medium' : 'text-cyan-700 font-medium'}>
                                         {occupancyGap > 0 ? `差 ${formatPercent(occupancyGap)}` : '✓ 已达标'}
                                     </span>
                                 </div>
@@ -595,7 +617,7 @@ export const StatsCards: React.FC<StatsCardsProps> = ({
                                 <div className="flex justify-between items-baseline mb-2">
                                     <span className="text-xs text-slate-600 font-medium">累计欠款</span>
                                     <span className={`text-xl font-bold tabular-nums ${
-                                        data.accumulatedArrears === 0 ? 'text-emerald-600' :
+                                        data.accumulatedArrears === 0 ? 'text-cyan-700' :
                                         data.accumulatedArrears < 100000 ? 'text-amber-600' :
                                         'text-rose-600'
                                     }`}>
@@ -604,63 +626,51 @@ export const StatsCards: React.FC<StatsCardsProps> = ({
                                 </div>
                                 <div className="text-xs mt-2">
                                     <span className={`inline-flex items-center gap-1 px-2 py-1 rounded-full ${
-                                        data.accumulatedArrears === 0 ? 'bg-emerald-50 text-emerald-700' :
-                                        data.accumulatedArrears < 100000 ? 'bg-amber-50 text-amber-700' :
-                                        'bg-rose-50 text-rose-700'
+                                        data.accumulatedArrears === 0 ? 'bg-cyan-50 text-cyan-700 ring-1 ring-cyan-200/70' :
+                                        data.accumulatedArrears < 100000 ? 'bg-amber-50 text-amber-700 ring-1 ring-amber-200/70' :
+                                        'bg-rose-50 text-rose-700 ring-1 ring-rose-200/70'
                                     }`}>
                                         {data.accumulatedArrears === 0 ? '✓ 无欠款' : `⚠ 待核销账单`}
                                     </span>
                                 </div>
-                                <div className="text-[10px] text-slate-400 mt-0.5">
+                                <div className="mt-0.5 text-xs font-semibold text-slate-500">
                                     2026年1月1日起所有未核销账单
                                 </div>
                             </div>
 
                             {/* 租赁动态 */}
-                            <div className="pt-2 border-t border-slate-100">
+                            <div className="pt-2 border-t border-slate-200/70">
                                 <h4 className="text-xs font-semibold text-slate-700 mb-3">租赁维度择取</h4>
                                 
                                 {/* Tab切换 */}
-                                <div className="bg-slate-50 rounded-lg p-1 mb-3 grid grid-cols-3 gap-1">
+                                <div className="liquid-workbench-segment rounded-2xl p-1 mb-3 grid grid-cols-3 gap-1">
                                     <button 
                                         onClick={() => setLeasePeriod('year')}
-                                        className={`px-3 py-1.5 rounded text-xs font-semibold transition-all ${
-                                            leasePeriod === 'year' 
-                                                ? 'bg-blue-600 text-white shadow-sm' 
-                                                : 'text-slate-600 hover:bg-white'
-                                        }`}
+                                        className={leasePeriodButtonClass('year')}
                                     >
                                         本年度
                                     </button>
                                     <button 
                                         onClick={() => setLeasePeriod('quarter')}
-                                        className={`px-3 py-1.5 rounded text-xs font-semibold transition-all ${
-                                            leasePeriod === 'quarter' 
-                                                ? 'bg-blue-600 text-white shadow-sm' 
-                                                : 'text-slate-600 hover:bg-white'
-                                        }`}
+                                        className={leasePeriodButtonClass('quarter')}
                                     >
                                         本季度
                                     </button>
                                     <button 
                                         onClick={() => setLeasePeriod('month')}
-                                        className={`px-3 py-1.5 rounded text-xs font-semibold transition-all ${
-                                            leasePeriod === 'month' 
-                                                ? 'bg-blue-600 text-white shadow-sm' 
-                                                : 'text-slate-600 hover:bg-white'
-                                        }`}
+                                        className={leasePeriodButtonClass('month')}
                                     >
                                         本月
                                     </button>
                                 </div>
                                 
                                 {/* 净增长大卡片 - 根据选中的维度显示数据 */}
-                                <div className={`rounded-xl p-4 mb-3 ${
+                                <div className={`rounded-[22px] p-4 mb-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.28),0_18px_42px_rgba(15,23,42,0.12)] ${
                                     (leasePeriod === 'year' ? leaseStats.netIncreaseYear : 
                                      leasePeriod === 'quarter' ? leaseStats.netIncreaseQuarter : 
                                      leaseStats.netIncreaseMonth) >= 0 
-                                        ? 'bg-gradient-to-br from-blue-500 to-blue-600' 
-                                        : 'bg-gradient-to-br from-orange-500 to-orange-600'
+                                        ? 'liquid-workbench-hero-positive'
+                                        : 'liquid-workbench-hero-negative'
                                 }`}>
                                     <div className="flex items-center gap-2 mb-1">
                                         <TrendingUp size={16} className="text-white/80" />
@@ -702,7 +712,7 @@ export const StatsCards: React.FC<StatsCardsProps> = ({
                         </div>
                         
                         {/* Summary Stats at Bottom */}
-                        <div className="mt-5 pt-4 border-t border-slate-100">
+                        <div className="mt-5 pt-4 border-t border-slate-200/70">
                             <div className="text-xs text-slate-500 text-center">
                                 数据截至 {new Date().toLocaleDateString('zh-CN')}
                             </div>

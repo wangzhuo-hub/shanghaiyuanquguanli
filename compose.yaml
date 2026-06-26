@@ -26,6 +26,36 @@ services:
     environment:
       QWEN_API_KEY: ${QWEN_API_KEY}
     restart: unless-stopped
+
+  integration-gateway:
+    build:
+      context: .
+      dockerfile: docker/integration-gateway/Dockerfile
+    ports:
+      - "8787:8787"
+    environment:
+      PB_URL: http://pocketbase:8090
+      PB_ADMIN_EMAIL: ${PB_ADMIN_EMAIL}
+      PB_ADMIN_PASSWORD: ${PB_ADMIN_PASSWORD}
+      INTEGRATION_INTERNAL_TOKEN: ${INTEGRATION_INTERNAL_TOKEN}
+      INTEGRATION_GATEWAY_PORT: 8787
+      APP_API_WRITE_ENABLED: ${APP_API_WRITE_ENABLED:-0}
+      APP_API_PAYMENT_WRITE_ENABLED: ${APP_API_PAYMENT_WRITE_ENABLED:-0}
+      APP_API_TENANT_WRITE_ENABLED: ${APP_API_TENANT_WRITE_ENABLED:-0}
+      GATEWAY_SCHEDULER_ENABLED: ${GATEWAY_SCHEDULER_ENABLED:-0}
+      COMPUTE_DASHBOARD_CACHE_TTL_MS: ${COMPUTE_DASHBOARD_CACHE_TTL_MS:-1800000}
+      COMPUTE_BILLING_CACHE_TTL_MS: ${COMPUTE_BILLING_CACHE_TTL_MS:-1800000}
+      COMPUTE_VERSION_CACHE_TTL_MS: ${COMPUTE_VERSION_CACHE_TTL_MS:-2000}
+      COMPUTE_PREWARM_ENABLED: ${COMPUTE_PREWARM_ENABLED:-0}
+      COMPUTE_PREWARM_INTERVAL_MS: ${COMPUTE_PREWARM_INTERVAL_MS:-900000}
+      COMPUTE_PREWARM_STARTUP_DELAY_MS: ${COMPUTE_PREWARM_STARTUP_DELAY_MS:-15000}
+      COMPUTE_PREWARM_PROJECTS: ${COMPUTE_PREWARM_PROJECTS:-shanghai_park,beijing_park,shenzhen_park}
+      TZ: Asia/Shanghai
+    depends_on:
+      pocketbase:
+        condition: service_healthy
+    restart: unless-stopped
+
   web:
     build:
       context: .
@@ -38,6 +68,8 @@ services:
       pocketbase:
         condition: service_healthy
       ai-proxy:
+        condition: service_started
+      integration-gateway:
         condition: service_started
     restart: unless-stopped
 
